@@ -56,6 +56,7 @@ impl MpcService {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::services::strategies::Strategy;
     use super::*;
 
     #[test]

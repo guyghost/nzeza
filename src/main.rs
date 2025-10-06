@@ -1,8 +1,6 @@
 mod domain;
 mod application;
 mod infrastructure;
-mod presentation;
-
 use axum::{routing::get, Router};
 use std::net::SocketAddr;
 use crate::application::services::mpc_service::MpcService;
@@ -53,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/", get(|| async { "MPC Trading Server with Indicators and Strategies is running!" }));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3001));
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     info!("Listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
