@@ -18,6 +18,7 @@ pub enum SubscriptionCommand {
 }
 
 use crate::domain::entities::order::Order;
+use crate::infrastructure::coinbase_client::{CoinbaseClient, CoinbaseConfig};
 use crate::infrastructure::dydx_client::{DydxClient, DydxConfig};
 
 #[derive(Debug)]
@@ -63,6 +64,7 @@ pub struct ExchangeActor {
     pub subscription_tx: mpsc::Sender<SubscriptionCommand>,
     activity_tracker: ActivityTracker,
     dydx_client: Option<DydxClient>,
+    coinbase_client: Option<CoinbaseClient>,
 }
 
 #[derive(Clone)]
@@ -122,6 +124,32 @@ impl ExchangeActor {
             None
         };
 
+        // Initialize Coinbase client if this is a Coinbase exchange
+        let coinbase_client = if matches!(exchange, Exchange::Coinbase) {
+            match (std::env::var("COINBASE_API_KEY"),
+                   std::env::var("COINBASE_API_SECRET"),
+                   std::env::var("COINBASE_PASSPHRASE")) {
+                (Ok(api_key), Ok(api_secret), Ok(passphrase)) => {
+                    match CoinbaseClient::new(&api_key, &api_secret, &passphrase) {
+                        Ok(client) => {
+                            info!("Coinbase client initialized successfully");
+                            Some(client)
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize Coinbase client: {}", e);
+                            None
+                        }
+                    }
+                }
+                _ => {
+                    warn!("Coinbase API credentials not set (COINBASE_API_KEY, COINBASE_API_SECRET, COINBASE_PASSPHRASE), Coinbase trading will be disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let actor = Self {
             exchange,
             prices: prices.clone(),
@@ -130,6 +158,7 @@ impl ExchangeActor {
             subscription_tx: subscription_tx.clone(),
             activity_tracker: activity_tracker.clone(),
             dydx_client,
+            coinbase_client,
         };
 
         tokio::spawn(async move {
@@ -282,6 +311,13 @@ impl ExchangeActor {
                                 Err("dYdX client not initialized - check DYDX_MNEMONIC".to_string())
                             }
                         }
+                        Exchange::Coinbase => {
+                            if let Some(client) = &self.coinbase_client {
+                                Self::place_order_coinbase(&order, client).await
+                            } else {
+                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET, COINBASE_PASSPHRASE".to_string())
+                            }
+                        }
                         _ => Err(format!(
                             "Order placement not implemented for {:?}",
                             self.exchange
@@ -307,6 +343,13 @@ impl ExchangeActor {
                                 Err("dYdX client not initialized - check DYDX_MNEMONIC".to_string())
                             }
                         }
+                        Exchange::Coinbase => {
+                            if let Some(client) = &self.coinbase_client {
+                                Self::cancel_order_coinbase(&order_id, client).await
+                            } else {
+                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET, COINBASE_PASSPHRASE".to_string())
+                            }
+                        }
                         _ => Err(format!(
                             "Order cancellation not implemented for {:?}",
                             self.exchange
@@ -330,6 +373,13 @@ impl ExchangeActor {
                                 Self::get_order_status_dydx(&order_id, client).await
                             } else {
                                 Err("dYdX client not initialized - check DYDX_MNEMONIC".to_string())
+                            }
+                        }
+                        Exchange::Coinbase => {
+                            if let Some(client) = &self.coinbase_client {
+                                Self::get_order_status_coinbase(&order_id, client).await
+                            } else {
+                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET, COINBASE_PASSPHRASE".to_string())
                             }
                         }
                         _ => Err(format!("Order status not implemented for {:?}", self.exchange)),
@@ -712,6 +762,34 @@ impl ExchangeActor {
     /// Get order status from dYdX v4 using the dYdX client
     async fn get_order_status_dydx(order_id: &str, client: &DydxClient) -> Result<String, String> {
         info!("dYdX order status requested: {}", order_id);
+        client.get_order_status(order_id).await
+    }
+
+    /// Place order on Coinbase using the Coinbase client
+    async fn place_order_coinbase(order: &Order, client: &CoinbaseClient) -> Result<String, String> {
+        // Convert our order to Coinbase format
+        let coinbase_order = client.convert_order(order)?;
+
+        info!(
+            "Coinbase order placement requested: {:?} {} {} (converted to Coinbase format)",
+            order.side,
+            order.quantity.value(),
+            order.symbol
+        );
+
+        // Place the order
+        client.place_order(coinbase_order).await
+    }
+
+    /// Cancel order on Coinbase using the Coinbase client
+    async fn cancel_order_coinbase(order_id: &str, client: &CoinbaseClient) -> Result<(), String> {
+        info!("Coinbase order cancellation requested: {}", order_id);
+        client.cancel_order(order_id).await
+    }
+
+    /// Get order status from Coinbase using the Coinbase client
+    async fn get_order_status_coinbase(order_id: &str, client: &CoinbaseClient) -> Result<String, String> {
+        info!("Coinbase order status requested: {}", order_id);
         client.get_order_status(order_id).await
     }
 }

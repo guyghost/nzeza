@@ -229,7 +229,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/orders/:symbol/execute", post(execute_symbol_order))
         .route("/orders/place", post(place_manual_order))
         .route("/orders/cancel/:order_id", delete(cancel_order))
+        .route("/orders/cancel/:exchange/:order_id", delete(cancel_order_with_exchange))
         .route("/orders/status/:order_id", get(get_order_status))
+        .route("/orders/status/:exchange/:order_id", get(get_order_status_with_exchange))
         .route("/positions", get(get_positions))
         .route("/positions/pnl", get(get_total_pnl))
         .route("/config", get(get_config))
@@ -680,6 +682,23 @@ async fn place_manual_order(
         .and_then(|v| v.as_str())
         .unwrap_or("market");
     let price = payload.get("price").and_then(|v| v.as_f64());
+    
+    // Parse exchange (default to dYdX for backward compatibility)
+    let exchange_str = payload
+        .get("exchange")
+        .and_then(|v| v.as_str())
+        .unwrap_or("dydx");
+    
+    let exchange = match exchange_str.to_lowercase().as_str() {
+        "dydx" => crate::domain::entities::exchange::Exchange::Dydx,
+        "coinbase" => crate::domain::entities::exchange::Exchange::Coinbase,
+        _ => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid exchange. Must be 'dydx' or 'coinbase'"})),
+            ))
+        }
+    };
 
     // Parse side
     let side = match side_str.to_uppercase().as_str() {
@@ -734,16 +753,17 @@ async fn place_manual_order(
         }
     };
 
-    // Place order on dYdX
+    // Place order on the selected exchange
     match app_state
         .mpc_service
-        .place_order(&crate::domain::entities::exchange::Exchange::Dydx, order)
+        .place_order(&exchange, order)
         .await
     {
         Ok(order_id) => Ok(Json(serde_json::json!({
             "success": true,
             "order_id": order_id,
-            "message": "Order placed successfully on dYdX"
+            "exchange": exchange_str,
+            "message": format!("Order placed successfully on {}", exchange_str)
         }))),
         Err(e) => Err((
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -755,22 +775,41 @@ async fn place_manual_order(
     }
 }
 
-/// Cancel an order
+/// Cancel an order (legacy endpoint - defaults to dYdX)
 async fn cancel_order(
     State(app_state): State<AppState>,
     Path(order_id): Path<String>,
 ) -> Json<serde_json::Value> {
+    cancel_order_with_exchange(
+        State(app_state),
+        Path(("dydx".to_string(), order_id)),
+    ).await
+}
+
+/// Cancel an order with exchange specification
+async fn cancel_order_with_exchange(
+    State(app_state): State<AppState>,
+    Path((exchange_str, order_id)): Path<(String, String)>,
+) -> Json<serde_json::Value> {
+    let exchange = match exchange_str.to_lowercase().as_str() {
+        "dydx" => crate::domain::entities::exchange::Exchange::Dydx,
+        "coinbase" => crate::domain::entities::exchange::Exchange::Coinbase,
+        _ => {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Invalid exchange. Must be 'dydx' or 'coinbase'"
+            }));
+        }
+    };
+
     match app_state
         .mpc_service
-        .cancel_order(
-            &crate::domain::entities::exchange::Exchange::Dydx,
-            &order_id,
-        )
+        .cancel_order(&exchange, &order_id)
         .await
     {
         Ok(()) => Json(serde_json::json!({
             "success": true,
-            "message": format!("Order {} cancelled successfully", order_id)
+            "message": format!("Order {} cancelled successfully on {}", order_id, exchange_str)
         })),
         Err(e) => Json(serde_json::json!({
             "success": false,
@@ -779,22 +818,42 @@ async fn cancel_order(
     }
 }
 
-/// Get order status
+/// Get order status (legacy endpoint - defaults to dYdX)
 async fn get_order_status(
     State(app_state): State<AppState>,
     Path(order_id): Path<String>,
 ) -> Json<serde_json::Value> {
+    get_order_status_with_exchange(
+        State(app_state),
+        Path(("dydx".to_string(), order_id)),
+    ).await
+}
+
+/// Get order status with exchange specification
+async fn get_order_status_with_exchange(
+    State(app_state): State<AppState>,
+    Path((exchange_str, order_id)): Path<(String, String)>,
+) -> Json<serde_json::Value> {
+    let exchange = match exchange_str.to_lowercase().as_str() {
+        "dydx" => crate::domain::entities::exchange::Exchange::Dydx,
+        "coinbase" => crate::domain::entities::exchange::Exchange::Coinbase,
+        _ => {
+            return Json(serde_json::json!({
+                "success": false,
+                "error": "Invalid exchange. Must be 'dydx' or 'coinbase'"
+            }));
+        }
+    };
+
     match app_state
         .mpc_service
-        .get_order_status(
-            &crate::domain::entities::exchange::Exchange::Dydx,
-            &order_id,
-        )
+        .get_order_status(&exchange, &order_id)
         .await
     {
         Ok(status) => Json(serde_json::json!({
             "success": true,
             "order_id": order_id,
+            "exchange": exchange_str,
             "status": status
         })),
         Err(e) => Json(serde_json::json!({

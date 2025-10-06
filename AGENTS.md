@@ -132,6 +132,80 @@ Pour tester l'intégration dYdX sans risquer de vrais fonds :
 2. Configurez l'environnement pour pointer vers testnet (si supporté)
 3. Vérifiez les logs pour confirmer l'initialisation réussie du client dYdX
 
+## Configuration Coinbase
+
+Pour activer le trading sur Coinbase Pro, vous devez configurer trois variables d'environnement avec vos identifiants API.
+
+### Configuration des Clés API Coinbase
+
+```bash
+# Définir les variables d'environnement pour la session actuelle
+export COINBASE_API_KEY="your_api_key_here"
+export COINBASE_API_SECRET="your_api_secret_here"
+export COINBASE_PASSPHRASE="your_passphrase_here"
+
+# Ou les ajouter à votre ~/.bashrc ou ~/.zshrc pour la persistance
+echo 'export COINBASE_API_KEY="your_api_key_here"' >> ~/.bashrc
+echo 'export COINBASE_API_SECRET="your_api_secret_here"' >> ~/.bashrc
+echo 'export COINBASE_PASSPHRASE="your_passphrase_here"' >> ~/.bashrc
+```
+
+### Création des Clés API Coinbase
+
+1. **Connectez-vous** à votre compte Coinbase Pro
+2. **Allez dans** Settings → API
+3. **Cliquez sur** "Create New API Key"
+4. **Configurez les permissions** :
+   - ✅ View (requis pour les prix et soldes)
+   - ✅ Trade (requis pour placer/annuler des ordres)
+5. **Notez** votre Passphrase (nécessaire pour l'authentification)
+6. **Sauvegardez** l'API Key et le Secret
+
+### Sécurité Importante
+
+⚠️ **NEVER commit your Coinbase API credentials to version control or share them with anyone.**
+
+- Utilisez toujours des variables d'environnement pour les clés sensibles
+- Activez uniquement les permissions nécessaires (View + Trade)
+- Utilisez des clés API séparées pour les environnements de développement/production
+- Coinbase permet de restreindre les adresses IP pour plus de sécurité
+
+### Fonctionnalités Coinbase Supportées
+
+- **Placement d'ordres** : Market et Limit orders
+- **Annulation d'ordres** : Par order ID
+- **Statut d'ordres** : Vérification du statut des ordres
+- **Authentification HMAC-SHA256** : Sécurisée avec timestamp + passphrase
+- **WebSocket temps réel** : Flux de prix pour BTC-USD, ETH-USD, SOL-USD
+
+### Vérification de la Configuration
+
+Le système vérifiera automatiquement la présence des variables Coinbase au démarrage :
+
+- ✅ **Présentes** : Trading Coinbase activé avec message de confirmation
+- ❌ **Absentes** : Trading Coinbase désactivé avec avertissement
+
+### Test de l'Intégration
+
+Pour tester l'intégration Coinbase sans risquer de vrais fonds :
+
+1. Utilisez un compte de test Coinbase Pro (sandbox)
+2. Configurez les variables d'environnement pour pointer vers sandbox
+3. Vérifiez les logs pour confirmer l'initialisation réussie du client Coinbase
+
+### Configuration Sandbox (Test)
+
+Pour utiliser l'environnement de test Coinbase :
+
+```bash
+# Variables pour le sandbox
+export COINBASE_API_KEY="your_sandbox_api_key"
+export COINBASE_API_SECRET="your_sandbox_api_secret" 
+export COINBASE_PASSPHRASE="your_sandbox_passphrase"
+```
+
+Le système détecte automatiquement l'environnement sandbox via les clés API.
+
 ## Approche de développement : Test-Driven Development (TDD)
 
 ### Principe fondamental
