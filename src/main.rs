@@ -134,10 +134,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         order_execution_task(app_state_clone).await;
     });
 
-    // Spawn metrics broadcasting task
+    // Spawn alerting task
     let app_state_clone = app_state.clone();
     tokio::spawn(async move {
-        metrics_broadcast_task(app_state_clone, metrics_tx).await;
+        alerting_task(app_state_clone).await;
     });
 
     let app = Router::new()
@@ -157,7 +157,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/positions", get(get_positions))
         .route("/positions/pnl", get(get_total_pnl))
         .route("/config", get(get_config))
-        .route("/candles/:symbol", get(get_symbol_candles))
+        .route("/alerts", get(get_alerts))
+        .route("/performance", get(get_performance_profiles))
         .with_state(app_state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -407,9 +408,9 @@ async fn get_symbol_price(
 
 /// Get signals for all symbols
 async fn get_all_signals(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
 ) -> Json<HashMap<String, serde_json::Value>> {
-    let symbols = mpc_service.get_all_symbols().await;
+    let symbols = app_state.mpc_service.get_all_symbols().await;
     let mut normalized_symbols = std::collections::HashSet::new();
     
     for symbol in symbols {
@@ -420,7 +421,7 @@ async fn get_all_signals(
     let mut signals = HashMap::new();
 
     for normalized_symbol in normalized_symbols {
-        if let Ok(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+        if let Ok(signal) = app_state.mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
             signals.insert(normalized_symbol, serde_json::json!({
                 "signal": format!("{:?}", signal.signal),
                 "confidence": signal.confidence
@@ -433,11 +434,11 @@ async fn get_all_signals(
 
 /// Get signal for a specific symbol
 async fn get_symbol_signal(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
-    match mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+    match app_state.mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
         Ok(signal) => Json(serde_json::json!({
             "symbol": symbol,
             "normalized_symbol": normalized_symbol,
@@ -452,9 +453,9 @@ async fn get_symbol_signal(
 
 /// Execute pending orders for all symbols
 async fn execute_pending_orders(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let results = mpc_service.check_and_execute_orders().await;
+    let results = app_state.mpc_service.check_and_execute_orders().await;
 
     let successful: Vec<String> = results.iter()
         .filter_map(|r| r.as_ref().ok())
@@ -476,14 +477,14 @@ async fn execute_pending_orders(
 
 /// Execute orders for a specific symbol
 async fn execute_symbol_order(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
 
-    match mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+    match app_state.mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
         Ok(signal) => {
-            match mpc_service.execute_order_from_signal(&normalized_symbol, &signal).await {
+            match app_state.mpc_service.execute_order_from_signal(&normalized_symbol, &signal).await {
                 Ok(msg) => Json(serde_json::json!({
                     "success": true,
                     "symbol": symbol,
@@ -511,7 +512,7 @@ async fn execute_symbol_order(
 
 /// Place a manual order
 async fn place_manual_order(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
     use crate::domain::entities::order::{Order, OrderSide, OrderType};
@@ -560,7 +561,7 @@ async fn place_manual_order(
     };
 
     // Place order on dYdX
-    match mpc_service.place_order(&crate::domain::entities::exchange::Exchange::Dydx, order).await {
+    match app_state.mpc_service.place_order(&crate::domain::entities::exchange::Exchange::Dydx, order).await {
         Ok(order_id) => Ok(Json(serde_json::json!({
             "success": true,
             "order_id": order_id,
@@ -575,10 +576,10 @@ async fn place_manual_order(
 
 /// Cancel an order
 async fn cancel_order(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
     Path(order_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    match mpc_service.cancel_order(&crate::domain::entities::exchange::Exchange::Dydx, &order_id).await {
+    match app_state.mpc_service.cancel_order(&crate::domain::entities::exchange::Exchange::Dydx, &order_id).await {
         Ok(()) => Json(serde_json::json!({
             "success": true,
             "message": format!("Order {} cancelled successfully", order_id)
@@ -592,10 +593,10 @@ async fn cancel_order(
 
 /// Get order status
 async fn get_order_status(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
     Path(order_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    match mpc_service.get_order_status(&crate::domain::entities::exchange::Exchange::Dydx, &order_id).await {
+    match app_state.mpc_service.get_order_status(&crate::domain::entities::exchange::Exchange::Dydx, &order_id).await {
         Ok(status) => Json(serde_json::json!({
             "success": true,
             "order_id": order_id,
@@ -610,11 +611,11 @@ async fn get_order_status(
 
 /// Get candles for a specific symbol
 async fn get_symbol_candles(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
-    let candles = mpc_service.get_candles(&normalized_symbol).await;
+    let candles = app_state.mpc_service.get_candles(&normalized_symbol).await;
     let candle_data: Vec<serde_json::Value> = candles.iter().map(|c| {
         serde_json::json!({
             "open": c.open.value(),
@@ -635,9 +636,9 @@ async fn get_symbol_candles(
 
 /// Get all open positions
 async fn get_positions(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let positions = mpc_service.get_open_positions().await;
+    let positions = app_state.mpc_service.get_open_positions().await;
     let position_data: HashMap<String, serde_json::Value> = positions.iter().map(|(id, position)| {
         (id.clone(), serde_json::json!({
             "symbol": position.symbol,
@@ -660,13 +661,56 @@ async fn get_positions(
 
 /// Get total unrealized PnL across all positions
 async fn get_total_pnl(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    let total_pnl = mpc_service.get_total_unrealized_pnl().await;
+    let total_pnl = app_state.mpc_service.get_total_unrealized_pnl().await;
 
     Json(serde_json::json!({
         "total_unrealized_pnl": total_pnl.value(),
         "currency": "USD"
+    }))
+}
+
+/// Get performance profiles
+async fn get_performance_profiles(
+    State(app_state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let profiles = app_state.mpc_service.get_performance_profiles().await;
+    let profile_data: HashMap<String, serde_json::Value> = profiles.iter().map(|(name, profile)| {
+        (name.clone(), serde_json::json!({
+            "operation": profile.operation,
+            "avg_execution_time_ms": profile.avg_execution_time_ms,
+            "max_execution_time_ms": profile.max_execution_time_ms,
+            "min_execution_time_ms": profile.min_execution_time_ms,
+            "execution_count": profile.execution_count,
+            "last_execution": profile.last_execution
+        }))
+    }).collect();
+
+    Json(serde_json::json!({
+        "profiles": profile_data,
+        "count": profiles.len()
+    }))
+}
+
+/// Get active alerts
+async fn get_alerts(
+    State(app_state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let alerts = app_state.mpc_service.get_active_alerts().await;
+    let alert_data: Vec<serde_json::Value> = alerts.iter().map(|alert| {
+        serde_json::json!({
+            "type": format!("{:?}", alert.alert_type),
+            "message": alert.message,
+            "severity": format!("{:?}", alert.severity),
+            "timestamp": alert.timestamp,
+            "resolved": alert.resolved
+        })
+    }).collect();
+
+    Json(serde_json::json!({
+        "alerts": alert_data,
+        "count": alerts.len()
     }))
 }
 
@@ -794,6 +838,73 @@ async fn metrics_broadcast_task(app_state: AppState, tx: broadcast::Sender<Strin
         // Broadcast to all connected WebSocket clients
         if let Ok(json_str) = serde_json::to_string(&metrics_payload) {
             let _ = tx.send(json_str); // Ignore errors if no receivers
+        }
+    }
+}
+
+/// Background task for automatic strategy weight adjustment
+async fn strategy_weight_adjustment_task(app_state: AppState) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // Adjust every 5 minutes
+
+    loop {
+        interval.tick().await;
+
+        info!("🔄 Adjusting strategy weights based on performance...");
+        match app_state.mpc_service.adjust_strategy_weights().await {
+            Ok(()) => {
+                debug!("Strategy weights adjusted successfully");
+            },
+            Err(e) => {
+                warn!("Failed to adjust strategy weights: {}", e);
+            }
+        }
+
+        // Log current strategy metrics for monitoring
+        let strategy_metrics = app_state.mpc_service.get_strategy_metrics().await;
+        for (name, metrics) in strategy_metrics {
+            debug!(
+                "Strategy {}: signals={}, executions={}, rate={:.1}%, pnl={:.2}, score={:.3}",
+                name,
+                metrics.signals_generated,
+                metrics.signals_executed,
+                metrics.execution_rate,
+                metrics.strategy_pnl.value(),
+                metrics.performance_score
+            );
+        }
+    }
+}
+
+/// Background task for monitoring and alerting
+async fn alerting_task(app_state: AppState) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60)); // Check every minute
+
+    loop {
+        interval.tick().await;
+
+        let new_alerts = app_state.mpc_service.check_alerts().await;
+
+        for alert in new_alerts {
+            match alert.severity {
+                crate::domain::services::metrics::AlertSeverity::Critical => {
+                    error!("🚨 CRITICAL ALERT: {}", alert.message);
+                },
+                crate::domain::services::metrics::AlertSeverity::High => {
+                    error!("⚠️ HIGH ALERT: {}", alert.message);
+                },
+                crate::domain::services::metrics::AlertSeverity::Medium => {
+                    warn!("⚡ MEDIUM ALERT: {}", alert.message);
+                },
+                crate::domain::services::metrics::AlertSeverity::Low => {
+                    info!("ℹ️ LOW ALERT: {}", alert.message);
+                },
+            }
+        }
+
+        // Log active alerts count
+        let active_alerts = app_state.mpc_service.get_active_alerts().await;
+        if !active_alerts.is_empty() {
+            debug!("Currently {} active alerts", active_alerts.len());
         }
     }
 }

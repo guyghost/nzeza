@@ -201,6 +201,62 @@ impl SignalCombiner {
             Some(TradingSignal { signal: Signal::Hold, confidence: 0.5 })
         }
     }
+
+    /// Adjust strategy weights based on performance metrics
+    /// Uses a reinforcement learning approach where better performing strategies get higher weights
+    pub fn adjust_weights(&mut self, strategy_metrics: &[crate::domain::services::metrics::StrategyMetrics]) -> Result<(), String> {
+        if strategy_metrics.len() != self.strategies.len() {
+            return Err(format!(
+                "Strategy metrics count ({}) must match strategies count ({})",
+                strategy_metrics.len(),
+                self.strategies.len()
+            ));
+        }
+
+        // Calculate new weights based on performance scores
+        let total_score: f64 = strategy_metrics.iter().map(|m| m.performance_score).sum();
+        if total_score == 0.0 {
+            // If all scores are 0, keep current weights
+            return Ok(());
+        }
+
+        let mut new_weights = Vec::new();
+        for metrics in strategy_metrics {
+            // Normalize performance score to weight (with minimum weight of 0.05)
+            let normalized_weight = (metrics.performance_score / total_score).max(0.05);
+            new_weights.push(normalized_weight);
+        }
+
+        // Renormalize to ensure weights sum to 1.0
+        let weight_sum: f64 = new_weights.iter().sum();
+        for weight in &mut new_weights {
+            *weight /= weight_sum;
+        }
+
+        // Apply smoothing to prevent drastic changes (max 20% change per adjustment)
+        for (current_weight, new_weight) in self.weights.iter_mut().zip(&new_weights) {
+            let max_change = *current_weight * 0.2;
+            let change = (new_weight - *current_weight).clamp(-max_change, max_change);
+            *current_weight += change;
+        }
+
+        // Final renormalization after smoothing
+        let final_sum: f64 = self.weights.iter().sum();
+        for weight in &mut self.weights {
+            *weight /= final_sum;
+        }
+
+        Ok(())
+    }
+
+    /// Get current strategy names for metrics tracking
+    pub fn get_strategy_names(&self) -> Vec<String> {
+        vec![
+            "FastScalping".to_string(),
+            "MomentumScalping".to_string(),
+            "ConservativeScalping".to_string(),
+        ]
+    }
 }
 
 #[cfg(test)]

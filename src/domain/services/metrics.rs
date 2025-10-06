@@ -209,7 +209,7 @@ impl StrategyMetrics {
         }
     }
 
-    fn update_performance_score(&mut self) {
+    pub fn update_performance_score(&mut self) {
         // Simple performance score based on PnL and execution rate
         let pnl_score = if self.strategy_pnl.value() > 0.0 {
             0.6 + (self.strategy_pnl.value().min(1000.0) / 1000.0) * 0.4
@@ -221,6 +221,167 @@ impl StrategyMetrics {
 
         self.performance_score = pnl_score + execution_score;
         self.performance_score = self.performance_score.max(0.0).min(1.0);
+    }
+}
+
+impl TradingMetrics {
+    /// Check for alerts based on current trading metrics and config
+    pub fn check_alerts(&self, config: &AlertConfig) -> Vec<SystemAlert> {
+        let mut alerts = Vec::new();
+
+        // Check drawdown
+        let current_drawdown_percent = (self.current_drawdown.value() / self.current_equity().value()).abs();
+        if current_drawdown_percent > config.max_drawdown_threshold {
+            alerts.push(SystemAlert {
+                alert_type: AlertType::HighDrawdown,
+                message: format!("Current drawdown is {:.1}% (threshold: {:.1}%)",
+                               current_drawdown_percent * 100.0, config.max_drawdown_threshold * 100.0),
+                severity: AlertSeverity::High,
+                timestamp: SystemTime::now(),
+                resolved: false,
+            });
+        }
+
+        // Check win rate
+        if self.total_trades > 10 && self.win_rate < config.min_win_rate_threshold {
+            alerts.push(SystemAlert {
+                alert_type: AlertType::LowWinRate,
+                message: format!("Win rate is {:.1}% (minimum required: {:.1}%)",
+                               self.win_rate * 100.0, config.min_win_rate_threshold * 100.0),
+                severity: AlertSeverity::Medium,
+                timestamp: SystemTime::now(),
+                resolved: false,
+            });
+        }
+
+        alerts
+    }
+}
+
+/// Alert configuration for monitoring system
+#[derive(Debug, Clone)]
+pub struct AlertConfig {
+    /// Maximum allowed drawdown percentage before alert
+    pub max_drawdown_threshold: f64,
+    /// Minimum required win rate before alert
+    pub min_win_rate_threshold: f64,
+    /// Maximum allowed error rate per minute before alert
+    pub max_error_rate_threshold: f64,
+    /// Minimum required exchange connections before alert
+    pub min_exchange_connections: usize,
+    /// Maximum allowed memory usage (MB) before alert
+    pub max_memory_usage_mb: f64,
+    /// Maximum allowed CPU usage percentage before alert
+    pub max_cpu_usage_percent: f64,
+}
+
+impl Default for AlertConfig {
+    fn default() -> Self {
+        Self {
+            max_drawdown_threshold: 0.10, // 10% max drawdown
+            min_win_rate_threshold: 0.40, // 40% minimum win rate
+            max_error_rate_threshold: 5.0, // 5 errors per minute max
+            min_exchange_connections: 3,   // At least 3 exchanges connected
+            max_memory_usage_mb: 1000.0,  // 1GB max memory
+            max_cpu_usage_percent: 80.0,  // 80% max CPU
+        }
+    }
+}
+
+/// Performance profiling metrics
+#[derive(Debug, Clone)]
+pub struct PerformanceProfile {
+    /// Operation name
+    pub operation: String,
+    /// Average execution time in milliseconds
+    pub avg_execution_time_ms: f64,
+    /// Maximum execution time in milliseconds
+    pub max_execution_time_ms: f64,
+    /// Minimum execution time in milliseconds
+    pub min_execution_time_ms: f64,
+    /// Number of executions
+    pub execution_count: u32,
+    /// Last execution timestamp
+    pub last_execution: SystemTime,
+}
+
+impl PerformanceProfile {
+    pub fn new(operation: String) -> Self {
+        Self {
+            operation,
+            avg_execution_time_ms: 0.0,
+            max_execution_time_ms: 0.0,
+            min_execution_time_ms: f64::INFINITY,
+            execution_count: 0,
+            last_execution: SystemTime::now(),
+        }
+    }
+
+    pub fn record_execution(&mut self, execution_time_ms: f64) {
+        self.execution_count += 1;
+        self.last_execution = SystemTime::now();
+
+        // Update min/max
+        self.max_execution_time_ms = self.max_execution_time_ms.max(execution_time_ms);
+        self.min_execution_time_ms = self.min_execution_time_ms.min(execution_time_ms);
+
+        // Update rolling average
+        let old_avg = self.avg_execution_time_ms;
+        self.avg_execution_time_ms = old_avg + (execution_time_ms - old_avg) / self.execution_count as f64;
+    }
+}
+
+/// Performance profiler for tracking operation timings
+#[derive(Debug, Clone)]
+pub struct PerformanceProfiler {
+    profiles: HashMap<String, PerformanceProfile>,
+}
+
+impl PerformanceProfiler {
+    pub fn new() -> Self {
+        Self {
+            profiles: HashMap::new(),
+        }
+    }
+
+    pub fn start_operation(&mut self, operation: &str) -> OperationTimer {
+        if !self.profiles.contains_key(operation) {
+            self.profiles.insert(operation.to_string(), PerformanceProfile::new(operation.to_string()));
+        }
+        OperationTimer::new(operation.to_string())
+    }
+
+    pub fn record_operation(&mut self, operation: &str, execution_time_ms: f64) {
+        if let Some(profile) = self.profiles.get_mut(operation) {
+            profile.record_execution(execution_time_ms);
+        }
+    }
+
+    pub fn get_profile(&self, operation: &str) -> Option<&PerformanceProfile> {
+        self.profiles.get(operation)
+    }
+
+    pub fn get_all_profiles(&self) -> &HashMap<String, PerformanceProfile> {
+        &self.profiles
+    }
+}
+
+/// Timer for measuring operation execution time
+pub struct OperationTimer {
+    operation: String,
+    start_time: std::time::Instant,
+}
+
+impl OperationTimer {
+    pub fn new(operation: String) -> Self {
+        Self {
+            operation,
+            start_time: std::time::Instant::now(),
+        }
+    }
+
+    pub fn elapsed_ms(&self) -> f64 {
+        self.start_time.elapsed().as_secs_f64() * 1000.0
     }
 }
 
@@ -243,6 +404,36 @@ pub struct SystemHealthMetrics {
     pub error_rate_per_minute: f64,
     /// Last health check timestamp
     pub last_health_check: SystemTime,
+}
+
+/// Alert types for different monitoring scenarios
+#[derive(Debug, Clone)]
+pub enum AlertType {
+    HighDrawdown,
+    LowWinRate,
+    HighErrorRate,
+    ExchangeConnectivity,
+    HighMemoryUsage,
+    HighCpuUsage,
+    SystemUnhealthy,
+}
+
+/// System alert with details
+#[derive(Debug, Clone)]
+pub struct SystemAlert {
+    pub alert_type: AlertType,
+    pub message: String,
+    pub severity: AlertSeverity,
+    pub timestamp: SystemTime,
+    pub resolved: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlertSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
 }
 
 impl Default for SystemHealthMetrics {
@@ -308,5 +499,72 @@ impl SystemHealthMetrics {
         let cpu_health = self.cpu_usage_percent < 90.0;
 
         exchange_health && memory_health && cpu_health
+    }
+
+    /// Check for alerts based on current health metrics and config
+    pub fn check_alerts(&self, config: &AlertConfig) -> Vec<SystemAlert> {
+        let mut alerts = Vec::new();
+
+        // Check exchange connectivity
+        let connected_exchanges = self.exchange_connections.values().filter(|&&connected| connected).count();
+        if connected_exchanges < config.min_exchange_connections {
+            alerts.push(SystemAlert {
+                alert_type: AlertType::ExchangeConnectivity,
+                message: format!("Only {}/{} exchanges connected (minimum required: {})",
+                               connected_exchanges, self.exchange_connections.len(), config.min_exchange_connections),
+                severity: AlertSeverity::High,
+                timestamp: SystemTime::now(),
+                resolved: false,
+            });
+        }
+
+        // Check memory usage
+        if self.memory_usage_mb > config.max_memory_usage_mb {
+            alerts.push(SystemAlert {
+                alert_type: AlertType::HighMemoryUsage,
+                message: format!("Memory usage is {:.1}MB (threshold: {:.1}MB)",
+                               self.memory_usage_mb, config.max_memory_usage_mb),
+                severity: AlertSeverity::Medium,
+                timestamp: SystemTime::now(),
+                resolved: false,
+            });
+        }
+
+        // Check CPU usage
+        if self.cpu_usage_percent > config.max_cpu_usage_percent {
+            alerts.push(SystemAlert {
+                alert_type: AlertType::HighCpuUsage,
+                message: format!("CPU usage is {:.1}% (threshold: {:.1}%)",
+                               self.cpu_usage_percent, config.max_cpu_usage_percent),
+                severity: AlertSeverity::Medium,
+                timestamp: SystemTime::now(),
+                resolved: false,
+            });
+        }
+
+        // Check error rate
+        if self.error_rate_per_minute > config.max_error_rate_threshold {
+            alerts.push(SystemAlert {
+                alert_type: AlertType::HighErrorRate,
+                message: format!("Error rate is {:.1} errors/minute (threshold: {:.1})",
+                               self.error_rate_per_minute, config.max_error_rate_threshold),
+                severity: AlertSeverity::High,
+                timestamp: SystemTime::now(),
+                resolved: false,
+            });
+        }
+
+        // Check overall system health
+        if !self.is_system_healthy() {
+            alerts.push(SystemAlert {
+                alert_type: AlertType::SystemUnhealthy,
+                message: "System is in unhealthy state".to_string(),
+                severity: AlertSeverity::Critical,
+                timestamp: SystemTime::now(),
+                resolved: false,
+            });
+        }
+
+        alerts
     }
 }
