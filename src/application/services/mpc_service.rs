@@ -2,6 +2,7 @@ use crate::domain::entities::exchange::Exchange;
 use crate::infrastructure::adapters::exchange_actor::ExchangeMessage;
 use crate::domain::services::strategies::{SignalCombiner, TradingSignal};
 use crate::domain::services::candle_builder::CandleBuilder;
+use crate::domain::services::metrics::{TradingMetrics, StrategyMetrics, SystemHealthMetrics};
 use crate::domain::value_objects::price::Price;
 use crate::domain::value_objects::quantity::Quantity;
 use crate::domain::entities::order::Order;
@@ -24,6 +25,8 @@ pub struct MpcService {
     pub open_positions: Arc<Mutex<HashMap<String, Position>>>,
     pub config: TradingConfig,
     pub trade_history: Arc<Mutex<Vec<(SystemTime, String)>>>, // (timestamp, symbol) for rate limiting
+    pub trading_metrics: Arc<Mutex<TradingMetrics>>,
+    pub system_health: Arc<Mutex<SystemHealthMetrics>>,
 }
 
 impl MpcService {
@@ -41,6 +44,8 @@ impl MpcService {
             open_positions: Arc::new(Mutex::new(HashMap::new())),
             config,
             trade_history: Arc::new(Mutex::new(Vec::new())),
+            trading_metrics: Arc::new(Mutex::new(TradingMetrics::new())),
+            system_health: Arc::new(Mutex::new(SystemHealthMetrics::new())),
         }
     }
 
@@ -678,6 +683,90 @@ impl MpcService {
         }
 
         Ok(())
+    }
+
+    /// Get current trading metrics
+    #[allow(dead_code)]
+    pub async fn get_trading_metrics(&self) -> TradingMetrics {
+        let metrics = self.trading_metrics.lock().await;
+        metrics.clone()
+    }
+
+    /// Get current system health metrics
+    #[allow(dead_code)]
+    pub async fn get_system_health(&self) -> SystemHealthMetrics {
+        let health = self.system_health.lock().await;
+        health.clone()
+    }
+
+    /// Record a completed trade in metrics
+    #[allow(dead_code)]
+    pub async fn record_trade(&self, pnl: Price, volume: f64, latency_ms: f64) {
+        let mut metrics = self.trading_metrics.lock().await;
+        metrics.record_trade(pnl, volume, latency_ms);
+    }
+
+    /// Update unrealized PnL in metrics
+    #[allow(dead_code)]
+    pub async fn update_unrealized_pnl(&self, unrealized_pnl: Price) {
+        let mut metrics = self.trading_metrics.lock().await;
+        metrics.update_unrealized_pnl(unrealized_pnl);
+    }
+
+    /// Update drawdown metrics
+    #[allow(dead_code)]
+    pub async fn update_drawdown(&self, current_drawdown: Price, max_drawdown: Price) {
+        let mut metrics = self.trading_metrics.lock().await;
+        metrics.update_drawdown(current_drawdown, max_drawdown);
+    }
+
+    /// Update system uptime
+    #[allow(dead_code)]
+    pub async fn update_uptime(&self, uptime: Duration) {
+        let mut metrics = self.trading_metrics.lock().await;
+        metrics.update_uptime(uptime);
+    }
+
+    /// Update exchange connection status
+    #[allow(dead_code)]
+    pub async fn update_exchange_connection(&self, exchange: String, connected: bool) {
+        let mut health = self.system_health.lock().await;
+        health.update_exchange_connection(exchange, connected);
+    }
+
+    /// Update WebSocket health for an exchange
+    #[allow(dead_code)]
+    pub async fn update_websocket_health(&self, exchange: String, time_since_last_message: Duration) {
+        let mut health = self.system_health.lock().await;
+        health.update_websocket_health(exchange, time_since_last_message);
+    }
+
+    /// Update system resource usage
+    #[allow(dead_code)]
+    pub async fn update_system_resources(&self, memory_mb: f64, cpu_percent: f64) {
+        let mut health = self.system_health.lock().await;
+        health.update_system_resources(memory_mb, cpu_percent);
+    }
+
+    /// Update trading status (active positions, pending orders)
+    #[allow(dead_code)]
+    pub async fn update_trading_status(&self, active_positions: u32, pending_orders: u32) {
+        let mut health = self.system_health.lock().await;
+        health.update_trading_status(active_positions, pending_orders);
+    }
+
+    /// Record an error for health monitoring
+    #[allow(dead_code)]
+    pub async fn record_error(&self) {
+        let mut health = self.system_health.lock().await;
+        health.record_error();
+    }
+
+    /// Check if system is healthy
+    #[allow(dead_code)]
+    pub async fn is_system_healthy(&self) -> bool {
+        let health = self.system_health.lock().await;
+        health.is_system_healthy()
     }
 }
 

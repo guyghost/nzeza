@@ -2,7 +2,10 @@ mod domain;
 mod application;
 mod infrastructure;
 mod config;
-use axum::{routing::{get, post, delete}, Router, Json, extract::{State, Path}};
+use axum::{routing::{get, post, delete}, Router, Json, extract::{State, Path, WebSocketUpgrade}};
+use axum::response::Response;
+use axum::extract::ws::{WebSocket, Message};
+use tokio::sync::broadcast;
 use std::net::SocketAddr;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
@@ -11,6 +14,12 @@ use crate::domain::services::strategies::{FastScalping, MomentumScalping, Conser
 use tracing::{info, error, warn, debug};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::collections::HashMap;
+
+#[derive(Clone)]
+struct AppState {
+    mpc_service: std::sync::Arc<MpcService>,
+    metrics_tx: broadcast::Sender<String>,
+}
 
 fn get_exchange_name(exchange: &Exchange) -> &'static str {
     match exchange {
@@ -98,31 +107,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Wrap mpc_service in Arc for sharing
-    let mpc_service = std::sync::Arc::new(mpc_service);
-    let mpc_service_shutdown = mpc_service.clone();
-    let mpc_service_supervision = mpc_service.clone();
+    // Create broadcast channel for real-time metrics
+    let (metrics_tx, _) = broadcast::channel::<String>(100);
+    let metrics_tx_clone = metrics_tx.clone();
+
+    let app_state = AppState {
+        mpc_service: std::sync::Arc::new(mpc_service),
+        metrics_tx: metrics_tx_clone,
+    };
 
     // Spawn supervision task
+    let app_state_clone = app_state.clone();
     tokio::spawn(async move {
-        supervision_task(mpc_service_supervision).await;
+        supervision_task(app_state_clone).await;
     });
 
     // Spawn price collection and signal generation task
-    let mpc_service_signals = mpc_service.clone();
+    let app_state_clone = app_state.clone();
     tokio::spawn(async move {
-        signal_generation_task(mpc_service_signals).await;
+        signal_generation_task(app_state_clone).await;
     });
 
     // Spawn order execution task
-    let mpc_service_orders = mpc_service.clone();
+    let app_state_clone = app_state.clone();
     tokio::spawn(async move {
-        order_execution_task(mpc_service_orders).await;
+        order_execution_task(app_state_clone).await;
+    });
+
+    // Spawn metrics broadcasting task
+    let app_state_clone = app_state.clone();
+    tokio::spawn(async move {
+        metrics_broadcast_task(app_state_clone, metrics_tx).await;
     });
 
     let app = Router::new()
         .route("/", get(|| async { "MPC Trading Server with Indicators and Strategies is running!" }))
         .route("/health", get(health_check))
+        .route("/metrics", get(get_metrics))
+        .route("/ws/metrics", get(metrics_websocket_handler))
         .route("/prices", get(get_all_prices))
         .route("/prices/:symbol", get(get_symbol_price))
         .route("/signals", get(get_all_signals))
@@ -136,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/positions/pnl", get(get_total_pnl))
         .route("/config", get(get_config))
         .route("/candles/:symbol", get(get_symbol_candles))
-        .with_state(mpc_service.clone());
+        .with_state(app_state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     info!("Listening on {}", addr);
@@ -179,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Server shutting down gracefully...");
 
     // Shutdown all actors
-    mpc_service_shutdown.shutdown().await;
+    app_state.mpc_service.shutdown().await;
 
     info!("Shutdown complete");
     Ok(())
@@ -187,9 +209,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Health check endpoint
 async fn health_check(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
 ) -> Json<HashMap<String, serde_json::Value>> {
-    let health = mpc_service.check_all_actors_health().await;
+    let health = app_state.mpc_service.check_all_actors_health().await;
 
     let mut response = HashMap::new();
     response.insert("status".to_string(), serde_json::json!("running"));
@@ -208,14 +230,22 @@ async fn health_check(
 }
 
 /// Background supervision task that periodically checks actor health
-async fn supervision_task(mpc_service: std::sync::Arc<MpcService>) {
+async fn supervision_task(app_state: AppState) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
 
     loop {
         interval.tick().await;
 
         info!("Vérification périodique de santé des acteurs...");
-        let health = mpc_service.check_all_actors_health().await;
+        let health = app_state.mpc_service.check_all_actors_health().await;
+
+        // Update system health metrics
+        for (exchange, is_healthy) in &health {
+            app_state.mpc_service.update_exchange_connection(
+                format!("{:?}", exchange),
+                *is_healthy
+            ).await;
+        }
 
         let unhealthy_count = health.values().filter(|&&v| !v).count();
         if unhealthy_count > 0 {
@@ -236,43 +266,54 @@ async fn supervision_task(mpc_service: std::sync::Arc<MpcService>) {
 }
 
 /// Background task for price collection and signal generation
-async fn signal_generation_task(mpc_service: std::sync::Arc<MpcService>) {
+async fn signal_generation_task(app_state: AppState) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
 
     loop {
         interval.tick().await;
 
         // Get all tracked symbols and normalize them
-        let symbols = mpc_service.get_all_symbols().await;
+        let symbols = app_state.mpc_service.get_all_symbols().await;
         let mut normalized_symbols = std::collections::HashSet::new();
-        
-        for symbol in symbols {
-            let normalized = crate::config::TradingConfig::normalize_symbol(&symbol);
+
+        for symbol in &symbols {
+            let normalized = crate::config::TradingConfig::normalize_symbol(symbol);
             normalized_symbols.insert(normalized);
         }
 
         for normalized_symbol in normalized_symbols {
             // Get aggregated price for the normalized symbol
-            if let Ok(aggregated_price) = mpc_service.get_aggregated_price(&normalized_symbol).await {
+            if let Ok(aggregated_price) = app_state.mpc_service.get_aggregated_price(&normalized_symbol).await {
                 info!("Prix agrégé pour {}: {:.2}", normalized_symbol, aggregated_price.value());
                 // Update candle builder
-                mpc_service.update_candle(normalized_symbol.clone(), aggregated_price).await;
+                app_state.mpc_service.update_candle(normalized_symbol.clone(), aggregated_price).await;
 
                 // Try to generate signal
-                if let Ok(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+                if let Ok(signal) = app_state.mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
                     info!(
                         "Signal for {}: {:?} (confidence: {:.2})",
                         normalized_symbol, signal.signal, signal.confidence
                     );
 
                     // Store the signal for automated execution
-                    mpc_service.store_signal(normalized_symbol.clone(), signal).await;
+                    app_state.mpc_service.store_signal(normalized_symbol.clone(), signal).await;
                 }
 
-                // Update position prices
-                if let Err(e) = mpc_service.update_position_prices().await {
+                // Update position prices and metrics
+                if let Err(e) = app_state.mpc_service.update_position_prices().await {
                     debug!("Failed to update position prices: {}", e);
                 }
+
+                // Update trading metrics
+                let positions = app_state.mpc_service.get_open_positions().await;
+                let total_unrealized_pnl = app_state.mpc_service.get_total_unrealized_pnl().await;
+                app_state.mpc_service.update_unrealized_pnl(total_unrealized_pnl).await;
+
+                // Update system health with position count
+                app_state.mpc_service.update_trading_status(
+                    positions.len() as u32,
+                    0 // TODO: track pending orders
+                ).await;
             } else {
                 debug!("Impossible d'obtenir le prix agrégé pour {}", normalized_symbol);
             }
@@ -281,30 +322,34 @@ async fn signal_generation_task(mpc_service: std::sync::Arc<MpcService>) {
 }
 
 /// Background task for order execution based on signals
-async fn order_execution_task(mpc_service: std::sync::Arc<MpcService>) {
+async fn order_execution_task(app_state: AppState) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30)); // Check every 30 seconds
 
     loop {
         interval.tick().await;
 
         info!("🔍 Checking for orders to execute...");
-        let results = mpc_service.check_and_execute_orders().await;
-        
+        let results = app_state.mpc_service.check_and_execute_orders().await;
+
         let successful_orders = results.iter().filter(|r| r.is_ok()).count();
         let failed_orders = results.iter().filter(|r| r.is_err()).count();
 
         if successful_orders > 0 {
             info!("✅ {} orders executed successfully", successful_orders);
         }
-        
+
         if failed_orders > 0 {
             warn!("❌ {} orders failed to execute", failed_orders);
+            // Record errors in system health
+            for _ in 0..failed_orders {
+                app_state.mpc_service.record_error().await;
+            }
         }
 
         // Check for stop-loss and take-profit triggers
-        let stop_results = mpc_service.check_and_execute_stops().await;
+        let stop_results = app_state.mpc_service.check_and_execute_stops().await;
         let stops_triggered = stop_results.iter().filter(|r| r.is_ok()).count();
-        
+
         if stops_triggered > 0 {
             info!("🛑 {} positions closed due to stops", stops_triggered);
         }
@@ -317,20 +362,20 @@ async fn order_execution_task(mpc_service: std::sync::Arc<MpcService>) {
 
 /// Get aggregated prices for all symbols
 async fn get_all_prices(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
 ) -> Json<HashMap<String, serde_json::Value>> {
-    let symbols = mpc_service.get_all_symbols().await;
+    let symbols = app_state.mpc_service.get_all_symbols().await;
     let mut normalized_symbols = std::collections::HashSet::new();
     
-    for symbol in symbols {
-        let normalized = crate::config::TradingConfig::normalize_symbol(&symbol);
+    for symbol in &symbols {
+        let normalized = crate::config::TradingConfig::normalize_symbol(symbol);
         normalized_symbols.insert(normalized);
     }
     
     let mut prices = HashMap::new();
 
     for normalized_symbol in normalized_symbols {
-        if let Ok(price) = mpc_service.get_aggregated_price(&normalized_symbol).await {
+        if let Ok(price) = app_state.mpc_service.get_aggregated_price(&normalized_symbol).await {
             prices.insert(normalized_symbol, serde_json::json!({
                 "price": price.value(),
                 "aggregated": true
@@ -343,11 +388,11 @@ async fn get_all_prices(
 
 /// Get aggregated price for a specific symbol
 async fn get_symbol_price(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
-    match mpc_service.get_aggregated_price(&normalized_symbol).await {
+    match app_state.mpc_service.get_aggregated_price(&normalized_symbol).await {
         Ok(price) => Json(serde_json::json!({
             "symbol": symbol,
             "normalized_symbol": normalized_symbol,
@@ -627,8 +672,9 @@ async fn get_total_pnl(
 
 /// Get current configuration
 async fn get_config(
-    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    State(app_state): State<AppState>,
 ) -> Json<serde_json::Value> {
+    let mpc_service = &app_state.mpc_service;
     Json(serde_json::json!({
         "min_confidence_threshold": mpc_service.config.min_confidence_threshold,
         "max_positions_per_symbol": mpc_service.config.max_positions_per_symbol,
@@ -642,4 +688,112 @@ async fn get_config(
         "max_trades_per_day": mpc_service.config.max_trades_per_day,
         "symbols_count": mpc_service.config.symbols.len()
     }))
+}
+
+/// Get current trading metrics
+async fn get_metrics(
+    State(app_state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let trading_metrics = app_state.mpc_service.get_trading_metrics().await;
+    let system_health = app_state.mpc_service.get_system_health().await;
+
+    Json(serde_json::json!({
+        "trading": {
+            "total_realized_pnl": trading_metrics.total_realized_pnl.value(),
+            "total_unrealized_pnl": trading_metrics.total_unrealized_pnl.value(),
+            "total_equity": trading_metrics.current_equity().value(),
+            "winning_trades": trading_metrics.winning_trades,
+            "losing_trades": trading_metrics.losing_trades,
+            "total_trades": trading_metrics.total_trades,
+            "win_rate": trading_metrics.win_rate,
+            "profit_factor": trading_metrics.profit_factor,
+            "max_drawdown": trading_metrics.max_drawdown.value(),
+            "current_drawdown": trading_metrics.current_drawdown.value(),
+            "sharpe_ratio": trading_metrics.sharpe_ratio,
+            "total_volume": trading_metrics.total_volume,
+            "avg_trade_latency_ms": trading_metrics.avg_trade_latency_ms,
+            "expectancy": trading_metrics.expectancy().value(),
+            "uptime_seconds": trading_metrics.uptime.as_secs()
+        },
+        "system": {
+            "exchange_connections": system_health.exchange_connections,
+            "memory_usage_mb": system_health.memory_usage_mb,
+            "cpu_usage_percent": system_health.cpu_usage_percent,
+            "active_positions": system_health.active_positions,
+            "pending_orders": system_health.pending_orders,
+            "error_rate_per_minute": system_health.error_rate_per_minute,
+            "is_healthy": system_health.is_system_healthy()
+        },
+        "timestamp": trading_metrics.last_updated
+    }))
+}
+
+/// WebSocket handler for real-time metrics streaming
+async fn metrics_websocket_handler(
+    ws: WebSocketUpgrade,
+    State(app_state): State<AppState>,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_metrics_socket(socket, app_state))
+}
+
+/// Handle WebSocket connection for metrics streaming
+async fn handle_metrics_socket(mut socket: WebSocket, app_state: AppState) {
+    info!("New WebSocket connection for metrics streaming");
+
+    // Subscribe to the broadcast channel
+    let mut rx = app_state.metrics_tx.subscribe();
+
+    // Send initial metrics
+    if let Ok(metrics_json) = serde_json::to_string(&get_metrics(State(app_state.clone())).await.0) {
+        if socket.send(Message::Text(metrics_json)).await.is_err() {
+            return;
+        }
+    }
+
+    // Listen for new metrics and forward to client
+    while let Ok(msg) = rx.recv().await {
+        if socket.send(Message::Text(msg)).await.is_err() {
+            break; // Client disconnected
+        }
+    }
+
+    info!("WebSocket connection closed");
+}
+
+/// Background task that broadcasts metrics updates
+async fn metrics_broadcast_task(app_state: AppState, tx: broadcast::Sender<String>) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5)); // Update every 5 seconds
+
+    loop {
+        interval.tick().await;
+
+        // Collect current metrics
+        let trading_metrics = app_state.mpc_service.get_trading_metrics().await;
+        let system_health = app_state.mpc_service.get_system_health().await;
+
+        // Create metrics payload
+        let metrics_payload = serde_json::json!({
+            "type": "metrics_update",
+            "trading": {
+                "total_realized_pnl": trading_metrics.total_realized_pnl.value(),
+                "total_unrealized_pnl": trading_metrics.total_unrealized_pnl.value(),
+                "total_equity": trading_metrics.current_equity().value(),
+                "win_rate": trading_metrics.win_rate,
+                "total_trades": trading_metrics.total_trades,
+                "active_positions": system_health.active_positions
+            },
+            "system": {
+                "is_healthy": system_health.is_system_healthy(),
+                "exchange_connections": system_health.exchange_connections.len(),
+                "memory_usage_mb": system_health.memory_usage_mb,
+                "cpu_usage_percent": system_health.cpu_usage_percent
+            },
+            "timestamp": trading_metrics.last_updated
+        });
+
+        // Broadcast to all connected WebSocket clients
+        if let Ok(json_str) = serde_json::to_string(&metrics_payload) {
+            let _ = tx.send(json_str); // Ignore errors if no receivers
+        }
+    }
 }
