@@ -25,6 +25,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_exchange_equality() {
+        assert_eq!(Exchange::Binance, Exchange::Binance);
+        assert_ne!(Exchange::Binance, Exchange::Dydx);
+    }
+
+    #[test]
     fn test_exchange_name_dydx() {
         assert_eq!(Exchange::Dydx.name(), "dydx");
     }
@@ -37,11 +43,5 @@ mod tests {
     #[test]
     fn test_exchange_name_kraken() {
         assert_eq!(Exchange::Kraken.name(), "kraken");
-    }
-
-    #[test]
-    fn test_exchange_equality() {
-        assert_eq!(Exchange::Binance, Exchange::Binance);
-        assert_ne!(Exchange::Binance, Exchange::Dydx);
     }
 }

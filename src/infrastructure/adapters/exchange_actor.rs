@@ -8,6 +8,10 @@ use tokio::sync::Mutex;
 use std::collections::{HashMap, HashSet};
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::value_objects::price::Price;
+use chrono::Utc;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use base64::{Engine as _, engine::general_purpose};
 use tracing::{info, warn, error, debug};
 
 #[derive(Debug, Clone)]
@@ -16,6 +20,8 @@ pub enum SubscriptionCommand {
     Unsubscribe(String),
 }
 
+use crate::domain::entities::order::{Order, OrderSide, OrderType};
+
 #[derive(Debug)]
 pub enum ExchangeMessage {
     GetPrice { symbol: String, reply: mpsc::Sender<Result<Price, String>> },
@@ -23,6 +29,9 @@ pub enum ExchangeMessage {
     Unsubscribe { symbol: String, reply: mpsc::Sender<Result<(), String>> },
     GetSubscriptions { reply: mpsc::Sender<Vec<String>> },
     HealthCheck { reply: mpsc::Sender<bool> },
+    PlaceOrder { order: Order, reply: mpsc::Sender<Result<String, String>> },
+    CancelOrder { order_id: String, reply: mpsc::Sender<Result<(), String>> },
+    GetOrderStatus { order_id: String, reply: mpsc::Sender<Result<String, String>> },
     Shutdown,
 }
 
@@ -145,6 +154,21 @@ impl ExchangeActor {
                     let is_healthy = last_heartbeat.elapsed() < tokio::time::Duration::from_secs(30);
                     let _ = reply.send(is_healthy).await;
                     debug!("Health check for {}: {}", Self::get_exchange_name(&self.exchange), is_healthy);
+                }
+                ExchangeMessage::PlaceOrder { order, reply } => {
+                    info!("Place order request for {}: {:?}", Self::get_exchange_name(&self.exchange), order.id);
+                    let result = Self::place_order(&self.exchange, &order).await;
+                    let _ = reply.send(result).await;
+                }
+                ExchangeMessage::CancelOrder { order_id, reply } => {
+                    info!("Cancel order request for {}: {}", Self::get_exchange_name(&self.exchange), order_id);
+                    let result = Self::cancel_order(&self.exchange, &order_id).await;
+                    let _ = reply.send(result).await;
+                }
+                ExchangeMessage::GetOrderStatus { order_id, reply } => {
+                    debug!("Get order status request for {}: {}", Self::get_exchange_name(&self.exchange), order_id);
+                    let result = Self::get_order_status(&self.exchange, &order_id).await;
+                    let _ = reply.send(result).await;
                 }
                 ExchangeMessage::Shutdown => {
                     info!("Shutdown signal received for exchange: {}", Self::get_exchange_name(&self.exchange));
@@ -422,6 +446,216 @@ impl ExchangeActor {
             }
         }
     }
+
+    /// Place an order on the exchange
+    async fn place_order(exchange: &Exchange, order: &Order) -> Result<String, String> {
+        match exchange {
+            Exchange::Dydx => Self::place_order_dydx(order).await,
+            _ => Err(format!("Order placement not implemented for {:?}", exchange)),
+        }
+    }
+
+    /// Cancel an order on the exchange
+    async fn cancel_order(exchange: &Exchange, order_id: &str) -> Result<(), String> {
+        match exchange {
+            Exchange::Dydx => Self::cancel_order_dydx(order_id).await,
+            _ => Err(format!("Order cancellation not implemented for {:?}", exchange)),
+        }
+    }
+
+    /// Get order status from the exchange
+    async fn get_order_status(exchange: &Exchange, order_id: &str) -> Result<String, String> {
+        match exchange {
+            Exchange::Dydx => Self::get_order_status_dydx(order_id).await,
+            _ => Err(format!("Order status not implemented for {:?}", exchange)),
+        }
+    }
+
+    /// Place order on dYdX v4
+    async fn place_order_dydx(order: &Order) -> Result<String, String> {
+        // Get credentials from environment variables
+        let api_key = std::env::var("DYDX_API_KEY")
+            .map_err(|_| "DYDX_API_KEY environment variable not set")?;
+        let api_secret = std::env::var("DYDX_API_SECRET")
+            .map_err(|_| "DYDX_API_SECRET environment variable not set")?;
+        let api_passphrase = std::env::var("DYDX_API_PASSPHRASE")
+            .map_err(|_| "DYDX_API_PASSPHRASE environment variable not set")?;
+        let ethereum_address = std::env::var("DYDX_ETHEREUM_ADDRESS")
+            .map_err(|_| "DYDX_ETHEREUM_ADDRESS environment variable not set")?;
+
+        // Create order payload
+        let side = match order.side {
+            OrderSide::Buy => "BUY",
+            OrderSide::Sell => "SELL",
+        };
+
+        let order_type = match order.order_type {
+            OrderType::Market => "MARKET",
+            OrderType::Limit => "LIMIT",
+        };
+
+        let timestamp = Utc::now().timestamp_millis();
+        let client_id = format!("client_id_{}", timestamp);
+
+        let payload = serde_json::json!({
+            "market": order.symbol,
+            "side": side,
+            "type": order_type,
+            "size": order.quantity.value().to_string(),
+            "price": order.price.map(|p| p.value().to_string()).unwrap_or_else(|| "0".to_string()),
+            "clientId": client_id,
+            "timeInForce": "GTT",
+            "goodTilTimeInSeconds": (timestamp / 1000) + 300, // 5 minutes
+            "reduceOnly": false,
+            "postOnly": false
+        });
+
+        // Create signature
+        let method = "POST";
+        let path = "/v4/orders";
+        let body = payload.to_string();
+
+        let signature = Self::create_dydx_signature(&api_secret, method, path, &body, timestamp)?;
+
+        // Make API request
+        let client = reqwest::Client::new();
+        let response = client
+            .post("https://api.dydx.exchange/v4/orders")
+            .header("DYDX-SIGNATURE", signature)
+            .header("DYDX-API-KEY", api_key)
+            .header("DYDX-PASSPHRASE", api_passphrase)
+            .header("DYDX-TIMESTAMP", timestamp.to_string())
+            .header("DYDX-ETHEREUM-ADDRESS", ethereum_address)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to send order request: {}", e))?;
+
+        if response.status().is_success() {
+            let response_json: serde_json::Value = response.json().await
+                .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+            if let Some(order_id) = response_json["order"]["id"].as_str() {
+                info!("🚀 dYdX order placed successfully: {} {} {} at {}",
+                      order.side, order.quantity.value(), order.symbol,
+                      order.price.map_or("market".to_string(), |p| format!("{:.2}", p.value())));
+                Ok(order_id.to_string())
+            } else {
+                Err("Order placed but no order ID in response".to_string())
+            }
+        } else {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            Err(format!("dYdX API error: {}", error_text))
+        }
+    }
+
+    /// Cancel order on dYdX v4
+    async fn cancel_order_dydx(order_id: &str) -> Result<(), String> {
+        // Get credentials from environment variables
+        let api_key = std::env::var("DYDX_API_KEY")
+            .map_err(|_| "DYDX_API_KEY environment variable not set")?;
+        let api_secret = std::env::var("DYDX_API_SECRET")
+            .map_err(|_| "DYDX_API_SECRET environment variable not set")?;
+        let api_passphrase = std::env::var("DYDX_API_PASSPHRASE")
+            .map_err(|_| "DYDX_API_PASSPHRASE environment variable not set")?;
+        let ethereum_address = std::env::var("DYDX_ETHEREUM_ADDRESS")
+            .map_err(|_| "DYDX_ETHEREUM_ADDRESS environment variable not set")?;
+
+        let timestamp = Utc::now().timestamp_millis();
+
+        // Create signature
+        let method = "DELETE";
+        let path = &format!("/v4/orders/{}", order_id);
+        let body = "";
+
+        let signature = Self::create_dydx_signature(&api_secret, method, path, body, timestamp)?;
+
+        // Make API request
+        let client = reqwest::Client::new();
+        let response = client
+            .delete(&format!("https://api.dydx.exchange{}", path))
+            .header("DYDX-SIGNATURE", signature)
+            .header("DYDX-API-KEY", api_key)
+            .header("DYDX-PASSPHRASE", api_passphrase)
+            .header("DYDX-TIMESTAMP", timestamp.to_string())
+            .header("DYDX-ETHEREUM-ADDRESS", ethereum_address)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to send cancel request: {}", e))?;
+
+        if response.status().is_success() {
+            info!("❌ dYdX order cancelled successfully: {}", order_id);
+            Ok(())
+        } else {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            Err(format!("dYdX API error: {}", error_text))
+        }
+    }
+
+    /// Get order status from dYdX v4
+    async fn get_order_status_dydx(order_id: &str) -> Result<String, String> {
+        // Get credentials from environment variables
+        let api_key = std::env::var("DYDX_API_KEY")
+            .map_err(|_| "DYDX_API_KEY environment variable not set")?;
+        let api_secret = std::env::var("DYDX_API_SECRET")
+            .map_err(|_| "DYDX_API_SECRET environment variable not set")?;
+        let api_passphrase = std::env::var("DYDX_API_PASSPHRASE")
+            .map_err(|_| "DYDX_API_PASSPHRASE environment variable not set")?;
+        let ethereum_address = std::env::var("DYDX_ETHEREUM_ADDRESS")
+            .map_err(|_| "DYDX_ETHEREUM_ADDRESS environment variable not set")?;
+
+        let timestamp = Utc::now().timestamp_millis();
+
+        // Create signature
+        let method = "GET";
+        let path = &format!("/v4/orders/{}", order_id);
+        let body = "";
+
+        let signature = Self::create_dydx_signature(&api_secret, method, path, body, timestamp)?;
+
+        // Make API request
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&format!("https://api.dydx.exchange{}", path))
+            .header("DYDX-SIGNATURE", signature)
+            .header("DYDX-API-KEY", api_key)
+            .header("DYDX-PASSPHRASE", api_passphrase)
+            .header("DYDX-TIMESTAMP", timestamp.to_string())
+            .header("DYDX-ETHEREUM-ADDRESS", ethereum_address)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to send status request: {}", e))?;
+
+        if response.status().is_success() {
+            let response_json: serde_json::Value = response.json().await
+                .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+            if let Some(status) = response_json["order"]["status"].as_str() {
+                Ok(status.to_string())
+            } else {
+                Ok("UNKNOWN".to_string())
+            }
+        } else {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            Err(format!("dYdX API error: {}", error_text))
+        }
+    }
+
+    /// Create HMAC-SHA256 signature for dYdX API
+    fn create_dydx_signature(secret: &str, method: &str, path: &str, body: &str, timestamp: i64) -> Result<String, String> {
+        let message = format!("{}{}{}{}", timestamp, method, path, body);
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+            .map_err(|e| format!("Failed to create HMAC: {}", e))?;
+
+        mac.update(message.as_bytes());
+
+        let result = mac.finalize();
+        let signature_bytes = result.into_bytes();
+
+        Ok(general_purpose::STANDARD.encode(&signature_bytes))
+    }
 }
 
 #[cfg(test)]
@@ -459,6 +693,15 @@ impl MockExchangeActor {
                 }
                 ExchangeMessage::HealthCheck { reply } => {
                     let _ = reply.send(true).await;
+                }
+                ExchangeMessage::PlaceOrder { order: _, reply } => {
+                    let _ = reply.send(Ok("mock_order_id".to_string())).await;
+                }
+                ExchangeMessage::CancelOrder { order_id: _, reply } => {
+                    let _ = reply.send(Ok(())).await;
+                }
+                ExchangeMessage::GetOrderStatus { order_id: _, reply } => {
+                    let _ = reply.send(Ok("FILLED".to_string())).await;
                 }
                 ExchangeMessage::Shutdown => {
                     break;

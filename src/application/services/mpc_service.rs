@@ -1,13 +1,14 @@
 use crate::domain::entities::exchange::Exchange;
-use crate::domain::value_objects::price::Price;
 use crate::infrastructure::adapters::exchange_actor::ExchangeMessage;
 use crate::domain::services::strategies::{SignalCombiner, TradingSignal};
 use crate::domain::services::candle_builder::CandleBuilder;
+use crate::domain::value_objects::price::Price;
+use crate::domain::entities::order::Order;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, error};
 
 pub struct MpcService {
     pub senders: HashMap<Exchange, mpsc::Sender<ExchangeMessage>>,
@@ -268,20 +269,63 @@ impl MpcService {
         builder.get_candles(symbol)
     }
 
-    /// Generate signal for a specific symbol
+    /// Generate trading signal for a specific symbol
     #[allow(dead_code)]
     pub async fn generate_signal_for_symbol(&self, symbol: &str) -> Option<TradingSignal> {
         let candles = self.get_candles(symbol).await;
-        if candles.len() < 30 {
-            return None; // Need at least 30 candles for strategies
+        if candles.len() >= 10 { // Need minimum candles for signal generation
+            self.generate_trading_signal(&candles)
+        } else {
+            None
         }
-        let signal = self.generate_trading_signal(&candles)?;
-        
-        // Store the signal
-        let mut last_signals = self.last_signals.lock().await;
-        last_signals.insert(symbol.to_string(), signal.clone());
-        
-        Some(signal)
+    }
+
+    /// Place an order on a specific exchange
+    #[allow(dead_code)]
+    pub async fn place_order(&self, exchange: &Exchange, order: Order) -> Result<String, String> {
+        if let Some(sender) = self.senders.get(exchange) {
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
+            let msg = ExchangeMessage::PlaceOrder {
+                order,
+                reply: reply_tx,
+            };
+            sender.send(msg).await.map_err(|e| e.to_string())?;
+            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+        } else {
+            Err(format!("No actor for {:?}", exchange))
+        }
+    }
+
+    /// Cancel an order on a specific exchange
+    #[allow(dead_code)]
+    pub async fn cancel_order(&self, exchange: &Exchange, order_id: &str) -> Result<(), String> {
+        if let Some(sender) = self.senders.get(exchange) {
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
+            let msg = ExchangeMessage::CancelOrder {
+                order_id: order_id.to_string(),
+                reply: reply_tx,
+            };
+            sender.send(msg).await.map_err(|e| e.to_string())?;
+            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+        } else {
+            Err(format!("No actor for {:?}", exchange))
+        }
+    }
+
+    /// Get order status from a specific exchange
+    #[allow(dead_code)]
+    pub async fn get_order_status(&self, exchange: &Exchange, order_id: &str) -> Result<String, String> {
+        if let Some(sender) = self.senders.get(exchange) {
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
+            let msg = ExchangeMessage::GetOrderStatus {
+                order_id: order_id.to_string(),
+                reply: reply_tx,
+            };
+            sender.send(msg).await.map_err(|e| e.to_string())?;
+            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+        } else {
+            Err(format!("No actor for {:?}", exchange))
+        }
     }
 
     /// Get last signal for a symbol
@@ -331,22 +375,31 @@ impl MpcService {
             symbol
         );
 
-        // For now, we'll simulate order execution since we don't have actual exchange integration
-        // In a real implementation, this would send orders to exchanges
+        // Create the order
         let order = Order::new(
             order_id,
             symbol.to_string(),
-            order_side,
+            order_side.clone(),
             OrderType::Market,
             None, // Market order has no price
             quantity,
         ).map_err(|e| format!("Failed to create order: {}", e))?;
 
-        info!("🚀 ORDER EXECUTED: {:?} {} {} at market price (confidence: {:.2})", 
-              order.side, order.quantity.value(), symbol, signal.confidence);
+        // Place order on dYdX (for now, only dYdX is implemented)
+        let order_result = self.place_order(&Exchange::Dydx, order).await;
 
-        Ok(format!("Order executed: {:?} {} {} at market price", 
-                  order.side, order.quantity.value(), symbol))
+        match order_result {
+            Ok(order_id) => {
+                info!("🚀 ORDER EXECUTED on dYdX: {:?} {} {} (confidence: {:.2}) - Order ID: {}",
+                      order_side, quantity, symbol, signal.confidence, order_id);
+                Ok(format!("Order executed on dYdX: {:?} {} {} - Order ID: {}", 
+                          order_side, quantity, symbol, order_id))
+            },
+            Err(e) => {
+                error!("Failed to execute order on dYdX: {}", e);
+                Err(format!("Failed to execute order: {}", e))
+            }
+        }
     }
 
     /// Check and execute orders for all symbols with signals

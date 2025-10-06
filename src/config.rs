@@ -17,6 +17,7 @@ impl TradingConfig {
             vec![
                 "BTCUSDT".to_string(),
                 "ETHUSDT".to_string(),
+                "SOLUSDT".to_string(),
             ],
         );
 
@@ -26,6 +27,7 @@ impl TradingConfig {
             vec![
                 "BTC-USD".to_string(),
                 "ETH-USD".to_string(),
+                "SOL-USD".to_string(),
             ],
         );
 
@@ -35,6 +37,7 @@ impl TradingConfig {
             vec![
                 "BTC-USD".to_string(),
                 "ETH-USD".to_string(),
+                "SOL-USD".to_string(),
             ],
         );
 
@@ -44,6 +47,7 @@ impl TradingConfig {
             vec![
                 "BTC".to_string(),
                 "ETH".to_string(),
+                "SOL".to_string(),
             ],
         );
 
@@ -53,6 +57,7 @@ impl TradingConfig {
             vec![
                 "BTC/USD".to_string(),
                 "ETH/USD".to_string(),
+                "SOL/USD".to_string(),
             ],
         );
 
@@ -103,7 +108,10 @@ mod tests {
         let config = TradingConfig::default();
         assert!(config.symbols.contains_key(&Exchange::Binance));
         assert!(config.symbols.contains_key(&Exchange::Coinbase));
-        assert_eq!(config.symbols.get(&Exchange::Binance).unwrap().len(), 2);
+        assert!(config.symbols.contains_key(&Exchange::Dydx));
+        assert_eq!(config.symbols.get(&Exchange::Binance).unwrap().len(), 3);
+        assert_eq!(config.symbols.get(&Exchange::Coinbase).unwrap().len(), 3);
+        assert_eq!(config.symbols.get(&Exchange::Dydx).unwrap().len(), 3);
     }
 
     #[test]

@@ -2,7 +2,7 @@ mod domain;
 mod application;
 mod infrastructure;
 mod config;
-use axum::{routing::{get, post}, Router, Json, extract::{State, Path}};
+use axum::{routing::{get, post, delete}, Router, Json, extract::{State, Path}};
 use std::net::SocketAddr;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
@@ -109,6 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/signals/:symbol", get(get_symbol_signal))
         .route("/orders/execute", post(execute_pending_orders))
         .route("/orders/:symbol/execute", post(execute_symbol_order))
+        .route("/orders/place", post(place_manual_order))
+        .route("/orders/cancel/:order_id", delete(cancel_order))
+        .route("/orders/status/:order_id", get(get_order_status))
         .route("/candles/:symbol", get(get_symbol_candles))
         .with_state(mpc_service.clone());
 
@@ -387,22 +390,22 @@ async fn execute_pending_orders(
     }))
 }
 
-/// Execute order for a specific symbol
+/// Execute orders for a specific symbol
 async fn execute_symbol_order(
     State(mpc_service): State<std::sync::Arc<MpcService>>,
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
     
-    if let Some(signal) = mpc_service.get_last_signal(&normalized_symbol).await {
+    if let Some(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
         match mpc_service.execute_order_from_signal(&normalized_symbol, &signal).await {
             Ok(msg) => Json(serde_json::json!({
                 "success": true,
                 "symbol": symbol,
                 "normalized_symbol": normalized_symbol,
-                "message": msg,
                 "signal": format!("{:?}", signal.signal),
-                "confidence": signal.confidence
+                "confidence": signal.confidence,
+                "message": msg
             })),
             Err(e) => Json(serde_json::json!({
                 "success": false,
@@ -417,6 +420,105 @@ async fn execute_symbol_order(
             "symbol": symbol,
             "normalized_symbol": normalized_symbol,
             "error": "No signal available for this symbol"
+        }))
+    }
+}
+
+/// Place a manual order
+async fn place_manual_order(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<serde_json::Value>)> {
+    use crate::domain::entities::order::{Order, OrderSide, OrderType};
+
+    // Parse the payload
+    let symbol = payload["symbol"].as_str()
+        .ok_or((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Missing symbol field"}))))?;
+
+    let side_str = payload["side"].as_str()
+        .ok_or((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Missing side field"}))))?;
+
+    let quantity = payload["quantity"].as_f64()
+        .ok_or((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Missing or invalid quantity field"}))))?;
+
+    let order_type_str = payload.get("order_type").and_then(|v| v.as_str()).unwrap_or("market");
+    let price = payload.get("price").and_then(|v| v.as_f64());
+
+    // Parse side
+    let side = match side_str.to_uppercase().as_str() {
+        "BUY" => OrderSide::Buy,
+        "SELL" => OrderSide::Sell,
+        _ => return Err((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid side. Must be 'BUY' or 'SELL'"})))),
+    };
+
+    // Parse order type
+    let order_type = match order_type_str.to_uppercase().as_str() {
+        "MARKET" => OrderType::Market,
+        "LIMIT" => OrderType::Limit,
+        _ => return Err((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid order_type. Must be 'MARKET' or 'LIMIT'"})))),
+    };
+
+    // Generate order ID
+    let order_id = format!("manual_order_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+
+    // Create order
+    let order = match Order::new(
+        order_id,
+        symbol.to_string(),
+        side,
+        order_type,
+        price,
+        quantity,
+    ) {
+        Ok(order) => order,
+        Err(e) => return Err((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("Failed to create order: {}", e)})))),
+    };
+
+    // Place order on dYdX
+    match mpc_service.place_order(&crate::domain::entities::exchange::Exchange::Dydx, order).await {
+        Ok(order_id) => Ok(Json(serde_json::json!({
+            "success": true,
+            "order_id": order_id,
+            "message": "Order placed successfully on dYdX"
+        }))),
+        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            "success": false,
+            "error": e
+        })))),
+    }
+}
+
+/// Cancel an order
+async fn cancel_order(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    Path(order_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match mpc_service.cancel_order(&crate::domain::entities::exchange::Exchange::Dydx, &order_id).await {
+        Ok(()) => Json(serde_json::json!({
+            "success": true,
+            "message": format!("Order {} cancelled successfully", order_id)
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": e
+        }))
+    }
+}
+
+/// Get order status
+async fn get_order_status(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    Path(order_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match mpc_service.get_order_status(&crate::domain::entities::exchange::Exchange::Dydx, &order_id).await {
+        Ok(status) => Json(serde_json::json!({
+            "success": true,
+            "order_id": order_id,
+            "status": status
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": e
         }))
     }
 }
