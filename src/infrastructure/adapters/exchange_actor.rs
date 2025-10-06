@@ -18,6 +18,7 @@ pub enum SubscriptionCommand {
 }
 
 use crate::domain::entities::order::Order;
+use crate::infrastructure::dydx_client::{DydxClient, DydxConfig};
 
 #[derive(Debug)]
 pub enum ExchangeMessage {
@@ -61,6 +62,7 @@ pub struct ExchangeActor {
     pub shutdown_tx: broadcast::Sender<()>,
     pub subscription_tx: mpsc::Sender<SubscriptionCommand>,
     activity_tracker: ActivityTracker,
+    dydx_client: Option<DydxClient>,
 }
 
 #[derive(Clone)]
@@ -96,6 +98,30 @@ impl ExchangeActor {
         let exchange_clone = exchange.clone();
         let activity_tracker = ActivityTracker::new();
 
+        // Initialize dYdX client if this is a dYdX exchange
+        let dydx_client = if matches!(exchange, Exchange::Dydx) {
+            match std::env::var("DYDX_MNEMONIC") {
+                Ok(mnemonic) => {
+                    match DydxClient::new(&mnemonic, DydxConfig::default()) {
+                        Ok(client) => {
+                            info!("dYdX client initialized successfully");
+                            Some(client)
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize dYdX client: {}", e);
+                            None
+                        }
+                    }
+                }
+                Err(_) => {
+                    warn!("DYDX_MNEMONIC not set, dYdX trading will be disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let actor = Self {
             exchange,
             prices: prices.clone(),
@@ -103,6 +129,7 @@ impl ExchangeActor {
             shutdown_tx: shutdown_tx.clone(),
             subscription_tx: subscription_tx.clone(),
             activity_tracker: activity_tracker.clone(),
+            dydx_client,
         };
 
         tokio::spawn(async move {
@@ -246,7 +273,21 @@ impl ExchangeActor {
                         Self::get_exchange_name(&self.exchange),
                         order.id
                     );
-                    let result = Self::place_order(&self.exchange, &order).await;
+
+                    let result = match &self.exchange {
+                        Exchange::Dydx => {
+                            if let Some(client) = &self.dydx_client {
+                                Self::place_order_dydx(&order, client).await
+                            } else {
+                                Err("dYdX client not initialized - check DYDX_MNEMONIC".to_string())
+                            }
+                        }
+                        _ => Err(format!(
+                            "Order placement not implemented for {:?}",
+                            self.exchange
+                        )),
+                    };
+
                     if let Err(e) = reply.send(result).await {
                         warn!("Failed to send reply: {:?}", e);
                     }
@@ -257,7 +298,21 @@ impl ExchangeActor {
                         Self::get_exchange_name(&self.exchange),
                         order_id
                     );
-                    let result = Self::cancel_order(&self.exchange, &order_id).await;
+
+                    let result = match &self.exchange {
+                        Exchange::Dydx => {
+                            if let Some(client) = &self.dydx_client {
+                                Self::cancel_order_dydx(&order_id, client).await
+                            } else {
+                                Err("dYdX client not initialized - check DYDX_MNEMONIC".to_string())
+                            }
+                        }
+                        _ => Err(format!(
+                            "Order cancellation not implemented for {:?}",
+                            self.exchange
+                        )),
+                    };
+
                     if let Err(e) = reply.send(result).await {
                         warn!("Failed to send reply: {:?}", e);
                     }
@@ -268,7 +323,18 @@ impl ExchangeActor {
                         Self::get_exchange_name(&self.exchange),
                         order_id
                     );
-                    let result = Self::get_order_status(&self.exchange, &order_id).await;
+
+                    let result = match &self.exchange {
+                        Exchange::Dydx => {
+                            if let Some(client) = &self.dydx_client {
+                                Self::get_order_status_dydx(&order_id, client).await
+                            } else {
+                                Err("dYdX client not initialized - check DYDX_MNEMONIC".to_string())
+                            }
+                        }
+                        _ => Err(format!("Order status not implemented for {:?}", self.exchange)),
+                    };
+
                     if let Err(e) = reply.send(result).await {
                         warn!("Failed to send reply: {:?}", e);
                     }
@@ -600,90 +666,53 @@ impl ExchangeActor {
         }
     }
 
-    /// Place an order on the exchange
-    async fn place_order(exchange: &Exchange, order: &Order) -> Result<String, String> {
-        match exchange {
-            Exchange::Dydx => Self::place_order_dydx(order).await,
-            _ => Err(format!(
-                "Order placement not implemented for {:?}",
-                exchange
-            )),
-        }
+    async fn place_order(_exchange: &Exchange, _order: &Order) -> Result<String, String> {
+        Err("dYdX orders should be handled by the actor with client".to_string())
     }
 
     /// Cancel an order on the exchange
-    async fn cancel_order(exchange: &Exchange, order_id: &str) -> Result<(), String> {
-        match exchange {
-            Exchange::Dydx => Self::cancel_order_dydx(order_id).await,
-            _ => Err(format!(
-                "Order cancellation not implemented for {:?}",
-                exchange
-            )),
-        }
+    async fn cancel_order(_exchange: &Exchange, _order_id: &str) -> Result<(), String> {
+        Err("dYdX order cancellation should be handled by the actor with client".to_string())
     }
 
     /// Get order status from the exchange
-    async fn get_order_status(exchange: &Exchange, order_id: &str) -> Result<String, String> {
-        match exchange {
-            Exchange::Dydx => Self::get_order_status_dydx(order_id).await,
-            _ => Err(format!("Order status not implemented for {:?}", exchange)),
+    async fn get_order_status(_exchange: &Exchange, _order_id: &str) -> Result<String, String> {
+        Err("dYdX order status should be handled by the actor with client".to_string())
+    }
+
+
+
+    /// Place order on dYdX v4 using the dYdX client
+    async fn place_order_dydx(order: &Order, client: &DydxClient) -> Result<String, String> {
+        // Update sequence number before placing order
+        if let Err(e) = client.update_sequence_number().await {
+            warn!("Failed to update sequence number: {}", e);
         }
-    }
 
-    /// Get wallet from mnemonic for dYdX authentication
-    fn get_dydx_wallet() -> Result<ethers::signers::LocalWallet, String> {
-        let mnemonic = std::env::var("DYDX_MNEMONIC")
-            .map_err(|_| "DYDX_MNEMONIC environment variable not set".to_string())?;
-
-        ethers::signers::MnemonicBuilder::<ethers::signers::coins_bip39::English>::default()
-            .phrase(mnemonic.as_str())
-            .build()
-            .map_err(|e| format!("Failed to create wallet from mnemonic: {}", e))
-    }
-
-    /// Place order on dYdX v4 using mnemonic wallet
-    async fn place_order_dydx(order: &Order) -> Result<String, String> {
-        let _wallet = Self::get_dydx_wallet()?;
-
-        // For now, return a mock order ID since full dYdX v4 integration requires
-        // more complex setup with order signing, sequence numbers, etc.
-        // This is a placeholder that will be expanded with full implementation
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| format!("System time error: {}", e))?
-            .as_millis();
-
-        let order_id = format!("dydx_order_{}", timestamp);
+        // Convert our order to dYdX format
+        let dydx_order = client.convert_order(order).await?;
 
         info!(
-            "dYdX order placement requested: {:?} {} {} (wallet ready)",
+            "dYdX order placement requested: {:?} {} {} (converted to dYdX format)",
             order.side,
             order.quantity.value(),
             order.symbol
         );
 
-        // TODO: Implement full dYdX v4 order placement with proper signing
-        Ok(order_id)
+        // Place the order
+        client.place_order(dydx_order).await
     }
 
-    /// Cancel order on dYdX v4 using mnemonic wallet
-    async fn cancel_order_dydx(order_id: &str) -> Result<(), String> {
-        let _wallet = Self::get_dydx_wallet()?;
-
+    /// Cancel order on dYdX v4 using the dYdX client
+    async fn cancel_order_dydx(order_id: &str, client: &DydxClient) -> Result<(), String> {
         info!("dYdX order cancellation requested: {}", order_id);
-
-        // TODO: Implement full dYdX v4 order cancellation
-        Ok(())
+        client.cancel_order(order_id).await
     }
 
-    /// Get order status from dYdX v4 using mnemonic wallet
-    async fn get_order_status_dydx(order_id: &str) -> Result<String, String> {
-        let _wallet = Self::get_dydx_wallet()?;
-
+    /// Get order status from dYdX v4 using the dYdX client
+    async fn get_order_status_dydx(order_id: &str, client: &DydxClient) -> Result<String, String> {
         info!("dYdX order status requested: {}", order_id);
-
-        // TODO: Implement full dYdX v4 order status checking
-        Ok("PENDING".to_string())
+        client.get_order_status(order_id).await
     }
 }
 

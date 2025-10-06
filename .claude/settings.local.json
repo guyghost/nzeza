@@ -6,7 +6,13 @@
       "Bash(cargo test:*)",
       "Bash(git add:*)",
       "Bash(cargo run:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.dydx.exchange)",
+      "WebFetch(domain:docs.dydx.xyz)",
+      "Bash(cargo search:*)",
+      "Bash(cargo info:*)"
     ],
     "deny": [],
     "ask": []

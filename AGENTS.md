@@ -87,6 +87,51 @@ RUST_LOG=error cargo run
 - **Erreurs** : `error` (toujours visible)
 - **Vérifications de santé** : `info` (visible par défaut)
 
+## Configuration dYdX
+
+Pour activer le trading sur dYdX v4, vous devez configurer la variable d'environnement `DYDX_MNEMONIC` avec votre phrase mnémonique.
+
+### Configuration de la Clé Mnémonique
+
+```bash
+# Définir la variable d'environnement pour la session actuelle
+export DYDX_MNEMONIC="your twelve word mnemonic phrase here"
+
+# Ou l'ajouter à votre ~/.bashrc ou ~/.zshrc pour la persistance
+echo 'export DYDX_MNEMONIC="your twelve word mnemonic phrase here"' >> ~/.bashrc
+```
+
+### Sécurité Importante
+
+⚠️ **NEVER commit your mnemonic to version control or share it with anyone.**
+
+- Utilisez toujours des variables d'environnement pour les clés sensibles
+- Considérez l'utilisation d'un fichier de configuration séparé pour les environnements de production
+- Assurez-vous que votre phrase mnémonique est sauvegardée de manière sécurisée
+
+### Vérification de la Configuration
+
+Le système vérifiera automatiquement la présence de `DYDX_MNEMONIC` au démarrage :
+
+- ✅ **Présente** : Trading dYdX activé avec message de confirmation
+- ❌ **Absente** : Trading dYdX désactivé avec avertissement
+
+### Fonctionnalités dYdX Supportées
+
+- **Placement d'ordres** : Market et Limit orders
+- **Annulation d'ordres** : Par order ID
+- **Statut d'ordres** : Vérification du statut des ordres
+- **Signature EIP-712** : Authentification sécurisée
+- **Gestion des séquences** : Numéros de séquence automatiques
+
+### Test de l'Intégration
+
+Pour tester l'intégration dYdX sans risquer de vrais fonds :
+
+1. Utilisez un portefeuille de test avec des fonds de testnet
+2. Configurez l'environnement pour pointer vers testnet (si supporté)
+3. Vérifiez les logs pour confirmer l'initialisation réussie du client dYdX
+
 ## Approche de développement : Test-Driven Development (TDD)
 
 ### Principe fondamental
