@@ -15,16 +15,16 @@ pub struct CoinbaseConfig {
     pub api_base: String,
     pub api_key: String,
     pub api_secret: String,
-    pub passphrase: String,
+    pub passphrase: Option<String>, // Make passphrase optional
 }
 
 impl CoinbaseConfig {
-    pub fn new(api_key: &str, api_secret: &str, passphrase: &str, sandbox: bool) -> Self {
+    pub fn new(api_key: &str, api_secret: &str, passphrase: Option<&str>, sandbox: bool) -> Self {
         Self {
             api_base: if sandbox { COINBASE_SANDBOX_BASE.to_string() } else { COINBASE_API_BASE.to_string() },
             api_key: api_key.to_string(),
             api_secret: api_secret.to_string(),
-            passphrase: passphrase.to_string(),
+            passphrase: passphrase.map(|s| s.to_string()),
         }
     }
 }
@@ -78,7 +78,7 @@ pub struct CoinbaseClient {
 
 impl CoinbaseClient {
     /// Create a new Coinbase client from API credentials
-    pub fn new(api_key: &str, api_secret: &str, passphrase: &str) -> Result<Self, String> {
+    pub fn new(api_key: &str, api_secret: &str, passphrase: Option<&str>) -> Result<Self, String> {
         let config = CoinbaseConfig::new(api_key, api_secret, passphrase, false); // production by default
 
         Ok(Self {
@@ -88,7 +88,7 @@ impl CoinbaseClient {
     }
 
     /// Create a sandbox Coinbase client for testing
-    pub fn new_sandbox(api_key: &str, api_secret: &str, passphrase: &str) -> Result<Self, String> {
+    pub fn new_sandbox(api_key: &str, api_secret: &str, passphrase: Option<&str>) -> Result<Self, String> {
         let config = CoinbaseConfig::new(api_key, api_secret, passphrase, true);
 
         Ok(Self {
@@ -122,7 +122,12 @@ impl CoinbaseClient {
         headers.insert("CB-ACCESS-KEY".to_string(), self.config.api_key.clone());
         headers.insert("CB-ACCESS-SIGN".to_string(), signature);
         headers.insert("CB-ACCESS-TIMESTAMP".to_string(), timestamp.to_string());
-        headers.insert("CB-ACCESS-PASSPHRASE".to_string(), self.config.passphrase.clone());
+        
+        // Only include passphrase if it exists
+        if let Some(ref passphrase) = self.config.passphrase {
+            headers.insert("CB-ACCESS-PASSPHRASE".to_string(), passphrase.clone());
+        }
+        
         headers.insert("Content-Type".to_string(), "application/json".to_string());
 
         Ok(headers)
@@ -306,22 +311,31 @@ mod tests {
 
     #[test]
     fn test_coinbase_config_new() {
-        let config = CoinbaseConfig::new("key", "secret", "passphrase", false);
+        let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
         assert_eq!(config.api_base, COINBASE_API_BASE);
         assert_eq!(config.api_key, "key");
         assert_eq!(config.api_secret, "secret");
-        assert_eq!(config.passphrase, "passphrase");
+        assert_eq!(config.passphrase, Some("passphrase".to_string()));
+    }
+
+    #[test]
+    fn test_coinbase_config_new_without_passphrase() {
+        let config = CoinbaseConfig::new("key", "secret", None, false);
+        assert_eq!(config.api_base, COINBASE_API_BASE);
+        assert_eq!(config.api_key, "key");
+        assert_eq!(config.api_secret, "secret");
+        assert_eq!(config.passphrase, None);
     }
 
     #[test]
     fn test_coinbase_config_sandbox() {
-        let config = CoinbaseConfig::new("key", "secret", "passphrase", true);
+        let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), true);
         assert_eq!(config.api_base, COINBASE_SANDBOX_BASE);
     }
 
     #[test]
     fn test_normalize_product_id() {
-        let config = CoinbaseConfig::new("key", "secret", "passphrase", false);
+        let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
         let client = CoinbaseClient { client: Client::new(), config };
 
         assert_eq!(client.normalize_product_id("BTC-USD").unwrap(), "BTC-USD");
@@ -331,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_convert_market_order() {
-        let config = CoinbaseConfig::new("key", "secret", "passphrase", false);
+        let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
         let client = CoinbaseClient { client: Client::new(), config };
 
         let order = Order::new(
@@ -356,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_convert_limit_order() {
-        let config = CoinbaseConfig::new("key", "secret", "passphrase", false);
+        let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
         let client = CoinbaseClient { client: Client::new(), config };
 
         let order = Order::new(
@@ -397,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_generate_auth_headers() {
-        let config = CoinbaseConfig::new("test_key", "test_secret", "test_passphrase", false);
+        let config = CoinbaseConfig::new("test_key", "test_secret", Some("test_passphrase"), false);
         let client = CoinbaseClient { client: Client::new(), config };
 
         let headers = client.generate_auth_headers("GET", "/test", "").unwrap();
@@ -415,29 +429,40 @@ mod tests {
 
     #[test]
     fn test_coinbase_client_new() {
-        let client = CoinbaseClient::new("key", "secret", "passphrase");
+        let client = CoinbaseClient::new("key", "secret", Some("passphrase"));
         assert!(client.is_ok());
         let client = client.unwrap();
         assert_eq!(client.config.api_key, "key");
         assert_eq!(client.config.api_secret, "secret");
-        assert_eq!(client.config.passphrase, "passphrase");
+        assert_eq!(client.config.passphrase, Some("passphrase".to_string()));
+        assert_eq!(client.config.api_base, COINBASE_API_BASE);
+    }
+
+    #[test]
+    fn test_coinbase_client_new_without_passphrase() {
+        let client = CoinbaseClient::new("key", "secret", None);
+        assert!(client.is_ok());
+        let client = client.unwrap();
+        assert_eq!(client.config.api_key, "key");
+        assert_eq!(client.config.api_secret, "secret");
+        assert_eq!(client.config.passphrase, None);
         assert_eq!(client.config.api_base, COINBASE_API_BASE);
     }
 
     #[test]
     fn test_coinbase_client_new_sandbox() {
-        let client = CoinbaseClient::new_sandbox("key", "secret", "passphrase");
+        let client = CoinbaseClient::new_sandbox("key", "secret", Some("passphrase"));
         assert!(client.is_ok());
         let client = client.unwrap();
         assert_eq!(client.config.api_key, "key");
         assert_eq!(client.config.api_secret, "secret");
-        assert_eq!(client.config.passphrase, "passphrase");
+        assert_eq!(client.config.passphrase, Some("passphrase".to_string()));
         assert_eq!(client.config.api_base, COINBASE_SANDBOX_BASE);
     }
 
     #[test]
     fn test_normalize_product_id_unsupported() {
-        let config = CoinbaseConfig::new("key", "secret", "passphrase", false);
+        let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
         let client = CoinbaseClient { client: Client::new(), config };
 
         let result = client.normalize_product_id("UNSUPPORTED");
@@ -448,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_convert_order_sell_side() {
-        let config = CoinbaseConfig::new("key", "secret", "passphrase", false);
+        let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
         let client = CoinbaseClient { client: Client::new(), config };
 
         let order = Order::new(
@@ -536,7 +561,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_accounts_with_invalid_credentials() {
-        let client = CoinbaseClient::new("invalid_key", "invalid_secret", "invalid_passphrase").unwrap();
+        let client = CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase")).unwrap();
         
         // This will fail with authentication error, but tests that the method exists and can be called
         let result = client.get_accounts().await;
@@ -545,7 +570,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_place_order_with_invalid_credentials() {
-        let client = CoinbaseClient::new("invalid_key", "invalid_secret", "invalid_passphrase").unwrap();
+        let client = CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase")).unwrap();
         
         let order = CoinbaseOrder {
             product_id: "BTC-USD".to_string(),
@@ -564,7 +589,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cancel_order_with_invalid_credentials() {
-        let client = CoinbaseClient::new("invalid_key", "invalid_secret", "invalid_passphrase").unwrap();
+        let client = CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase")).unwrap();
         
         let result = client.cancel_order("invalid-order-id").await;
         assert!(result.is_err());
@@ -572,7 +597,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_order_status_with_invalid_credentials() {
-        let client = CoinbaseClient::new("invalid_key", "invalid_secret", "invalid_passphrase").unwrap();
+        let client = CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase")).unwrap();
         
         let result = client.get_order_status("invalid-order-id").await;
         assert!(result.is_err());

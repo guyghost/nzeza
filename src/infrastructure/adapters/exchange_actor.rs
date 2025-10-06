@@ -142,10 +142,12 @@ impl ExchangeActor {
         // Initialize Coinbase client if this is a Coinbase exchange
         let coinbase_client = if matches!(exchange, Exchange::Coinbase) {
             match (std::env::var("COINBASE_API_KEY"),
-                   std::env::var("COINBASE_API_SECRET"),
-                   std::env::var("COINBASE_PASSPHRASE")) {
-                (Ok(api_key), Ok(api_secret), Ok(passphrase)) => {
-                    match CoinbaseClient::new(&api_key, &api_secret, &passphrase) {
+                   std::env::var("COINBASE_API_SECRET")) {
+                (Ok(api_key), Ok(api_secret)) => {
+                    // Passphrase is optional
+                    let passphrase = std::env::var("COINBASE_PASSPHRASE").ok();
+                    
+                    match CoinbaseClient::new(&api_key, &api_secret, passphrase.as_deref()) {
                         Ok(client) => {
                             info!("Coinbase client initialized successfully");
                             Some(client)
@@ -157,7 +159,7 @@ impl ExchangeActor {
                     }
                 }
                 _ => {
-                    warn!("Coinbase API credentials not set (COINBASE_API_KEY, COINBASE_API_SECRET, COINBASE_PASSPHRASE), Coinbase trading will be disabled");
+                    warn!("Coinbase API credentials not set (COINBASE_API_KEY, COINBASE_API_SECRET), Coinbase trading will be disabled");
                     None
                 }
             }
@@ -332,7 +334,7 @@ impl ExchangeActor {
                             if let Some(client) = &self.coinbase_client {
                                 Self::place_order_coinbase(&order, client).await
                             } else {
-                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET, COINBASE_PASSPHRASE".to_string())
+                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET".to_string())
                             }
                         }
                         _ => Err(format!(
@@ -364,7 +366,7 @@ impl ExchangeActor {
                             if let Some(client) = &self.coinbase_client {
                                 Self::cancel_order_coinbase(&order_id, client).await
                             } else {
-                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET, COINBASE_PASSPHRASE".to_string())
+                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET".to_string())
                             }
                         }
                         _ => Err(format!(
@@ -396,7 +398,7 @@ impl ExchangeActor {
                             if let Some(client) = &self.coinbase_client {
                                 Self::get_order_status_coinbase(&order_id, client).await
                             } else {
-                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET, COINBASE_PASSPHRASE".to_string())
+                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET".to_string())
                             }
                         }
                         _ => Err(format!("Order status not implemented for {:?}", self.exchange)),

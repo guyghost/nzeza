@@ -147,17 +147,17 @@ Pour activer le trading sur Coinbase Pro, vous devez configurer trois variables 
 # Définir les variables d'environnement pour la session actuelle
 export COINBASE_API_KEY="your_api_key_here"
 export COINBASE_API_SECRET="your_api_secret_here"
-export COINBASE_PASSPHRASE="your_passphrase_here"
+export COINBASE_PASSPHRASE="your_passphrase_here"  # Optionnel - certains API keys n'en nécessitent pas
 
 # Ou les ajouter à votre ~/.bashrc ou ~/.zshrc pour la persistance
 echo 'export COINBASE_API_KEY="your_api_key_here"' >> ~/.bashrc
 echo 'export COINBASE_API_SECRET="your_api_secret_here"' >> ~/.bashrc
-echo 'export COINBASE_PASSPHRASE="your_passphrase_here"' >> ~/.bashrc
+echo 'export COINBASE_PASSPHRASE="your_passphrase_here"' >> ~/.bashrc  # Optionnel
 
 # Ou utiliser le fichier .env (recommandé)
 echo 'COINBASE_API_KEY=your_api_key_here' >> .env
 echo 'COINBASE_API_SECRET=your_api_secret_here' >> .env
-echo 'COINBASE_PASSPHRASE=your_passphrase_here' >> .env
+echo 'COINBASE_PASSPHRASE=your_passphrase_here' >> .env  # Optionnel
 ```
 
 ### Création des Clés API Coinbase
@@ -185,7 +185,7 @@ echo 'COINBASE_PASSPHRASE=your_passphrase_here' >> .env
 - **Placement d'ordres** : Market et Limit orders
 - **Annulation d'ordres** : Par order ID
 - **Statut d'ordres** : Vérification du statut des ordres
-- **Authentification HMAC-SHA256** : Sécurisée avec timestamp + passphrase
+- **Authentification HMAC-SHA256** : Sécurisée avec timestamp + passphrase (optionnel)
 - **WebSocket temps réel** : Flux de prix pour BTC-USD, ETH-USD, SOL-USD
 
 ### Vérification de la Configuration

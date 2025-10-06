@@ -67,7 +67,7 @@ if COINBASE_PASSPHRASE=$(get_secret "Coinbase Pro API" "passphrase" 2>/dev/null)
     export COINBASE_PASSPHRASE
     echo "✅ COINBASE_PASSPHRASE loaded"
 else
-    echo "⚠️  COINBASE_PASSPHRASE not found (item: 'Coinbase Pro API', field: 'passphrase')"
+    echo "⚠️  COINBASE_PASSPHRASE not found (item: 'Coinbase Pro API', field: 'passphrase') - this is optional"
 fi
 
 echo ""

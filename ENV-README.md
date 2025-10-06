@@ -49,7 +49,7 @@ Create the following items in your 1Password vault:
 - **Fields:**
   - `api_key` - Your Coinbase API Key
   - `api_secret` - Your Coinbase API Secret
-  - `passphrase` - Your Coinbase Passphrase
+  - `passphrase` - Your Coinbase Passphrase (optional - some API keys don't require it)
 
 ### Loading Environment Variables
 
@@ -77,7 +77,7 @@ env | grep -E "(DYDX|COINBASE)"
 # DYDX_MNEMONIC=abandon abandon abandon...
 # COINBASE_API_KEY=your_key_here
 # COINBASE_API_SECRET=your_secret_here
-# COINBASE_PASSPHRASE=your_passphrase_here
+# COINBASE_PASSPHRASE=your_passphrase_here  # (optional)
 ```
 
 ## Manual Configuration
@@ -91,7 +91,7 @@ export DYDX_MNEMONIC="your twelve word mnemonic phrase"
 # Coinbase
 export COINBASE_API_KEY="your_api_key"
 export COINBASE_API_SECRET="your_api_secret"
-export COINBASE_PASSPHRASE="your_passphrase"
+export COINBASE_PASSPHRASE="your_passphrase"  # Optional - some API keys don't require it
 
 # Trading configuration (optional)
 export MIN_CONFIDENCE_THRESHOLD=0.7
