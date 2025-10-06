@@ -10,28 +10,45 @@ use std::sync::OnceLock;
 /// Global store for valid API keys
 static VALID_API_KEYS: OnceLock<HashSet<String>> = OnceLock::new();
 
-/// Initialize the API keys from environment or default
+/// Initialize the API keys from environment
+///
+/// # Security
+/// This function requires the `API_KEYS` environment variable to be set.
+/// If no API keys are configured, the application will **panic** to prevent
+/// running in an insecure state. This is intentional fail-secure behavior.
+///
+/// # Panics
+/// Panics if the `API_KEYS` environment variable is not set or is empty.
+/// This prevents accidentally running the application without authentication.
 pub fn init_api_keys() {
     let mut keys = HashSet::new();
 
-    // Try to load from environment variable
-    if let Ok(keys_env) = std::env::var("API_KEYS") {
-        for key in keys_env.split(',') {
-            let key = key.trim();
-            if !key.is_empty() {
-                keys.insert(key.to_string());
+    // Load from environment variable (REQUIRED)
+    let keys_env = std::env::var("API_KEYS")
+        .expect("SECURITY ERROR: API_KEYS environment variable is not set. \
+                 Set API_KEYS to a comma-separated list of secure API keys. \
+                 Example: API_KEYS=your_secure_key_here,another_key");
+
+    for key in keys_env.split(',') {
+        let key = key.trim();
+        if !key.is_empty() {
+            // Validate minimum key length for security
+            if key.len() < 32 {
+                tracing::warn!("API key is shorter than recommended 32 characters: {}",
+                    &key[..key.len().min(8)]);
             }
+            keys.insert(key.to_string());
         }
     }
 
-    // If no keys were loaded, use a default key (for development only!)
+    // Fail if no valid keys were loaded
     if keys.is_empty() {
-        tracing::warn!("No API keys configured via API_KEYS env var, using default development key");
-        keys.insert("dev_key_change_me_in_production".to_string());
+        panic!("SECURITY ERROR: No valid API keys found in API_KEYS environment variable. \
+                At least one API key with length >= 1 character is required.");
     }
 
     VALID_API_KEYS.set(keys).expect("API keys already initialized");
-    tracing::info!("API authentication initialized with {} valid key(s)",
+    tracing::info!("✓ API authentication initialized with {} valid key(s)",
         VALID_API_KEYS.get().unwrap().len());
 }
 

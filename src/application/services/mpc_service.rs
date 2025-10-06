@@ -11,6 +11,7 @@ use crate::domain::services::metrics::{
 use crate::domain::services::strategies::{SignalCombiner, TradingSignal};
 use crate::domain::value_objects::price::Price;
 use crate::domain::value_objects::quantity::Quantity;
+use crate::domain::value_objects::pnl::PnL;
 use crate::infrastructure::adapters::exchange_actor::ExchangeMessage;
 use lru::LruCache;
 use std::collections::HashMap;
@@ -596,8 +597,10 @@ impl MpcService {
     }
 
     /// Get total unrealized PnL across all positions
-
-    pub async fn get_total_unrealized_pnl(&self) -> Price {
+    ///
+    /// Returns the sum of all unrealized PnL across open positions.
+    /// The result can be positive (net profit) or negative (net loss).
+    pub async fn get_total_unrealized_pnl(&self) -> PnL {
         let positions = self.open_positions.lock().await;
         let mut total_pnl = 0.0;
 
@@ -607,26 +610,54 @@ impl MpcService {
             }
         }
 
-        // Return zero price if calculation fails (shouldn't happen with valid PnL sum)
-        Price::new(total_pnl.max(0.0)).unwrap_or_else(|_| {
-            warn!("Failed to create price from total PnL: {}", total_pnl);
-            // Safe: 0.0 is always a valid price
-            Price::new(0.0).expect("Zero price should always be valid")
+        // PnL can be negative, which is valid for losses
+        PnL::new(total_pnl).unwrap_or_else(|_| {
+            warn!("Failed to create PnL from total: {} (likely NaN/infinity). Using zero.", total_pnl);
+            PnL::zero()
         })
     }
 
-    /// Calculate position size based on portfolio percentage and current price
+    /// Get current portfolio value (initial capital + realized + unrealized PnL)
+    ///
+    /// Returns the total portfolio value considering:
+    /// - Initial capital (from environment variable or default)
+    /// - All realized PnL from closed positions
+    /// - All unrealized PnL from open positions
+    pub async fn get_portfolio_value(&self) -> f64 {
+        // Get initial capital from environment or use default
+        let initial_capital = std::env::var("INITIAL_CAPITAL")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(10000.0); // Default to $10,000 if not set
 
+        let metrics = self.trading_metrics.lock().await;
+        let total_pnl = (metrics.total_realized_pnl + metrics.total_unrealized_pnl).value();
+
+        initial_capital + total_pnl
+    }
+
+    /// Calculate position size based on portfolio percentage and current price
+    ///
+    /// # Arguments
+    /// * `_symbol` - The trading symbol (reserved for future risk management per symbol)
+    /// * `current_price` - Current market price for the asset
+    ///
+    /// # Returns
+    /// The quantity to trade, calculated as a percentage of current portfolio value
     pub async fn calculate_position_size(
         &self,
         _symbol: &str,
         current_price: Price,
     ) -> Result<f64, MpcError> {
-        // For now, we'll use a simple calculation based on portfolio percentage
-        // In a real implementation, this would consider the actual portfolio value
-        // For demo purposes, we'll assume a portfolio value of $100,000 USD
+        let portfolio_value = self.get_portfolio_value().await;
 
-        let portfolio_value = 100000.0; // This should come from a portfolio service
+        // Ensure we have positive portfolio value
+        if portfolio_value <= 0.0 {
+            return Err(MpcError::InvalidInput(
+                "Portfolio value is zero or negative. Cannot calculate position size.".to_string()
+            ));
+        }
+
         let position_value = portfolio_value * self.config.portfolio_percentage_per_position;
 
         // Calculate quantity: position_value / current_price
@@ -893,14 +924,14 @@ impl MpcService {
 
     /// Record a completed trade in metrics
 
-    pub async fn record_trade(&self, pnl: Price, volume: f64, latency_ms: f64) {
+    pub async fn record_trade(&self, pnl: PnL, volume: f64, latency_ms: f64) {
         let mut metrics = self.trading_metrics.lock().await;
         metrics.record_trade(pnl, volume, latency_ms);
     }
 
     /// Update unrealized PnL in metrics
 
-    pub async fn update_unrealized_pnl(&self, unrealized_pnl: Price) {
+    pub async fn update_unrealized_pnl(&self, unrealized_pnl: PnL) {
         let mut metrics = self.trading_metrics.lock().await;
         metrics.update_unrealized_pnl(unrealized_pnl);
     }

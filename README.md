@@ -80,19 +80,57 @@ pub fn default() -> Self {
 
 #### Environment Variables
 
-The server requires specific environment variables for exchange authentication:
+The server requires specific environment variables for authentication and exchange access:
+
+**⚠️ REQUIRED - API Security:**
+- `API_KEYS`: Comma-separated list of valid API keys for authentication
+  - **The server will NOT start without this variable set**
+  - Minimum recommended length: 32 characters per key
+  - Example: `API_KEYS=your_secure_random_key_here_min_32_chars,another_key_if_needed`
+  - Generate secure keys with: `openssl rand -hex 32`
 
 **dYdX (Required for trading):**
 - `DYDX_MNEMONIC`: Your dYdX wallet mnemonic phrase for signing orders
+  - ⚠️ **WARNING**: Current dYdX implementation is INCOMPLETE and will NOT work with dYdX v4
+  - See `src/infrastructure/dydx_client.rs` for details
+
+**Portfolio Management:**
+- `INITIAL_CAPITAL`: Starting capital for the trading bot in USD (default: 10000)
+  - Example: `INITIAL_CAPITAL=50000`
+  - Portfolio value is dynamically calculated as: Initial Capital + Total PnL
 
 **Optional (for other exchanges):**
 - Other exchanges may require API keys in the future
+- `PORTFOLIO_PERCENTAGE_PER_POSITION`: Percentage of portfolio to risk per position (default configured in code)
 
-Example:
+**Production Security Example:**
 ```bash
+# Generate a secure API key
+export API_KEYS=$(openssl rand -hex 32)
 export DYDX_MNEMONIC="your twelve word mnemonic phrase here"
+
+# For production, store these in a secure secrets manager (e.g., HashiCorp Vault, AWS Secrets Manager)
 cargo run
 ```
+
+**Development Example:**
+```bash
+# Use a placeholder key for local development (NOT for production!)
+export API_KEYS=dev_test_key_min_32_characters_long
+cargo run
+```
+
+## Security
+
+⚠️ **IMPORTANT**: This bot currently runs on HTTP only (no TLS/HTTPS).
+
+**For production deployment, you MUST:**
+1. Use a reverse proxy (Nginx, Caddy) with TLS certificates
+2. OR deploy on a private network with VPN access
+3. Set strong API keys (32+ characters)
+4. Store secrets securely (not in .env files)
+
+**See [SECURITY.md](SECURITY.md) for complete security guidelines and deployment best practices.**
 
 ## Development
 

@@ -34,6 +34,9 @@ pub enum MpcError {
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
 
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("Timeout waiting for response")]
     Timeout,
 }

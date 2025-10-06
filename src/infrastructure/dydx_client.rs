@@ -1,3 +1,29 @@
+//! # dYdX v4 Client Module
+//!
+//! ⚠️ **CRITICAL WARNING**: This module contains an INCOMPLETE implementation
+//! of dYdX v4 integration that will NOT work in production.
+//!
+//! ## Current Limitations
+//!
+//! - dYdX v4 is a Cosmos-based blockchain, NOT Ethereum-based
+//! - This code incorrectly uses EIP-712-style signing which dYdX v4 does NOT support
+//! - Orders placed through this client WILL BE REJECTED by the dYdX v4 API
+//!
+//! ## Required Changes for Production
+//!
+//! To properly integrate with dYdX v4, you must:
+//! 1. Replace ethers wallet with Cosmos SDK signing (cosmrs crate)
+//! 2. Use protobuf message encoding (prost, dydx-proto)
+//! 3. Implement proper transaction signing with the dYdX Chain
+//! 4. Ideally, use the official v4-client-rs from https://github.com/dydxprotocol/v4-clients
+//!
+//! ## References
+//!
+//! - Official dYdX v4 Docs: https://docs.dydx.xyz/
+//! - v4 Client Rust: https://github.com/dydxprotocol/v4-clients/tree/main/v4-client-rs
+//!
+//! **DO NOT USE THIS CODE FOR REAL TRADING WITHOUT FIXING THE SIGNING MECHANISM**
+
 use crate::domain::entities::order::{Order, OrderSide, OrderType};
 use ethers::signers::{LocalWallet, MnemonicBuilder, coins_bip39::English, Signer};
 use ethers::types::{Address, Signature, H256};
@@ -7,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
+use zeroize::Zeroizing;
 
 /// dYdX v4 API endpoints
 const DYDX_API_BASE: &str = "https://api.dydx.exchange";
@@ -87,11 +114,22 @@ pub struct DydxClient {
 
 impl DydxClient {
     /// Create a new dYdX client from mnemonic
+    ///
+    /// # Security Note
+    /// The mnemonic is temporarily stored in memory during wallet creation.
+    /// While we use Zeroizing for the input, the ethers library may still
+    /// retain copies. For production, consider using hardware wallets or
+    /// secure enclaves.
     pub fn new(mnemonic: &str, config: DydxConfig) -> Result<Self, String> {
+        // Use zeroizing string to reduce mnemonic exposure time
+        let zeroizing_mnemonic = Zeroizing::new(mnemonic.to_string());
+
         let wallet = MnemonicBuilder::<English>::default()
-            .phrase(mnemonic)
+            .phrase(zeroizing_mnemonic.as_str())
             .build()
             .map_err(|e| format!("Failed to create wallet from mnemonic: {}", e))?;
+
+        // mnemonic is automatically zeroized when zeroizing_mnemonic goes out of scope
 
         Ok(Self {
             client: Client::new(),
@@ -195,9 +233,21 @@ impl DydxClient {
         })
     }
 
-    /// Create order hash for EIP-712 signing
+    /// Create order hash for signing
+    ///
+    /// ⚠️ CRITICAL WARNING: This implementation is INCOMPLETE and will NOT work with dYdX v4.
+    ///
+    /// dYdX v4 is a Cosmos-based blockchain and does NOT use EIP-712 signing.
+    /// This simplified hash is a placeholder only.
+    ///
+    /// To properly integrate with dYdX v4, you MUST:
+    /// 1. Use the official Cosmos signing mechanism with protobuf messages
+    /// 2. Integrate with cosmos-sdk-proto and cosmrs crates
+    /// 3. Use the official v4-client-rs when dependency issues are resolved
+    ///
+    /// Current status: Orders placed through this client WILL BE REJECTED by dYdX v4 API.
     fn create_order_hash(&self, market: &str, side: &str, size: &str, price: &str, client_id: &str) -> Result<H256, String> {
-        // Simplified order hash creation - in production this would follow dYdX's EIP-712 specification
+        // ⚠️ PLACEHOLDER ONLY - NOT VALID FOR dYdX v4
         let message = format!("{}:{}:{}:{}:{}", market, side, size, price, client_id);
         let hash = keccak256(message.as_bytes());
         Ok(H256::from(hash))

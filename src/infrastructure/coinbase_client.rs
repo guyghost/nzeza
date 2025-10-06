@@ -107,7 +107,7 @@ impl CoinbaseClient {
         let message = format!("{}{}{}{}", timestamp, method, path, body);
 
         // Create HMAC-SHA256 signature
-        use hmac::{Hmac, Mac, NewMac};
+        use hmac::{Hmac, Mac};
         use sha2::Sha256;
         use base64::{encode as base64_encode};
 
@@ -380,22 +380,19 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_limit_order_without_price() {
-        let config = CoinbaseConfig::new("key", "secret", "passphrase", false);
-        let client = CoinbaseClient { client: Client::new(), config };
-
-        let order = Order::new(
+    fn test_create_limit_order_without_price_fails() {
+        // Test that creating a limit order without price fails at the domain level
+        let result = Order::new(
             "test_order".to_string(),
             "BTC-USD".to_string(),
             OrderSide::Buy,
             OrderType::Limit,
-            None,
+            None, // No price for limit order
             1.0,
-        ).unwrap();
+        );
 
-        let result = client.convert_order(&order);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Limit order must have price"));
+        assert!(result.unwrap_err().to_string().contains("Limit orders must have a price"));
     }
 
     #[test]
@@ -448,24 +445,6 @@ mod tests {
         assert!(result.unwrap_err().contains("Unsupported product"));
     }
 
-    #[test]
-    fn test_convert_limit_order_without_price() {
-        let config = CoinbaseConfig::new("key", "secret", "passphrase", false);
-        let client = CoinbaseClient { client: Client::new(), config };
-
-        let order = Order::new(
-            "test_order".to_string(),
-            "BTC-USD".to_string(),
-            OrderSide::Buy,
-            OrderType::Limit,
-            None, // No price for limit order
-            1.0,
-        ).unwrap();
-
-        let result = client.convert_order(&order);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Limit order must have price"));
-    }
 
     #[test]
     fn test_convert_order_sell_side() {

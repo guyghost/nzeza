@@ -1,4 +1,4 @@
-use crate::domain::value_objects::{price::Price, quantity::Quantity};
+use crate::domain::value_objects::{price::Price, quantity::Quantity, pnl::PnL};
 use crate::domain::errors::ValidationError;
 use chrono::{DateTime, Utc};
 
@@ -99,13 +99,18 @@ impl Position {
     }
 
 
-    pub fn unrealized_pnl(&self) -> Option<Price> {
+    /// Calculate unrealized profit/loss for this position
+    ///
+    /// Returns None if current price hasn't been set yet.
+    /// The result can be positive (profit) or negative (loss).
+    pub fn unrealized_pnl(&self) -> Option<PnL> {
         self.current_price.and_then(|current_price| {
             let price_diff = match self.side {
                 PositionSide::Long => current_price.value() - self.entry_price.value(),
                 PositionSide::Short => self.entry_price.value() - current_price.value(),
             };
-            Price::new(price_diff * self.quantity.value()).ok()
+            let pnl_value = price_diff * self.quantity.value();
+            PnL::new(pnl_value).ok()
         })
     }
 

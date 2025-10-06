@@ -1,14 +1,15 @@
 use crate::domain::value_objects::price::Price;
+use crate::domain::value_objects::pnl::PnL;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 /// Performance metrics for the trading system
 #[derive(Debug, Clone)]
 pub struct TradingMetrics {
-    /// Total realized PnL across all closed positions
-    pub total_realized_pnl: Price,
-    /// Total unrealized PnL across all open positions
-    pub total_unrealized_pnl: Price,
+    /// Total realized PnL across all closed positions (can be positive or negative)
+    pub total_realized_pnl: PnL,
+    /// Total unrealized PnL across all open positions (can be positive or negative)
+    pub total_unrealized_pnl: PnL,
     /// Number of winning trades
     pub winning_trades: u32,
     /// Number of losing trades
@@ -42,8 +43,8 @@ pub struct TradingMetrics {
 impl Default for TradingMetrics {
     fn default() -> Self {
         Self {
-            total_realized_pnl: Price::new(0.0).unwrap(),
-            total_unrealized_pnl: Price::new(0.0).unwrap(),
+            total_realized_pnl: PnL::zero(),
+            total_unrealized_pnl: PnL::zero(),
             winning_trades: 0,
             losing_trades: 0,
             total_trades: 0,
@@ -69,22 +70,26 @@ impl TradingMetrics {
     }
 
     /// Update metrics with a new trade result
-    pub fn record_trade(&mut self, pnl: Price, volume: f64, latency_ms: f64) {
+    ///
+    /// # Arguments
+    /// * `pnl` - The profit/loss from the trade (can be positive or negative)
+    /// * `volume` - The trade volume
+    /// * `latency_ms` - Trade execution latency in milliseconds
+    pub fn record_trade(&mut self, pnl: PnL, volume: f64, latency_ms: f64) {
         self.total_trades += 1;
         self.total_volume += volume;
-        self.total_realized_pnl =
-            Price::new(self.total_realized_pnl.value() + pnl.value()).unwrap();
+        self.total_realized_pnl = self.total_realized_pnl + pnl;
 
         // Update trade counts and averages
-        if pnl.value() > 0.0 {
+        if pnl.is_profit() {
             self.winning_trades += 1;
             let total_win_pnl =
                 self.avg_win.value() * (self.winning_trades - 1) as f64 + pnl.value();
             self.avg_win = Price::new(total_win_pnl / self.winning_trades as f64).unwrap();
-        } else if pnl.value() < 0.0 {
+        } else if pnl.is_loss() {
             self.losing_trades += 1;
             let total_loss_pnl =
-                self.avg_loss.value() * (self.losing_trades - 1) as f64 + pnl.value().abs();
+                self.avg_loss.value() * (self.losing_trades - 1) as f64 + pnl.abs();
             self.avg_loss = Price::new(total_loss_pnl / self.losing_trades as f64).unwrap();
         }
 
@@ -115,7 +120,7 @@ impl TradingMetrics {
     }
 
     /// Update unrealized PnL
-    pub fn update_unrealized_pnl(&mut self, unrealized_pnl: Price) {
+    pub fn update_unrealized_pnl(&mut self, unrealized_pnl: PnL) {
         self.total_unrealized_pnl = unrealized_pnl;
         self.last_updated = SystemTime::now();
     }
@@ -141,8 +146,10 @@ impl TradingMetrics {
     }
 
     /// Get current equity (realized + unrealized PnL)
-    pub fn current_equity(&self) -> Price {
-        Price::new(self.total_realized_pnl.value() + self.total_unrealized_pnl.value()).unwrap()
+    ///
+    /// Returns total PnL which can be positive or negative.
+    pub fn current_equity(&self) -> PnL {
+        self.total_realized_pnl + self.total_unrealized_pnl
     }
 
     /// Get expectancy (average win * win rate - average loss * loss rate)
