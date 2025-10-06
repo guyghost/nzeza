@@ -1,17 +1,20 @@
 use crate::domain::value_objects::{price::Price, quantity::Quantity};
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum OrderSide {
     Buy,
     Sell,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum OrderType {
     Market,
     Limit,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Order {
     pub id: String,
@@ -23,6 +26,7 @@ pub struct Order {
 }
 
 impl Order {
+    #[allow(dead_code)]
     pub fn new(
         id: String,
         symbol: String,
@@ -53,6 +57,7 @@ impl Order {
         })
     }
 
+    #[allow(dead_code)]
     pub fn total_value(&self) -> Option<Price> {
         self.price.and_then(|p| p.multiply(self.quantity.value()).ok())
     }

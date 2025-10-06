@@ -1,7 +1,8 @@
 mod domain;
 mod application;
 mod infrastructure;
-use axum::{routing::get, Router, Json, extract::State};
+mod config;
+use axum::{routing::get, Router, Json, extract::{State, Path}};
 use std::net::SocketAddr;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
@@ -50,6 +51,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to create signal combiner with valid strategies and weights");
     mpc_service.set_signal_combiner(combiner);
 
+    // Load trading configuration and subscribe to symbols
+    let config = crate::config::TradingConfig::default();
+    info!("Subscribing to configured symbols...");
+
+    for (exchange, symbols) in &config.symbols {
+        for symbol in symbols {
+            match mpc_service.subscribe(exchange, symbol).await {
+                Ok(_) => info!("Subscribed to {} on {:?}", symbol, exchange),
+                Err(e) => error!("Failed to subscribe to {} on {:?}: {}", symbol, exchange, e),
+            }
+        }
+    }
+
     // Wrap mpc_service in Arc for sharing
     let mpc_service = std::sync::Arc::new(mpc_service);
     let mpc_service_shutdown = mpc_service.clone();
@@ -60,9 +74,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         supervision_task(mpc_service_supervision).await;
     });
 
+    // Spawn price collection and signal generation task
+    let mpc_service_signals = mpc_service.clone();
+    tokio::spawn(async move {
+        signal_generation_task(mpc_service_signals).await;
+    });
+
     let app = Router::new()
         .route("/", get(|| async { "MPC Trading Server with Indicators and Strategies is running!" }))
         .route("/health", get(health_check))
+        .route("/prices", get(get_all_prices))
+        .route("/prices/:symbol", get(get_symbol_price))
+        .route("/signals", get(get_all_signals))
+        .route("/signals/:symbol", get(get_symbol_signal))
+        .route("/candles/:symbol", get(get_symbol_candles))
         .with_state(mpc_service.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
@@ -151,4 +176,127 @@ async fn supervision_task(mpc_service: std::sync::Arc<MpcService>) {
             info!("All actors are healthy");
         }
     }
+}
+
+/// Background task for price collection and signal generation
+async fn signal_generation_task(mpc_service: std::sync::Arc<MpcService>) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+
+    loop {
+        interval.tick().await;
+
+        // Get all tracked symbols
+        let symbols = mpc_service.get_all_symbols().await;
+
+        for symbol in symbols {
+            // Get aggregated price for the symbol
+            if let Ok(aggregated_price) = mpc_service.get_aggregated_price(&symbol).await {
+                // Update candle builder
+                mpc_service.update_candle(symbol.clone(), aggregated_price).await;
+
+                // Try to generate signal
+                if let Some(signal) = mpc_service.generate_signal_for_symbol(&symbol).await {
+                    info!(
+                        "Signal for {}: {:?} (confidence: {:.2})",
+                        symbol, signal.signal, signal.confidence
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Get aggregated prices for all symbols
+async fn get_all_prices(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+) -> Json<HashMap<String, serde_json::Value>> {
+    let symbols = mpc_service.get_all_symbols().await;
+    let mut prices = HashMap::new();
+
+    for symbol in symbols {
+        if let Ok(price) = mpc_service.get_aggregated_price(&symbol).await {
+            prices.insert(symbol, serde_json::json!({
+                "price": price.value(),
+                "aggregated": true
+            }));
+        }
+    }
+
+    Json(prices)
+}
+
+/// Get aggregated price for a specific symbol
+async fn get_symbol_price(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    Path(symbol): Path<String>,
+) -> Json<serde_json::Value> {
+    match mpc_service.get_aggregated_price(&symbol).await {
+        Ok(price) => Json(serde_json::json!({
+            "symbol": symbol,
+            "price": price.value(),
+            "aggregated": true
+        })),
+        Err(e) => Json(serde_json::json!({
+            "error": e
+        })),
+    }
+}
+
+/// Get signals for all symbols
+async fn get_all_signals(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+) -> Json<HashMap<String, serde_json::Value>> {
+    let symbols = mpc_service.get_all_symbols().await;
+    let mut signals = HashMap::new();
+
+    for symbol in symbols {
+        if let Some(signal) = mpc_service.generate_signal_for_symbol(&symbol).await {
+            signals.insert(symbol, serde_json::json!({
+                "signal": format!("{:?}", signal.signal),
+                "confidence": signal.confidence
+            }));
+        }
+    }
+
+    Json(signals)
+}
+
+/// Get signal for a specific symbol
+async fn get_symbol_signal(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    Path(symbol): Path<String>,
+) -> Json<serde_json::Value> {
+    match mpc_service.generate_signal_for_symbol(&symbol).await {
+        Some(signal) => Json(serde_json::json!({
+            "symbol": symbol,
+            "signal": format!("{:?}", signal.signal),
+            "confidence": signal.confidence
+        })),
+        None => Json(serde_json::json!({
+            "error": "Not enough data to generate signal"
+        })),
+    }
+}
+
+/// Get candles for a specific symbol
+async fn get_symbol_candles(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    Path(symbol): Path<String>,
+) -> Json<serde_json::Value> {
+    let candles = mpc_service.get_candles(&symbol).await;
+    let candle_data: Vec<serde_json::Value> = candles.iter().map(|c| {
+        serde_json::json!({
+            "open": c.open.value(),
+            "high": c.high.value(),
+            "low": c.low.value(),
+            "close": c.close.value(),
+            "volume": c.volume
+        })
+    }).collect();
+
+    Json(serde_json::json!({
+        "symbol": symbol,
+        "candles": candle_data,
+        "count": candles.len()
+    }))
 }

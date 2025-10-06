@@ -14,10 +14,12 @@ impl Price {
         self.0
     }
 
+    #[allow(dead_code)]
     pub fn add(&self, other: Price) -> Result<Price, String> {
         Price::new(self.0 + other.0)
     }
 
+    #[allow(dead_code)]
     pub fn multiply(&self, factor: f64) -> Result<Price, String> {
         if !factor.is_finite() {
             return Err("Factor must be finite".to_string());

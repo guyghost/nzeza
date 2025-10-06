@@ -1,7 +1,9 @@
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Quantity(f64);
 
 impl Quantity {
+    #[allow(dead_code)]
     pub fn new(value: f64) -> Result<Self, String> {
         if value >= 0.0 {
             Ok(Quantity(value))
@@ -10,19 +12,23 @@ impl Quantity {
         }
     }
 
+    #[allow(dead_code)]
     pub fn value(&self) -> f64 {
         self.0
     }
 
+    #[allow(dead_code)]
     pub fn add(&self, other: Quantity) -> Result<Quantity, String> {
         Quantity::new(self.0 + other.0)
     }
 
+    #[allow(dead_code)]
     pub fn subtract(&self, other: Quantity) -> Result<Quantity, String> {
         let result = self.0 - other.0;
         Quantity::new(result)
     }
 
+    #[allow(dead_code)]
     pub fn multiply(&self, factor: f64) -> Result<Quantity, String> {
         if !factor.is_finite() {
             return Err("Factor must be finite".to_string());

@@ -4,7 +4,8 @@
       "Bash(cargo build:*)",
       "Bash(git commit:*)",
       "Bash(cargo test:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(cargo run:*)"
     ],
     "deny": [],
     "ask": []

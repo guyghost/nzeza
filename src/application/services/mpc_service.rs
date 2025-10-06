@@ -1,20 +1,30 @@
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::value_objects::price::Price;
 use crate::infrastructure::adapters::exchange_actor::ExchangeMessage;
 use crate::domain::services::strategies::{SignalCombiner, TradingSignal};
+use crate::domain::services::candle_builder::CandleBuilder;
+use std::sync::Arc;
+use std::time::Duration;
 
 pub struct MpcService {
     pub senders: HashMap<Exchange, mpsc::Sender<ExchangeMessage>>,
     pub signal_combiner: Option<SignalCombiner>,
+    pub candle_builder: Arc<Mutex<CandleBuilder>>,
 }
 
 impl MpcService {
     pub fn new() -> Self {
+        // 1 minute candles, keep 100 candles in history
+        let candle_builder = Arc::new(Mutex::new(
+            CandleBuilder::new(Duration::from_secs(60), 100)
+        ));
+
         Self {
             senders: HashMap::new(),
             signal_combiner: None,
+            candle_builder,
         }
     }
 
@@ -87,6 +97,7 @@ impl MpcService {
         info!("All actors shutdown complete");
     }
 
+    #[allow(dead_code)]
     pub async fn get_price(&self, exchange: &Exchange, symbol: &str) -> Result<Price, String> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
@@ -101,7 +112,50 @@ impl MpcService {
         }
     }
 
+    #[allow(dead_code)]
+    pub async fn subscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), String> {
+        if let Some(sender) = self.senders.get(exchange) {
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
+            let msg = ExchangeMessage::Subscribe {
+                symbol: symbol.to_string(),
+                reply: reply_tx,
+            };
+            sender.send(msg).await.map_err(|e| e.to_string())?;
+            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+        } else {
+            Err(format!("No actor for {:?}", exchange))
+        }
+    }
+
+    #[allow(dead_code)]
+    pub async fn unsubscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), String> {
+        if let Some(sender) = self.senders.get(exchange) {
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
+            let msg = ExchangeMessage::Unsubscribe {
+                symbol: symbol.to_string(),
+                reply: reply_tx,
+            };
+            sender.send(msg).await.map_err(|e| e.to_string())?;
+            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+        } else {
+            Err(format!("No actor for {:?}", exchange))
+        }
+    }
+
+    #[allow(dead_code)]
+    pub async fn get_subscriptions(&self, exchange: &Exchange) -> Result<Vec<String>, String> {
+        if let Some(sender) = self.senders.get(exchange) {
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
+            let msg = ExchangeMessage::GetSubscriptions { reply: reply_tx };
+            sender.send(msg).await.map_err(|e| e.to_string())?;
+            reply_rx.recv().await.ok_or("No response from actor".to_string())
+        } else {
+            Err(format!("No actor for {:?}", exchange))
+        }
+    }
+
     // Pure method: aggregate prices from multiple exchanges
+    #[allow(dead_code)]
     pub fn aggregate_prices(prices: Vec<Price>) -> Result<Price, String> {
         if prices.is_empty() {
             return Err("Cannot aggregate empty price list".to_string());
@@ -112,8 +166,91 @@ impl MpcService {
     }
 
     // Generate trading signal using combined strategies
+    #[allow(dead_code)]
     pub fn generate_trading_signal(&self, candles: &[crate::domain::services::indicators::Candle]) -> Option<TradingSignal> {
         self.signal_combiner.as_ref()?.combine_signals(candles)
+    }
+
+    /// Get aggregated price for a symbol across all exchanges
+    #[allow(dead_code)]
+    pub async fn get_aggregated_price(&self, symbol: &str) -> Result<Price, String> {
+        let mut prices = Vec::new();
+
+        for (exchange, sender) in &self.senders {
+            // Get subscriptions for this exchange
+            let (sub_tx, mut sub_rx) = mpsc::channel(1);
+            sender.send(ExchangeMessage::GetSubscriptions { reply: sub_tx })
+                .await
+                .map_err(|e| format!("Failed to get subscriptions: {}", e))?;
+
+            if let Some(subs) = sub_rx.recv().await {
+                if subs.contains(&symbol.to_string()) {
+                    // Get price for this symbol on this exchange
+                    let (price_tx, mut price_rx) = mpsc::channel(1);
+                    sender.send(ExchangeMessage::GetPrice {
+                        symbol: symbol.to_string(),
+                        reply: price_tx,
+                    })
+                    .await
+                    .map_err(|e| format!("Failed to request price: {}", e))?;
+
+                    if let Some(Ok(price)) = price_rx.recv().await {
+                        prices.push(price);
+                        use tracing::debug;
+                        debug!("Got price {} from {:?} for {}", price.value(), exchange, symbol);
+                    }
+                }
+            }
+        }
+
+        if prices.is_empty() {
+            return Err(format!("No prices available for symbol: {}", symbol));
+        }
+
+        Self::aggregate_prices(prices)
+    }
+
+    /// Get all tracked symbols across all exchanges
+    #[allow(dead_code)]
+    pub async fn get_all_symbols(&self) -> Vec<String> {
+        let mut all_symbols = std::collections::HashSet::new();
+
+        for sender in self.senders.values() {
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
+            if sender.send(ExchangeMessage::GetSubscriptions { reply: reply_tx }).await.is_ok() {
+                if let Some(symbols) = reply_rx.recv().await {
+                    for symbol in symbols {
+                        all_symbols.insert(symbol);
+                    }
+                }
+            }
+        }
+
+        all_symbols.into_iter().collect()
+    }
+
+    /// Update candle builder with new price
+    #[allow(dead_code)]
+    pub async fn update_candle(&self, symbol: String, price: Price) {
+        let mut builder = self.candle_builder.lock().await;
+        builder.add_price(symbol, price);
+    }
+
+    /// Get candles for a symbol
+    #[allow(dead_code)]
+    pub async fn get_candles(&self, symbol: &str) -> Vec<crate::domain::services::indicators::Candle> {
+        let builder = self.candle_builder.lock().await;
+        builder.get_candles(symbol)
+    }
+
+    /// Generate signal for a specific symbol
+    #[allow(dead_code)]
+    pub async fn generate_signal_for_symbol(&self, symbol: &str) -> Option<TradingSignal> {
+        let candles = self.get_candles(symbol).await;
+        if candles.len() < 30 {
+            return None; // Need at least 30 candles for strategies
+        }
+        self.generate_trading_signal(&candles)
     }
 }
 
@@ -205,5 +342,42 @@ mod tests {
         let result = service.get_price(&crate::domain::entities::exchange::Exchange::Binance, "BTCUSDT").await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().value(), 55000.0);
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_unsubscribe() {
+        let mut service = MpcService::new();
+
+        let mock_price = crate::domain::value_objects::price::Price::new(50000.0).unwrap();
+        let sender = crate::infrastructure::adapters::exchange_actor::MockExchangeActor::spawn(
+            crate::domain::entities::exchange::Exchange::Binance,
+            mock_price,
+        );
+        service.add_actor(crate::domain::entities::exchange::Exchange::Binance, sender);
+
+        // Test subscribe
+        let result = service.subscribe(&crate::domain::entities::exchange::Exchange::Binance, "BTCUSDT").await;
+        assert!(result.is_ok());
+
+        // Test unsubscribe
+        let result = service.unsubscribe(&crate::domain::entities::exchange::Exchange::Binance, "BTCUSDT").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_subscriptions() {
+        let mut service = MpcService::new();
+
+        let mock_price = crate::domain::value_objects::price::Price::new(50000.0).unwrap();
+        let sender = crate::infrastructure::adapters::exchange_actor::MockExchangeActor::spawn(
+            crate::domain::entities::exchange::Exchange::Binance,
+            mock_price,
+        );
+        service.add_actor(crate::domain::entities::exchange::Exchange::Binance, sender);
+
+        // Get subscriptions
+        let result = service.get_subscriptions(&crate::domain::entities::exchange::Exchange::Binance).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 0); // Mock actor returns empty list
     }
 }
