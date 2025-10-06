@@ -21,6 +21,8 @@ Le serveur inclut des outils avancés pour le trading algorithmique :
 
 Le système utilise `tracing` pour la journalisation avec différents niveaux de verbosité. La configuration se fait via la variable d'environnement `RUST_LOG`.
 
+**Note:** Les variables d'environnement peuvent être configurées dans un fichier `.env` à la racine du projet. Voir `ENV-README.md` pour les instructions détaillées.
+
 ### Niveaux de Log Disponibles
 
 - **`trace`** : Le plus verbeux - tous les détails internes
@@ -99,6 +101,9 @@ export DYDX_MNEMONIC="your twelve word mnemonic phrase here"
 
 # Ou l'ajouter à votre ~/.bashrc ou ~/.zshrc pour la persistance
 echo 'export DYDX_MNEMONIC="your twelve word mnemonic phrase here"' >> ~/.bashrc
+
+# Ou utiliser le fichier .env (recommandé)
+echo 'DYDX_MNEMONIC=your twelve word mnemonic phrase here' >> .env
 ```
 
 ### Sécurité Importante
@@ -148,6 +153,11 @@ export COINBASE_PASSPHRASE="your_passphrase_here"
 echo 'export COINBASE_API_KEY="your_api_key_here"' >> ~/.bashrc
 echo 'export COINBASE_API_SECRET="your_api_secret_here"' >> ~/.bashrc
 echo 'export COINBASE_PASSPHRASE="your_passphrase_here"' >> ~/.bashrc
+
+# Ou utiliser le fichier .env (recommandé)
+echo 'COINBASE_API_KEY=your_api_key_here' >> .env
+echo 'COINBASE_API_SECRET=your_api_secret_here' >> .env
+echo 'COINBASE_PASSPHRASE=your_passphrase_here' >> .env
 ```
 
 ### Création des Clés API Coinbase

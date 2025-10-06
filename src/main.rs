@@ -43,6 +43,14 @@ fn get_exchange_name(exchange: &Exchange) -> &'static str {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load environment variables from .env file
+    if let Err(e) = dotenvy::dotenv() {
+        tracing::warn!("Could not load .env file: {}", e);
+        tracing::info!("Continuing with environment variables from system");
+    } else {
+        tracing::info!("Loaded environment variables from .env file");
+    }
+
     // Initialize logging
     tracing_subscriber::registry()
         .with(
