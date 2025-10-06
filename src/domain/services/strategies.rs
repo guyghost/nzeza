@@ -9,7 +9,7 @@ pub enum Signal {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TradingSignal {
     pub signal: Signal,
     pub confidence: f64, // 0.0 to 1.0

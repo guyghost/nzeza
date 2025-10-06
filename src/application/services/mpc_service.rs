@@ -7,12 +7,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 pub struct MpcService {
     pub senders: HashMap<Exchange, mpsc::Sender<ExchangeMessage>>,
     pub signal_combiner: Option<SignalCombiner>,
     pub candle_builder: Arc<Mutex<CandleBuilder>>,
+    pub last_signals: Arc<Mutex<HashMap<String, TradingSignal>>>,
 }
 
 impl MpcService {
@@ -26,6 +27,7 @@ impl MpcService {
             senders: HashMap::new(),
             signal_combiner: None,
             candle_builder,
+            last_signals: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -273,7 +275,99 @@ impl MpcService {
         if candles.len() < 30 {
             return None; // Need at least 30 candles for strategies
         }
-        self.generate_trading_signal(&candles)
+        let signal = self.generate_trading_signal(&candles)?;
+        
+        // Store the signal
+        let mut last_signals = self.last_signals.lock().await;
+        last_signals.insert(symbol.to_string(), signal.clone());
+        
+        Some(signal)
+    }
+
+    /// Get last signal for a symbol
+    #[allow(dead_code)]
+    pub async fn get_last_signal(&self, symbol: &str) -> Option<TradingSignal> {
+        let last_signals = self.last_signals.lock().await;
+        last_signals.get(symbol).cloned()
+    }
+
+    /// Get all last signals
+    #[allow(dead_code)]
+    pub async fn get_all_last_signals(&self) -> HashMap<String, TradingSignal> {
+        let last_signals = self.last_signals.lock().await;
+        last_signals.clone()
+    }
+
+    /// Execute order based on signal
+    #[allow(dead_code)]
+    pub async fn execute_order_from_signal(&self, symbol: &str, signal: &TradingSignal) -> Result<String, String> {
+        use crate::domain::entities::order::{Order, OrderType, OrderSide};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Get current price (for logging purposes)
+        let _current_price = self.get_aggregated_price(symbol).await?;
+        
+        // Determine order side and quantity based on signal
+        let (order_side, quantity) = match signal.signal {
+            crate::domain::services::strategies::Signal::Buy => {
+                (OrderSide::Buy, 0.001) // Small test quantity
+            },
+            crate::domain::services::strategies::Signal::Sell => {
+                (OrderSide::Sell, 0.001) // Small test quantity
+            },
+            crate::domain::services::strategies::Signal::Hold => {
+                return Ok("No order executed - signal is HOLD".to_string());
+            }
+        };
+
+        // Only execute if confidence is high enough
+        if signal.confidence < 0.7 {
+            return Ok(format!("Signal confidence {:.2} too low for execution (minimum 0.7)", signal.confidence));
+        }
+
+        // Generate unique order ID
+        let order_id = format!("order_{}_{}", 
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+            symbol
+        );
+
+        // For now, we'll simulate order execution since we don't have actual exchange integration
+        // In a real implementation, this would send orders to exchanges
+        let order = Order::new(
+            order_id,
+            symbol.to_string(),
+            order_side,
+            OrderType::Market,
+            None, // Market order has no price
+            quantity,
+        ).map_err(|e| format!("Failed to create order: {}", e))?;
+
+        info!("🚀 ORDER EXECUTED: {:?} {} {} at market price (confidence: {:.2})", 
+              order.side, order.quantity.value(), symbol, signal.confidence);
+
+        Ok(format!("Order executed: {:?} {} {} at market price", 
+                  order.side, order.quantity.value(), symbol))
+    }
+
+    /// Check and execute orders for all symbols with signals
+    #[allow(dead_code)]
+    pub async fn check_and_execute_orders(&self) -> Vec<Result<String, String>> {
+        let mut results = Vec::new();
+        let last_signals = self.get_all_last_signals().await;
+
+        for (symbol, signal) in last_signals {
+            match self.execute_order_from_signal(&symbol, &signal).await {
+                Ok(msg) => {
+                    results.push(Ok(msg));
+                },
+                Err(e) => {
+                    warn!("Failed to execute order for {}: {}", symbol, e);
+                    results.push(Err(format!("{}: {}", symbol, e)));
+                }
+            }
+        }
+
+        results
     }
 }
 

@@ -2,7 +2,7 @@ mod domain;
 mod application;
 mod infrastructure;
 mod config;
-use axum::{routing::get, Router, Json, extract::{State, Path}};
+use axum::{routing::{get, post}, Router, Json, extract::{State, Path}};
 use std::net::SocketAddr;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
@@ -94,6 +94,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         signal_generation_task(mpc_service_signals).await;
     });
 
+    // Spawn order execution task
+    let mpc_service_orders = mpc_service.clone();
+    tokio::spawn(async move {
+        order_execution_task(mpc_service_orders).await;
+    });
+
     let app = Router::new()
         .route("/", get(|| async { "MPC Trading Server with Indicators and Strategies is running!" }))
         .route("/health", get(health_check))
@@ -101,6 +107,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/prices/:symbol", get(get_symbol_price))
         .route("/signals", get(get_all_signals))
         .route("/signals/:symbol", get(get_symbol_signal))
+        .route("/orders/execute", post(execute_pending_orders))
+        .route("/orders/:symbol/execute", post(execute_symbol_order))
         .route("/candles/:symbol", get(get_symbol_candles))
         .with_state(mpc_service.clone());
 
@@ -227,13 +235,40 @@ async fn signal_generation_task(mpc_service: std::sync::Arc<MpcService>) {
                 // Try to generate signal
                 if let Some(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
                     info!(
-                        "Signal for {}: {:?} (confidence: {:.2})",
+                        "📊 Signal for {}: {:?} (confidence: {:.2})",
                         normalized_symbol, signal.signal, signal.confidence
                     );
                 }
             } else {
                 debug!("Impossible d'obtenir le prix agrégé pour {}", normalized_symbol);
             }
+        }
+    }
+}
+
+/// Background task for order execution based on signals
+async fn order_execution_task(mpc_service: std::sync::Arc<MpcService>) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30)); // Check every 30 seconds
+
+    loop {
+        interval.tick().await;
+
+        info!("🔍 Checking for orders to execute...");
+        let results = mpc_service.check_and_execute_orders().await;
+        
+        let successful_orders = results.iter().filter(|r| r.is_ok()).count();
+        let failed_orders = results.iter().filter(|r| r.is_err()).count();
+
+        if successful_orders > 0 {
+            info!("✅ {} orders executed successfully", successful_orders);
+        }
+        
+        if failed_orders > 0 {
+            warn!("❌ {} orders failed to execute", failed_orders);
+        }
+
+        if successful_orders == 0 && failed_orders == 0 {
+            debug!("No signals available for order execution");
         }
     }
 }
@@ -325,6 +360,64 @@ async fn get_symbol_signal(
         None => Json(serde_json::json!({
             "error": "Not enough data to generate signal"
         })),
+    }
+}
+
+/// Execute pending orders for all symbols
+async fn execute_pending_orders(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+) -> Json<serde_json::Value> {
+    let results = mpc_service.check_and_execute_orders().await;
+    
+    let successful: Vec<String> = results.iter()
+        .filter_map(|r| r.as_ref().ok())
+        .cloned()
+        .collect();
+    
+    let failed: Vec<String> = results.iter()
+        .filter_map(|r| r.as_ref().err())
+        .cloned()
+        .collect();
+
+    Json(serde_json::json!({
+        "executed_orders": successful.len(),
+        "failed_orders": failed.len(),
+        "successful": successful,
+        "failed": failed
+    }))
+}
+
+/// Execute order for a specific symbol
+async fn execute_symbol_order(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+    Path(symbol): Path<String>,
+) -> Json<serde_json::Value> {
+    let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
+    
+    if let Some(signal) = mpc_service.get_last_signal(&normalized_symbol).await {
+        match mpc_service.execute_order_from_signal(&normalized_symbol, &signal).await {
+            Ok(msg) => Json(serde_json::json!({
+                "success": true,
+                "symbol": symbol,
+                "normalized_symbol": normalized_symbol,
+                "message": msg,
+                "signal": format!("{:?}", signal.signal),
+                "confidence": signal.confidence
+            })),
+            Err(e) => Json(serde_json::json!({
+                "success": false,
+                "symbol": symbol,
+                "normalized_symbol": normalized_symbol,
+                "error": e
+            }))
+        }
+    } else {
+        Json(serde_json::json!({
+            "success": false,
+            "symbol": symbol,
+            "normalized_symbol": normalized_symbol,
+            "error": "No signal available for this symbol"
+        }))
     }
 }
 
