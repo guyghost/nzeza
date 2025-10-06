@@ -567,7 +567,7 @@ impl ExchangeActor {
         }
     }
 
-    #[allow(dead_code)]
+
     fn parse_price(exchange: &Exchange, data: &serde_json::Value) -> Option<Price> {
         match exchange {
             Exchange::Binance => data["c"]

@@ -1,11 +1,11 @@
 use crate::domain::errors::ValidationError;
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Quantity(f64);
 
 impl Quantity {
-    #[allow(dead_code)]
+
     pub fn new(value: f64) -> Result<Self, ValidationError> {
         if !value.is_finite() {
             return Err(ValidationError::MustBeFinite);
@@ -16,23 +16,23 @@ impl Quantity {
         Ok(Quantity(value))
     }
 
-    #[allow(dead_code)]
+
     pub fn value(&self) -> f64 {
         self.0
     }
 
-    #[allow(dead_code)]
+
     pub fn add(&self, other: Quantity) -> Result<Quantity, ValidationError> {
         Quantity::new(self.0 + other.0)
     }
 
-    #[allow(dead_code)]
+
     pub fn subtract(&self, other: Quantity) -> Result<Quantity, ValidationError> {
         let result = self.0 - other.0;
         Quantity::new(result)
     }
 
-    #[allow(dead_code)]
+
     pub fn multiply(&self, factor: f64) -> Result<Quantity, ValidationError> {
         if !factor.is_finite() {
             return Err(ValidationError::MustBeFinite);

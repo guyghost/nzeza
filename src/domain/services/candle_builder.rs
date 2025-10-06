@@ -125,7 +125,7 @@ impl CandleBuilder {
     }
 
     /// Get number of candles for a symbol
-    #[allow(dead_code)]
+
     pub fn candle_count(&self, symbol: &str) -> usize {
         self.candles
             .get(symbol)
@@ -134,14 +134,14 @@ impl CandleBuilder {
     }
 
     /// Clear all data for a symbol
-    #[allow(dead_code)]
+
     pub fn clear_symbol(&mut self, symbol: &str) {
         self.price_updates.remove(symbol);
         self.candles.remove(symbol);
     }
 
     /// Get all tracked symbols
-    #[allow(dead_code)]
+
     pub fn get_symbols(&self) -> Vec<String> {
         self.candles.keys().cloned().collect()
     }

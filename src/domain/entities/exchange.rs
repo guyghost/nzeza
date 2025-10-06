@@ -10,7 +10,7 @@ pub enum Exchange {
 }
 
 impl Exchange {
-    #[allow(dead_code)]
+
     pub fn name(&self) -> &str {
         match self {
             Exchange::Dydx => "dydx",

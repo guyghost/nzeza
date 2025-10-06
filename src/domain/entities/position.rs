@@ -2,7 +2,7 @@ use crate::domain::value_objects::{price::Price, quantity::Quantity};
 use crate::domain::errors::ValidationError;
 use chrono::{DateTime, Utc};
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone)]
 pub enum PositionSide {
     Long,
@@ -18,7 +18,7 @@ impl std::fmt::Display for PositionSide {
     }
 }
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone)]
 pub struct Position {
     pub id: String,
@@ -33,7 +33,7 @@ pub struct Position {
 }
 
 impl Position {
-    #[allow(dead_code)]
+
     pub fn new(
         id: String,
         symbol: String,
@@ -54,7 +54,7 @@ impl Position {
         }
     }
 
-    #[allow(dead_code)]
+
     pub fn new_with_stops(
         id: String,
         symbol: String,
@@ -93,12 +93,12 @@ impl Position {
         Ok(position)
     }
 
-    #[allow(dead_code)]
+
     pub fn update_price(&mut self, price: Price) {
         self.current_price = Some(price);
     }
 
-    #[allow(dead_code)]
+
     pub fn unrealized_pnl(&self) -> Option<Price> {
         self.current_price.and_then(|current_price| {
             let price_diff = match self.side {
@@ -109,7 +109,7 @@ impl Position {
         })
     }
 
-    #[allow(dead_code)]
+
     pub fn should_stop_loss(&self) -> bool {
         if let (Some(current_price), Some(stop_loss)) = (self.current_price, self.stop_loss_price) {
             match self.side {
@@ -121,7 +121,7 @@ impl Position {
         }
     }
 
-    #[allow(dead_code)]
+
     pub fn should_take_profit(&self) -> bool {
         if let (Some(current_price), Some(take_profit)) =
             (self.current_price, self.take_profit_price)
@@ -135,7 +135,7 @@ impl Position {
         }
     }
 
-    #[allow(dead_code)]
+
     pub fn set_stop_loss_percentage(&mut self, percentage: f64) -> Result<(), ValidationError> {
         let sl_price = match self.side {
             PositionSide::Long => {
@@ -149,7 +149,7 @@ impl Position {
         Ok(())
     }
 
-    #[allow(dead_code)]
+
     pub fn set_take_profit_percentage(&mut self, percentage: f64) -> Result<(), ValidationError> {
         let tp_price = match self.side {
             PositionSide::Long => {

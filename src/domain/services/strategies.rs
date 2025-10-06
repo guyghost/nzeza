@@ -2,7 +2,7 @@ use crate::domain::services::indicators::{
     BollingerBands, Candle, Indicator, StochasticOscillator, EMA, MACD, RSI, VWAP,
 };
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Signal {
     Buy,
@@ -10,25 +10,25 @@ pub enum Signal {
     Hold,
 }
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone)]
 pub struct TradingSignal {
     pub signal: Signal,
     pub confidence: f64, // 0.0 to 1.0
 }
 
-#[allow(dead_code)]
+
 pub trait Strategy {
     fn generate_signal(&self, candles: &[Candle]) -> Option<TradingSignal>;
 }
 
-#[allow(dead_code)]
+
 pub struct FastScalping {
     pub ema_short: EMA,
     pub ema_long: EMA,
 }
 
-#[allow(dead_code)]
+
 impl FastScalping {
     pub fn new() -> Self {
         FastScalping {
@@ -68,13 +68,13 @@ impl Strategy for FastScalping {
     }
 }
 
-#[allow(dead_code)]
+
 pub struct MomentumScalping {
     pub rsi: RSI,
     pub macd: MACD,
 }
 
-#[allow(dead_code)]
+
 impl MomentumScalping {
     pub fn new() -> Self {
         MomentumScalping {
@@ -118,14 +118,14 @@ impl Strategy for MomentumScalping {
     }
 }
 
-#[allow(dead_code)]
+
 pub struct ConservativeScalping {
     pub bollinger: BollingerBands,
     pub stoch: StochasticOscillator,
     pub vwap: VWAP,
 }
 
-#[allow(dead_code)]
+
 impl ConservativeScalping {
     pub fn new() -> Self {
         ConservativeScalping {
@@ -174,14 +174,14 @@ impl Strategy for ConservativeScalping {
     }
 }
 
-#[allow(dead_code)]
+
 pub struct SignalCombiner {
     pub strategies: Vec<Box<dyn Strategy + Send + Sync>>,
     pub strategy_names: Vec<String>,
     pub weights: Vec<f64>,
 }
 
-#[allow(dead_code)]
+
 impl SignalCombiner {
     pub fn new(
         strategies: Vec<(String, Box<dyn Strategy + Send + Sync>)>,

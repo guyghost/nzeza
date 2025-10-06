@@ -165,7 +165,7 @@ impl MpcService {
         info!("All actors shutdown complete");
     }
 
-    #[allow(dead_code)]
+
     pub async fn get_price(&self, exchange: &Exchange, symbol: &str) -> Result<Price, MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
@@ -184,7 +184,7 @@ impl MpcService {
         }
     }
 
-    #[allow(dead_code)]
+
     pub async fn subscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
@@ -203,7 +203,7 @@ impl MpcService {
         }
     }
 
-    #[allow(dead_code)]
+
     pub async fn unsubscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
@@ -222,7 +222,7 @@ impl MpcService {
         }
     }
 
-    #[allow(dead_code)]
+
     pub async fn get_subscriptions(&self, exchange: &Exchange) -> Result<Vec<String>, MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
@@ -235,7 +235,7 @@ impl MpcService {
     }
 
     // Pure method: aggregate prices from multiple exchanges
-    #[allow(dead_code)]
+
     pub fn aggregate_prices(prices: &[Price]) -> Result<Price, MpcError> {
         if prices.is_empty() {
             return Err(MpcError::NoPricesAvailable {
@@ -248,7 +248,7 @@ impl MpcService {
     }
 
     // Generate trading signal using combined strategies
-    #[allow(dead_code)]
+
     pub async fn generate_trading_signal(
         &self,
         candles: &[crate::domain::services::indicators::Candle],
@@ -261,7 +261,7 @@ impl MpcService {
     }
 
     /// Generate trading signal and track individual strategy signals
-    #[allow(dead_code)]
+
     pub async fn generate_trading_signal_with_tracking(
         &self,
         candles: &[crate::domain::services::indicators::Candle],
@@ -283,7 +283,7 @@ impl MpcService {
     }
 
     /// Get aggregated price for a symbol across all exchanges (using normalized symbols)
-    #[allow(dead_code)]
+
     pub async fn get_aggregated_price(&self, symbol: &str) -> Result<Price, MpcError> {
         use crate::config::TradingConfig;
         let normalized_symbol = TradingConfig::normalize_symbol(symbol);
@@ -350,7 +350,7 @@ impl MpcService {
     }
 
     /// Get all tracked symbols across all exchanges
-    #[allow(dead_code)]
+
     pub async fn get_all_symbols(&self) -> Vec<String> {
         let mut all_symbols = std::collections::HashSet::new();
 
@@ -373,7 +373,7 @@ impl MpcService {
     }
 
     /// Update candle builder with new price
-    #[allow(dead_code)]
+
     pub async fn update_candle(&self, symbol: String, price: Price) {
         let mut builder = self.candle_builder.lock().await;
         builder.add_price(symbol.clone(), price);
@@ -385,7 +385,7 @@ impl MpcService {
     }
 
     /// Get candles for a symbol
-    #[allow(dead_code)]
+
     pub async fn get_candles(
         &self,
         symbol: &str,
@@ -395,7 +395,7 @@ impl MpcService {
     }
 
     /// Generate trading signal for a specific symbol
-    #[allow(dead_code)]
+
     pub async fn generate_signal_for_symbol(
         &self,
         symbol: &str,
@@ -410,7 +410,7 @@ impl MpcService {
     }
 
     /// Place an order on a specific exchange
-    #[allow(dead_code)]
+
     pub async fn place_order(&self, exchange: &Exchange, order: Order) -> Result<String, MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
@@ -430,7 +430,7 @@ impl MpcService {
     }
 
     /// Cancel an order on a specific exchange
-    #[allow(dead_code)]
+
     pub async fn cancel_order(&self, exchange: &Exchange, order_id: &str) -> Result<(), MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
@@ -450,7 +450,7 @@ impl MpcService {
     }
 
     /// Get order status from a specific exchange
-    #[allow(dead_code)]
+
     pub async fn get_order_status(
         &self,
         exchange: &Exchange,
@@ -474,14 +474,14 @@ impl MpcService {
     }
 
     /// Store last signal for a symbol (using LRU cache)
-    #[allow(dead_code)]
+
     pub async fn store_signal(&self, symbol: String, signal: TradingSignal) {
         let mut last_signals = self.last_signals.lock().await;
         last_signals.put(symbol, signal); // LRU cache uses .put() instead of .insert()
     }
 
     /// Get all last signals from LRU cache
-    #[allow(dead_code)]
+
     pub async fn get_all_last_signals(&self) -> HashMap<String, TradingSignal> {
         let last_signals = self.last_signals.lock().await;
         last_signals
@@ -491,7 +491,7 @@ impl MpcService {
     }
 
     /// Open a new position
-    #[allow(dead_code)]
+
     pub async fn open_position(
         &self,
         symbol: &str,
@@ -543,7 +543,7 @@ impl MpcService {
     }
 
     /// Close a position
-    #[allow(dead_code)]
+
     pub async fn close_position(&self, position_id: &str) -> Result<(), MpcError> {
         let mut positions = self.open_positions.lock().await;
         if let Some(position) = positions.remove(position_id) {
@@ -562,7 +562,7 @@ impl MpcService {
     }
 
     /// Update position prices with current market prices
-    #[allow(dead_code)]
+
     pub async fn update_position_prices(&self) -> Result<(), MpcError> {
         let mut positions = self.open_positions.lock().await;
         let mut symbols_to_update = std::collections::HashSet::new();
@@ -587,14 +587,14 @@ impl MpcService {
     }
 
     /// Get all open positions
-    #[allow(dead_code)]
+
     pub async fn get_open_positions(&self) -> HashMap<String, Position> {
         let positions = self.open_positions.lock().await;
         positions.clone()
     }
 
     /// Get total unrealized PnL across all positions
-    #[allow(dead_code)]
+
     pub async fn get_total_unrealized_pnl(&self) -> Price {
         let positions = self.open_positions.lock().await;
         let mut total_pnl = 0.0;
@@ -614,7 +614,7 @@ impl MpcService {
     }
 
     /// Calculate position size based on portfolio percentage and current price
-    #[allow(dead_code)]
+
     pub async fn calculate_position_size(
         &self,
         _symbol: &str,
@@ -638,7 +638,7 @@ impl MpcService {
     }
 
     /// Check and execute stop-loss and take-profit orders
-    #[allow(dead_code)]
+
     pub async fn check_and_execute_stops(&self) -> Vec<Result<String, MpcError>> {
         let mut results = Vec::new();
         let mut positions_to_close = Vec::new();
@@ -672,7 +672,7 @@ impl MpcService {
     }
 
     /// Execute order based on signal
-    #[allow(dead_code)]
+
     pub async fn execute_order_from_signal(
         &self,
         symbol: &str,
@@ -818,7 +818,7 @@ impl MpcService {
     }
 
     /// Check and execute orders for all symbols with signals
-    #[allow(dead_code)]
+
     pub async fn check_and_execute_orders(&self) -> Vec<Result<String, MpcError>> {
         let mut results = Vec::new();
         let last_signals = self.get_all_last_signals().await;
@@ -839,7 +839,7 @@ impl MpcService {
     }
 
     /// Check if trading limits are respected
-    #[allow(dead_code)]
+
     pub async fn check_trading_limits(&self) -> Result<(), MpcError> {
         let trade_history = self.trade_history.lock().await;
         let now = SystemTime::now();
@@ -876,56 +876,56 @@ impl MpcService {
     }
 
     /// Get current trading metrics
-    #[allow(dead_code)]
+
     pub async fn get_trading_metrics(&self) -> TradingMetrics {
         let metrics = self.trading_metrics.lock().await;
         metrics.clone()
     }
 
     /// Get current system health metrics
-    #[allow(dead_code)]
+
     pub async fn get_system_health(&self) -> SystemHealthMetrics {
         let health = self.system_health.lock().await;
         health.clone()
     }
 
     /// Record a completed trade in metrics
-    #[allow(dead_code)]
+
     pub async fn record_trade(&self, pnl: Price, volume: f64, latency_ms: f64) {
         let mut metrics = self.trading_metrics.lock().await;
         metrics.record_trade(pnl, volume, latency_ms);
     }
 
     /// Update unrealized PnL in metrics
-    #[allow(dead_code)]
+
     pub async fn update_unrealized_pnl(&self, unrealized_pnl: Price) {
         let mut metrics = self.trading_metrics.lock().await;
         metrics.update_unrealized_pnl(unrealized_pnl);
     }
 
     /// Update drawdown metrics
-    #[allow(dead_code)]
+
     pub async fn update_drawdown(&self, current_drawdown: Price, max_drawdown: Price) {
         let mut metrics = self.trading_metrics.lock().await;
         metrics.update_drawdown(current_drawdown, max_drawdown);
     }
 
     /// Update system uptime
-    #[allow(dead_code)]
+
     pub async fn update_uptime(&self, uptime: Duration) {
         let mut metrics = self.trading_metrics.lock().await;
         metrics.update_uptime(uptime);
     }
 
     /// Update exchange connection status
-    #[allow(dead_code)]
+
     pub async fn update_exchange_connection(&self, exchange: String, connected: bool) {
         let mut health = self.system_health.lock().await;
         health.update_exchange_connection(exchange, connected);
     }
 
     /// Update WebSocket health for an exchange
-    #[allow(dead_code)]
+
     pub async fn update_websocket_health(
         &self,
         exchange: String,
@@ -936,35 +936,35 @@ impl MpcService {
     }
 
     /// Update system resource usage
-    #[allow(dead_code)]
+
     pub async fn update_system_resources(&self, memory_mb: f64, cpu_percent: f64) {
         let mut health = self.system_health.lock().await;
         health.update_system_resources(memory_mb, cpu_percent);
     }
 
     /// Update trading status (active positions, pending orders)
-    #[allow(dead_code)]
+
     pub async fn update_trading_status(&self, active_positions: u32, pending_orders: u32) {
         let mut health = self.system_health.lock().await;
         health.update_trading_status(active_positions, pending_orders);
     }
 
     /// Record an error for health monitoring
-    #[allow(dead_code)]
+
     pub async fn record_error(&self) {
         let mut health = self.system_health.lock().await;
         health.record_error();
     }
 
     /// Check if system is healthy
-    #[allow(dead_code)]
+
     pub async fn is_system_healthy(&self) -> bool {
         let health = self.system_health.lock().await;
         health.is_system_healthy()
     }
 
     /// Record a signal generated by a specific strategy
-    #[allow(dead_code)]
+
     pub async fn record_strategy_signal(&self, strategy_name: &str) {
         let mut strategy_metrics = self.strategy_metrics.lock().await;
         if let Some(metrics) = strategy_metrics.get_mut(strategy_name) {
@@ -973,7 +973,7 @@ impl MpcService {
     }
 
     /// Record an execution from a specific strategy with PnL
-    #[allow(dead_code)]
+
     pub async fn record_strategy_execution(&self, strategy_name: &str, pnl: Price) {
         let mut strategy_metrics = self.strategy_metrics.lock().await;
         if let Some(metrics) = strategy_metrics.get_mut(strategy_name) {
@@ -982,7 +982,7 @@ impl MpcService {
     }
 
     /// Adjust strategy weights based on performance metrics
-    #[allow(dead_code)]
+
     pub async fn adjust_strategy_weights(&self) -> Result<(), String> {
         let strategy_metrics = {
             let order = {
@@ -1011,14 +1011,14 @@ impl MpcService {
     }
 
     /// Get current strategy metrics
-    #[allow(dead_code)]
+
     pub async fn get_strategy_metrics(&self) -> HashMap<String, StrategyMetrics> {
         let strategy_metrics = self.strategy_metrics.lock().await;
         strategy_metrics.clone()
     }
 
     /// Check for new alerts and update active alerts
-    #[allow(dead_code)]
+
     pub async fn check_alerts(&self) -> Vec<SystemAlert> {
         let trading_metrics = self.trading_metrics.lock().await;
         let system_health = self.system_health.lock().await;
@@ -1055,7 +1055,7 @@ impl MpcService {
     }
 
     /// Get active alerts
-    #[allow(dead_code)]
+
     pub async fn get_active_alerts(&self) -> Vec<SystemAlert> {
         let active_alerts = self.active_alerts.lock().await;
         active_alerts
@@ -1066,7 +1066,7 @@ impl MpcService {
     }
 
     /// Get performance profiles
-    #[allow(dead_code)]
+
     pub async fn get_performance_profiles(
         &self,
     ) -> HashMap<String, crate::domain::services::metrics::PerformanceProfile> {

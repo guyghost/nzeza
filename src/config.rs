@@ -164,7 +164,7 @@ impl TradingConfig {
     }
 
     /// Get all unique normalized symbols (BTC-USD format)
-    #[allow(dead_code)]
+
     pub fn get_normalized_symbols(&self) -> Vec<String> {
         let mut normalized = std::collections::HashSet::new();
 
@@ -179,7 +179,7 @@ impl TradingConfig {
     }
 
     /// Normalize symbol to standard format (BTC-USD)
-    #[allow(dead_code)]
+
     pub fn normalize_symbol(symbol: &str) -> String {
         // Handle different symbol formats to standardize them
         let normalized = if symbol.contains("USDT") {

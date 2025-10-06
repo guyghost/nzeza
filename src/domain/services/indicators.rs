@@ -1,6 +1,6 @@
 use crate::domain::value_objects::price::Price;
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone)]
 pub struct Candle {
     pub open: Price,
@@ -10,7 +10,7 @@ pub struct Candle {
     pub volume: f64,
 }
 
-#[allow(dead_code)]
+
 impl Candle {
     pub fn new(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Result<Self, String> {
         Ok(Candle {
@@ -23,17 +23,17 @@ impl Candle {
     }
 }
 
-#[allow(dead_code)]
+
 pub trait Indicator {
     fn calculate(&self, candles: &[Candle]) -> Vec<f64>;
 }
 
-#[allow(dead_code)]
+
 pub struct EMA {
     pub period: usize,
 }
 
-#[allow(dead_code)]
+
 impl EMA {
     pub fn new(period: usize) -> Self {
         EMA { period }
@@ -89,12 +89,12 @@ impl Indicator for EMA {
     }
 }
 
-#[allow(dead_code)]
+
 pub struct RSI {
     pub period: usize,
 }
 
-#[allow(dead_code)]
+
 impl RSI {
     pub fn new(period: usize) -> Self {
         RSI { period }
@@ -143,7 +143,7 @@ impl Indicator for RSI {
     }
 }
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone)]
 pub struct BollingerBandsValues {
     pub upper: Vec<f64>,
@@ -151,13 +151,13 @@ pub struct BollingerBandsValues {
     pub lower: Vec<f64>,
 }
 
-#[allow(dead_code)]
+
 pub struct BollingerBands {
     pub period: usize,
     pub std_dev: f64,
 }
 
-#[allow(dead_code)]
+
 impl BollingerBands {
     pub fn new(period: usize, std_dev: f64) -> Self {
         BollingerBands { period, std_dev }
@@ -229,14 +229,14 @@ impl Indicator for BollingerBands {
     }
 }
 
-#[allow(dead_code)]
+
 pub struct MACD {
     pub fast_period: usize,
     pub slow_period: usize,
     pub signal_period: usize,
 }
 
-#[allow(dead_code)]
+
 impl MACD {
     pub fn new(fast_period: usize, slow_period: usize, signal_period: usize) -> Self {
         MACD {
@@ -265,13 +265,13 @@ impl Indicator for MACD {
     }
 }
 
-#[allow(dead_code)]
+
 pub struct StochasticOscillator {
     pub k_period: usize,
     pub d_period: usize,
 }
 
-#[allow(dead_code)]
+
 impl StochasticOscillator {
     pub fn new(k_period: usize, d_period: usize) -> Self {
         StochasticOscillator { k_period, d_period }
