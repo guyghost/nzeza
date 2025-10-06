@@ -26,6 +26,67 @@ impl MpcService {
         self.signal_combiner = Some(combiner);
     }
 
+    /// Check health of a specific actor
+    pub async fn check_actor_health(&self, exchange: &Exchange) -> Result<bool, String> {
+        if let Some(sender) = self.senders.get(exchange) {
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
+
+            sender.send(ExchangeMessage::HealthCheck { reply: reply_tx })
+                .await
+                .map_err(|e| format!("Failed to send health check: {}", e))?;
+
+            reply_rx.recv().await
+                .ok_or_else(|| "No health check response".to_string())
+        } else {
+            Err(format!("No actor found for exchange: {:?}", exchange))
+        }
+    }
+
+    /// Check health of all actors
+    pub async fn check_all_actors_health(&self) -> HashMap<Exchange, bool> {
+        use tracing::info;
+        let mut health_status = HashMap::new();
+
+        for exchange in self.senders.keys() {
+            match self.check_actor_health(exchange).await {
+                Ok(is_healthy) => {
+                    health_status.insert(exchange.clone(), is_healthy);
+                    if !is_healthy {
+                        use tracing::warn;
+                        warn!("Actor {:?} is unhealthy", exchange);
+                    }
+                }
+                Err(e) => {
+                    use tracing::error;
+                    error!("Failed to check health of {:?}: {}", exchange, e);
+                    health_status.insert(exchange.clone(), false);
+                }
+            }
+        }
+
+        info!("Health check complete: {:?}", health_status);
+        health_status
+    }
+
+    /// Shutdown all actors gracefully
+    pub async fn shutdown(&self) {
+        use tracing::info;
+
+        info!("Shutting down all exchange actors...");
+
+        for (exchange, sender) in &self.senders {
+            info!("Sending shutdown signal to {:?}", exchange);
+            if let Err(e) = sender.send(ExchangeMessage::Shutdown).await {
+                use tracing::error;
+                error!("Failed to send shutdown to {:?}: {}", exchange, e);
+            }
+        }
+
+        // Give actors time to shutdown gracefully
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        info!("All actors shutdown complete");
+    }
+
     pub async fn get_price(&self, exchange: &Exchange, symbol: &str) -> Result<Price, String> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
