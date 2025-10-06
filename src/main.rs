@@ -45,7 +45,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Box::new(ConservativeScalping::new()),
     ];
     let weights = vec![0.4, 0.4, 0.2]; // Weighted combination
-    let combiner = SignalCombiner::new(strategies, weights);
+    let combiner = SignalCombiner::new(strategies, weights)
+        .expect("Failed to create signal combiner with valid strategies and weights");
     mpc_service.set_signal_combiner(combiner);
 
     let app = Router::new()
@@ -60,29 +61,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up graceful shutdown
     let shutdown_signal = async {
         let ctrl_c = async {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to install Ctrl+C handler");
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => info!("Received Ctrl+C signal"),
+                Err(e) => error!("Failed to install Ctrl+C handler: {}", e),
+            }
         };
 
         #[cfg(unix)]
         let terminate = async {
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to install signal handler")
-                .recv()
-                .await;
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut sig) => {
+                    sig.recv().await;
+                    info!("Received SIGTERM signal");
+                }
+                Err(e) => error!("Failed to install SIGTERM handler: {}", e),
+            }
         };
 
         #[cfg(not(unix))]
         let terminate = std::future::pending::<()>();
 
         tokio::select! {
-            _ = ctrl_c => {
-                info!("Received Ctrl+C signal");
-            },
-            _ = terminate => {
-                info!("Received SIGTERM signal");
-            },
+            _ = ctrl_c => {},
+            _ = terminate => {},
         }
     };
 

@@ -1,8 +1,6 @@
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct Quantity(pub f64);
+pub struct Quantity(f64);
 
-#[allow(dead_code)]
 impl Quantity {
     pub fn new(value: f64) -> Result<Self, String> {
         if value >= 0.0 {
@@ -16,16 +14,20 @@ impl Quantity {
         self.0
     }
 
-    pub fn add(&self, other: Quantity) -> Quantity {
-        Quantity(self.0 + other.0)
+    pub fn add(&self, other: Quantity) -> Result<Quantity, String> {
+        Quantity::new(self.0 + other.0)
     }
 
     pub fn subtract(&self, other: Quantity) -> Result<Quantity, String> {
-        if self.0 >= other.0 {
-            Ok(Quantity(self.0 - other.0))
-        } else {
-            Err("Cannot subtract more than available".to_string())
+        let result = self.0 - other.0;
+        Quantity::new(result)
+    }
+
+    pub fn multiply(&self, factor: f64) -> Result<Quantity, String> {
+        if !factor.is_finite() {
+            return Err("Factor must be finite".to_string());
         }
+        Quantity::new(self.0 * factor)
     }
 }
 
@@ -58,7 +60,7 @@ mod tests {
     fn test_quantity_add() {
         let q1 = Quantity::new(10.0).unwrap();
         let q2 = Quantity::new(5.0).unwrap();
-        let result = q1.add(q2);
+        let result = q1.add(q2).unwrap();
         assert_eq!(result.value(), 15.0);
     }
 
@@ -77,6 +79,20 @@ mod tests {
         let q2 = Quantity::new(10.0).unwrap();
         let result = q1.subtract(q2);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Cannot subtract more than available");
+        assert_eq!(result.unwrap_err(), "Quantity must be non-negative");
+    }
+
+    #[test]
+    fn test_quantity_multiply() {
+        let qty = Quantity::new(10.0).unwrap();
+        let result = qty.multiply(2.5).unwrap();
+        assert_eq!(result.value(), 25.0);
+    }
+
+    #[test]
+    fn test_quantity_multiply_nan() {
+        let qty = Quantity::new(10.0).unwrap();
+        let result = qty.multiply(f64::NAN);
+        assert!(result.is_err());
     }
 }

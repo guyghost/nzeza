@@ -8,19 +8,16 @@ use crate::domain::entities::exchange::Exchange;
 use crate::domain::value_objects::price::Price;
 use tracing::{info, warn, error, debug};
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ExchangeMessage {
     GetPrice { symbol: String, reply: mpsc::Sender<Result<Price, String>> },
 }
 
-#[allow(dead_code)]
 pub struct ExchangeActor {
     pub exchange: Exchange,
     pub last_price: Arc<Mutex<Option<Price>>>,
 }
 
-#[allow(dead_code)]
 impl ExchangeActor {
     pub fn spawn(exchange: Exchange) -> mpsc::Sender<ExchangeMessage> {
         let last_price = Arc::new(Mutex::new(None));
@@ -53,8 +50,33 @@ impl ExchangeActor {
     }
 
     async fn run_websocket(exchange: Exchange, last_price: Arc<Mutex<Option<Price>>>) {
-        info!("Starting WebSocket connection for exchange: {:?}", exchange);
+        use std::time::Duration;
 
+        let mut backoff = Duration::from_secs(1);
+        let max_backoff = Duration::from_secs(60);
+
+        loop {
+            info!("Starting WebSocket connection for exchange: {:?}", exchange);
+
+            match Self::try_websocket_connection(&exchange, &last_price).await {
+                Ok(()) => {
+                    info!("WebSocket connection ended normally for {:?}, reconnecting...", exchange);
+                    backoff = Duration::from_secs(1); // Reset on successful connection
+                }
+                Err(e) => {
+                    error!("WebSocket error for {:?}: {}, retrying in {:?}", exchange, e, backoff);
+                }
+            }
+
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(max_backoff);
+        }
+    }
+
+    async fn try_websocket_connection(
+        exchange: &Exchange,
+        last_price: &Arc<Mutex<Option<Price>>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let (ws_url, subscribe_msg) = match exchange {
             Exchange::Binance => {
                 ("wss://stream.binance.com:9443/ws/btcusdt@ticker".to_string(), None) // For demo, hardcoded BTCUSDT
@@ -73,63 +95,45 @@ impl ExchangeActor {
             }
         };
 
-        let ws_stream = match connect_async(&ws_url).await {
-            Ok((stream, _)) => {
-                info!("Successfully connected to {:?} WebSocket", exchange);
-                stream
-            }
-            Err(e) => {
-                error!("Failed to connect to {:?} WebSocket at {}: {}", exchange, ws_url, e);
-                return;
-            }
-        };
+        let (stream, _) = connect_async(&ws_url).await?;
+        info!("Successfully connected to {:?} WebSocket", exchange);
 
-        let (mut write, mut read) = ws_stream.split();
+        let (mut write, mut read) = stream.split();
 
         // Send subscribe message if needed
         if let Some(msg) = subscribe_msg {
-            if let Err(e) = write.send(Message::Text(msg.clone())).await {
-                error!("Failed to send subscribe message to {:?}: {}", exchange, e);
-                return;
-            }
+            write.send(Message::Text(msg.clone())).await?;
             info!("Sent subscribe message to {:?}: {}", exchange, msg);
         }
 
         while let Some(message) = read.next().await {
-            match message {
-                Ok(Message::Text(text)) => {
+            match message? {
+                Message::Text(text) => {
                     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
-                        let price_opt = Self::parse_price(&exchange, &data);
+                        let price_opt = Self::parse_price(exchange, &data);
                         if let Some(price) = price_opt {
-                            *last_price.lock().await = Some(price.clone());
+                            *last_price.lock().await = Some(price);
                             info!("Updated price for {:?}: {}", exchange, price.value());
                         }
                     } else {
                         warn!("Received invalid JSON from {:?}: {}", exchange, text);
                     }
                 }
-                Ok(Message::Close(frame)) => {
+                Message::Close(frame) => {
                     info!("WebSocket connection closed for {:?}: {:?}", exchange, frame);
-                    break;
+                    return Ok(());
                 }
-                Ok(Message::Ping(payload)) => {
+                Message::Ping(payload) => {
                     debug!("Received ping from {:?}, responding with pong", exchange);
-                    if let Err(e) = write.send(Message::Pong(payload)).await {
-                        error!("Failed to send pong to {:?}: {}", exchange, e);
-                        break;
-                    }
+                    write.send(Message::Pong(payload)).await?;
                 }
-                Ok(other) => {
+                other => {
                     debug!("Received other message type from {:?}: {:?}", exchange, other);
-                }
-                Err(e) => {
-                    error!("WebSocket error for {:?}: {}", exchange, e);
-                    break;
                 }
             }
         }
 
-        warn!("WebSocket connection ended for {:?}", exchange);
+        Ok(())
     }
 
     fn parse_price(exchange: &Exchange, data: &serde_json::Value) -> Option<Price> {

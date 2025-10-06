@@ -121,22 +121,22 @@ impl Strategy for ConservativeScalping {
         if candles.len() < 20 {
             return None;
         }
-        let bb_values = self.bollinger.calculate(candles);
+        let bb_values = self.bollinger.calculate_detailed(candles);
         let stoch_values = self.stoch.calculate(candles);
         let vwap_values = self.vwap.calculate(candles);
 
         let last_close = candles.last()?.close.value();
-        let last_bb_upper = bb_values.get(bb_values.len() - 3)?;
-        let last_bb_lower = bb_values.last()?;
+        let last_bb_upper = *bb_values.upper.last()?;
+        let last_bb_lower = *bb_values.lower.last()?;
         let last_stoch = *stoch_values.last()?;
         let last_vwap = *vwap_values.last()?;
 
         let mut confidence = 0.6;
 
-        if last_close < *last_bb_lower && last_stoch < 20.0 && last_close < last_vwap {
+        if last_close < last_bb_lower && last_stoch < 20.0 && last_close < last_vwap {
             confidence = 0.7;
             Some(TradingSignal { signal: Signal::Buy, confidence })
-        } else if last_close > *last_bb_upper && last_stoch > 80.0 && last_close > last_vwap {
+        } else if last_close > last_bb_upper && last_stoch > 80.0 && last_close > last_vwap {
             confidence = 0.7;
             Some(TradingSignal { signal: Signal::Sell, confidence })
         } else {
@@ -153,9 +153,21 @@ pub struct SignalCombiner {
 
 #[allow(dead_code)]
 impl SignalCombiner {
-    pub fn new(strategies: Vec<Box<dyn Strategy + Send + Sync>>, weights: Vec<f64>) -> Self {
-        assert_eq!(strategies.len(), weights.len());
-        SignalCombiner { strategies, weights }
+    pub fn new(
+        strategies: Vec<Box<dyn Strategy + Send + Sync>>,
+        weights: Vec<f64>
+    ) -> Result<Self, String> {
+        if strategies.len() != weights.len() {
+            return Err(format!(
+                "Strategies count ({}) must match weights count ({})",
+                strategies.len(),
+                weights.len()
+            ));
+        }
+        if strategies.is_empty() {
+            return Err("At least one strategy is required".to_string());
+        }
+        Ok(SignalCombiner { strategies, weights })
     }
 
     pub fn combine_signals(&self, candles: &[Candle]) -> Option<TradingSignal> {
@@ -262,7 +274,7 @@ mod tests {
             Box::new(MomentumScalping::new()),
         ];
         let weights = vec![0.6, 0.4];
-        let combiner = SignalCombiner::new(strategies, weights);
+        let combiner = SignalCombiner::new(strategies, weights).unwrap();
         let candles = create_test_candles();
         let combined_signal = combiner.combine_signals(&candles);
         assert!(combined_signal.is_some());

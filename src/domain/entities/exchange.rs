@@ -7,7 +7,6 @@ pub enum Exchange {
     Kraken,
 }
 
-#[allow(dead_code)]
 impl Exchange {
     pub fn name(&self) -> &str {
         match self {

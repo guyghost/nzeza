@@ -46,11 +46,12 @@ impl EMA {
         let mut ema_values = Vec::with_capacity(values.len());
         let multiplier = 2.0 / (self.period as f64 + 1.0);
 
+        let initial_count = self.period.min(values.len());
         let mut sum = 0.0;
-        for i in 0..self.period.min(values.len()) {
+        for i in 0..initial_count {
             sum += values[i];
         }
-        let mut ema = sum / self.period as f64;
+        let mut ema = sum / initial_count as f64;
         ema_values.push(ema);
 
         for &val in values.iter().skip(self.period) {
@@ -71,11 +72,12 @@ impl Indicator for EMA {
         let multiplier = 2.0 / (self.period as f64 + 1.0);
 
         // First EMA is SMA
+        let initial_count = self.period.min(candles.len());
         let mut sum = 0.0;
-        for i in 0..self.period.min(candles.len()) {
+        for i in 0..initial_count {
             sum += candles[i].close.value();
         }
-        let mut ema = sum / self.period as f64;
+        let mut ema = sum / initial_count as f64;
         ema_values.push(ema);
 
         for candle in candles.iter().skip(self.period) {
@@ -101,7 +103,7 @@ impl RSI {
 
 impl Indicator for RSI {
     fn calculate(&self, candles: &[Candle]) -> Vec<f64> {
-        if candles.len() < self.period + 1 {
+        if self.period == 0 || candles.len() < self.period + 1 {
             return vec![];
         }
         let mut gains = Vec::new();
@@ -118,10 +120,16 @@ impl Indicator for RSI {
             }
         }
 
+        if self.period == 0 || gains.len() < self.period {
+            return vec![];
+        }
+
         let mut rsi_values = Vec::new();
-        for i in (self.period - 1)..gains.len() {
-            let avg_gain = gains[i - self.period + 1..=i].iter().sum::<f64>() / self.period as f64;
-            let avg_loss = losses[i - self.period + 1..=i].iter().sum::<f64>() / self.period as f64;
+        for i in self.period..=gains.len() {
+            let start_idx = i - self.period;
+            let end_idx = i - 1;
+            let avg_gain = gains[start_idx..=end_idx].iter().sum::<f64>() / self.period as f64;
+            let avg_loss = losses[start_idx..=end_idx].iter().sum::<f64>() / self.period as f64;
             let rs = if avg_loss == 0.0 { 100.0 } else { avg_gain / avg_loss };
             let rsi = 100.0 - (100.0 / (1.0 + rs));
             rsi_values.push(rsi);
@@ -129,6 +137,14 @@ impl Indicator for RSI {
 
         rsi_values
     }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct BollingerBandsValues {
+    pub upper: Vec<f64>,
+    pub middle: Vec<f64>,
+    pub lower: Vec<f64>,
 }
 
 #[allow(dead_code)]
@@ -142,17 +158,49 @@ impl BollingerBands {
     pub fn new(period: usize, std_dev: f64) -> Self {
         BollingerBands { period, std_dev }
     }
+
+    /// Calculate Bollinger Bands and return structured data
+    pub fn calculate_detailed(&self, candles: &[Candle]) -> BollingerBandsValues {
+        if self.period == 0 || candles.len() < self.period {
+            return BollingerBandsValues {
+                upper: vec![],
+                middle: vec![],
+                lower: vec![],
+            };
+        }
+
+        let mut upper = Vec::new();
+        let mut middle = Vec::new();
+        let mut lower = Vec::new();
+
+        for i in self.period..=candles.len() {
+            let start_idx = i - self.period;
+            let end_idx = i - 1;
+            let slice = &candles[start_idx..=end_idx];
+            let sma = slice.iter().map(|c| c.close.value()).sum::<f64>() / self.period as f64;
+            let variance = slice.iter().map(|c| (c.close.value() - sma).powi(2)).sum::<f64>() / self.period as f64;
+            let std = variance.sqrt();
+
+            upper.push(sma + self.std_dev * std);
+            middle.push(sma);
+            lower.push(sma - self.std_dev * std);
+        }
+
+        BollingerBandsValues { upper, middle, lower }
+    }
 }
 
 impl Indicator for BollingerBands {
     fn calculate(&self, candles: &[Candle]) -> Vec<f64> {
-        if candles.len() < self.period {
+        if self.period == 0 || candles.len() < self.period {
             return vec![];
         }
         let mut bands = Vec::new();
 
-        for i in (self.period - 1)..candles.len() {
-            let slice = &candles[i - self.period + 1..=i];
+        for i in self.period..=candles.len() {
+            let start_idx = i - self.period;
+            let end_idx = i - 1;
+            let slice = &candles[start_idx..=end_idx];
             let sma = slice.iter().map(|c| c.close.value()).sum::<f64>() / self.period as f64;
             let variance = slice.iter().map(|c| (c.close.value() - sma).powi(2)).sum::<f64>() / self.period as f64;
             let std = variance.sqrt();
@@ -213,19 +261,33 @@ impl Indicator for StochasticOscillator {
         }
         let mut k_values = Vec::new();
 
-        for i in (self.k_period - 1)..candles.len() {
-            let slice = &candles[i - self.k_period + 1..=i];
+        for i in self.k_period..=candles.len() {
+            let start_idx = i - self.k_period;
+            let end_idx = i - 1;
+            let slice = &candles[start_idx..=end_idx];
             let highest = slice.iter().map(|c| c.high.value()).fold(f64::NEG_INFINITY, f64::max);
             let lowest = slice.iter().map(|c| c.low.value()).fold(f64::INFINITY, f64::min);
-            let current_close = candles[i].close.value();
-            let k = 100.0 * (current_close - lowest) / (highest - lowest);
+            let current_close = candles[end_idx].close.value();
+
+            // Handle division by zero when highest == lowest (no price movement)
+            let range = highest - lowest;
+            let k = if range > f64::EPSILON {
+                100.0 * (current_close - lowest) / range
+            } else {
+                50.0 // Neutral value when no price movement
+            };
             k_values.push(k);
         }
 
         // D is SMA of K
         let mut d_values = Vec::new();
-        for i in (self.d_period - 1)..k_values.len() {
-            let sum: f64 = k_values[i - self.d_period + 1..=i].iter().sum();
+        if self.d_period == 0 || k_values.len() < self.d_period {
+            return vec![];
+        }
+        for i in self.d_period..=k_values.len() {
+            let start_idx = i - self.d_period;
+            let end_idx = i - 1;
+            let sum: f64 = k_values[start_idx..=end_idx].iter().sum();
             d_values.push(sum / self.d_period as f64);
         }
 
@@ -245,7 +307,13 @@ impl Indicator for VWAP {
             let typical_price = (candle.high.value() + candle.low.value() + candle.close.value()) / 3.0;
             cumulative_volume += candle.volume;
             cumulative_volume_price += typical_price * candle.volume;
-            let vwap = cumulative_volume_price / cumulative_volume;
+
+            // Handle division by zero when cumulative volume is zero
+            let vwap = if cumulative_volume > f64::EPSILON {
+                cumulative_volume_price / cumulative_volume
+            } else {
+                typical_price // Use typical price if no volume
+            };
             vwap_values.push(vwap);
         }
 

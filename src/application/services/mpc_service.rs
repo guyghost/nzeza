@@ -10,7 +10,6 @@ pub struct MpcService {
     pub signal_combiner: Option<SignalCombiner>,
 }
 
-#[allow(dead_code)]
 impl MpcService {
     pub fn new() -> Self {
         Self {
@@ -42,10 +41,13 @@ impl MpcService {
     }
 
     // Pure method: aggregate prices from multiple exchanges
-    pub fn aggregate_prices(prices: Vec<Price>) -> Price {
+    pub fn aggregate_prices(prices: Vec<Price>) -> Result<Price, String> {
+        if prices.is_empty() {
+            return Err("Cannot aggregate empty price list".to_string());
+        }
         let sum: f64 = prices.iter().map(|p| p.value()).sum();
         let avg = sum / prices.len() as f64;
-        Price(avg) // assuming no error for simplicity
+        Price::new(avg)
     }
 
     // Generate trading signal using combined strategies
@@ -68,7 +70,7 @@ mod tests {
     #[test]
     fn test_aggregate_prices_single() {
         let prices = vec![Price::new(100.0).unwrap()];
-        let avg = MpcService::aggregate_prices(prices);
+        let avg = MpcService::aggregate_prices(prices).unwrap();
         assert_eq!(avg.value(), 100.0);
     }
 
@@ -83,7 +85,8 @@ mod tests {
             Box::new(MomentumScalping::new()),
         ];
         let weights = vec![0.5, 0.5];
-        let combiner = SignalCombiner::new(strategies, weights);
+        let combiner = SignalCombiner::new(strategies, weights)
+            .expect("Failed to create signal combiner");
         service.set_signal_combiner(combiner);
 
         let candles = vec![
