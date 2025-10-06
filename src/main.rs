@@ -1,19 +1,26 @@
-mod domain;
 mod application;
-mod infrastructure;
 mod config;
-use axum::{routing::{get, post, delete}, Router, Json, extract::{State, Path, WebSocketUpgrade}};
-use axum::response::Response;
-use axum::extract::ws::{WebSocket, Message};
-use tokio::sync::broadcast;
-use std::net::SocketAddr;
+mod domain;
+mod infrastructure;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
+use crate::domain::services::strategies::{
+    ConservativeScalping, FastScalping, MomentumScalping, SignalCombiner, Strategy,
+};
 use crate::infrastructure::adapters::exchange_actor::ExchangeActor;
-use crate::domain::services::strategies::{FastScalping, MomentumScalping, ConservativeScalping, SignalCombiner, Strategy};
-use tracing::{info, error, warn, debug};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use axum::extract::ws::{Message, WebSocket};
+use axum::response::Response;
+use axum::{
+    extract::{Path, State, WebSocketUpgrade},
+    routing::{delete, get, post},
+    Json, Router,
+};
 use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::time::Duration;
+use tokio::sync::broadcast;
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Clone)]
 struct AppState {
@@ -55,18 +62,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load trading configuration and subscribe to symbols
     let mut config = crate::config::TradingConfig::from_env();
-    
+
     // Disable automated trading if DYDX_MNEMONIC is not set
     if std::env::var("DYDX_MNEMONIC").is_err() {
         config.enable_automated_trading = false;
         warn!("DYDX_MNEMONIC not set - automated trading disabled");
     }
-    
+
     info!("Configuration chargée depuis l'environnement:");
-    info!("  Seuil de confiance minimum: {:.2}", config.min_confidence_threshold);
-    info!("  Trading automatisé activé: {}", config.enable_automated_trading);
-    info!("  Taille de position par défaut: {}", config.default_position_size);
-    info!("  Positions max par symbole: {}", config.max_positions_per_symbol);
+    info!(
+        "  Seuil de confiance minimum: {:.2}",
+        config.min_confidence_threshold
+    );
+    info!(
+        "  Trading automatisé activé: {}",
+        config.enable_automated_trading
+    );
+    info!(
+        "  Taille de position par défaut: {}",
+        config.default_position_size
+    );
+    info!(
+        "  Positions max par symbole: {}",
+        config.max_positions_per_symbol
+    );
     info!("  Positions totales max: {}", config.max_total_positions);
     if let Some(sl) = config.stop_loss_percentage {
         info!("  Stop-loss: {:.1}%", sl * 100.0);
@@ -74,7 +93,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(tp) = config.take_profit_percentage {
         info!("  Take-profit: {:.1}%", tp * 100.0);
     }
-    info!("  Portfolio % per position: {:.2}%", config.portfolio_percentage_per_position * 100.0);
+    info!(
+        "  Portfolio % per position: {:.2}%",
+        config.portfolio_percentage_per_position * 100.0
+    );
     info!("  Max trades per hour: {}", config.max_trades_per_hour);
     info!("  Max trades per day: {}", config.max_trades_per_day);
 
@@ -87,22 +109,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     mpc_service.add_actor(Exchange::Kraken, kraken_sender);
 
     // Initialize signal combiner with strategies
-    let strategies: Vec<Box<dyn Strategy + Send + Sync>> = vec![
-        Box::new(FastScalping::new()),
-        Box::new(MomentumScalping::new()),
-        Box::new(ConservativeScalping::new()),
+    let strategies = vec![
+        (
+            "FastScalping".to_string(),
+            Box::new(FastScalping::new()) as Box<dyn Strategy + Send + Sync>,
+        ),
+        (
+            "MomentumScalping".to_string(),
+            Box::new(MomentumScalping::new()) as Box<dyn Strategy + Send + Sync>,
+        ),
+        (
+            "ConservativeScalping".to_string(),
+            Box::new(ConservativeScalping::new()) as Box<dyn Strategy + Send + Sync>,
+        ),
     ];
     let weights = vec![0.4, 0.4, 0.2];
-    let combiner = SignalCombiner::new(strategies, weights)
-        .expect("Failed to create signal combiner");
+    let combiner =
+        SignalCombiner::new(strategies, weights).expect("Failed to create signal combiner");
     mpc_service.set_signal_combiner(combiner).await;
 
     for (exchange, symbols) in &config.symbols {
-        info!("Souscription à {} symboles sur {}", symbols.len(), get_exchange_name(exchange));
+        info!(
+            "Souscription à {} symboles sur {}",
+            symbols.len(),
+            get_exchange_name(exchange)
+        );
         for symbol in symbols {
             match mpc_service.subscribe(exchange, symbol).await {
-                Ok(_) => info!("✓ Souscrit à {} sur {}", symbol, get_exchange_name(exchange)),
-                Err(e) => error!("✗ Échec de souscription à {} sur {}: {}", symbol, get_exchange_name(exchange), e),
+                Ok(_) => info!(
+                    "✓ Souscrit à {} sur {}",
+                    symbol,
+                    get_exchange_name(exchange)
+                ),
+                Err(e) => error!(
+                    "✗ Échec de souscription à {} sur {}: {}",
+                    symbol,
+                    get_exchange_name(exchange),
+                    e
+                ),
             }
         }
     }
@@ -140,8 +184,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         alerting_task(app_state_clone).await;
     });
 
+    // Spawn metrics broadcast task
+    let app_state_clone = app_state.clone();
+    let metrics_tx_for_task = metrics_tx.clone();
+    tokio::spawn(async move {
+        metrics_broadcast_task(app_state_clone, metrics_tx_for_task, Duration::from_secs(5)).await;
+    });
+
+    // Spawn strategy weight adjustment task
+    let app_state_clone = app_state.clone();
+    tokio::spawn(async move {
+        strategy_weight_adjustment_task(app_state_clone, Duration::from_secs(300)).await;
+    });
+
     let app = Router::new()
-        .route("/", get(|| async { "MPC Trading Server with Indicators and Strategies is running!" }))
+        .route(
+            "/",
+            get(|| async { "MPC Trading Server with Indicators and Strategies is running!" }),
+        )
         .route("/health", get(health_check))
         .route("/metrics", get(get_metrics))
         .route("/ws/metrics", get(metrics_websocket_handler))
@@ -242,10 +302,10 @@ async fn supervision_task(app_state: AppState) {
 
         // Update system health metrics
         for (exchange, is_healthy) in &health {
-            app_state.mpc_service.update_exchange_connection(
-                format!("{:?}", exchange),
-                *is_healthy
-            ).await;
+            app_state
+                .mpc_service
+                .update_exchange_connection(format!("{:?}", exchange), *is_healthy)
+                .await;
         }
 
         let unhealthy_count = health.values().filter(|&&v| !v).count();
@@ -284,20 +344,38 @@ async fn signal_generation_task(app_state: AppState) {
 
         for normalized_symbol in normalized_symbols {
             // Get aggregated price for the normalized symbol
-            if let Ok(aggregated_price) = app_state.mpc_service.get_aggregated_price(&normalized_symbol).await {
-                info!("Prix agrégé pour {}: {:.2}", normalized_symbol, aggregated_price.value());
+            if let Ok(aggregated_price) = app_state
+                .mpc_service
+                .get_aggregated_price(&normalized_symbol)
+                .await
+            {
+                info!(
+                    "Prix agrégé pour {}: {:.2}",
+                    normalized_symbol,
+                    aggregated_price.value()
+                );
                 // Update candle builder
-                app_state.mpc_service.update_candle(normalized_symbol.clone(), aggregated_price).await;
+                app_state
+                    .mpc_service
+                    .update_candle(normalized_symbol.clone(), aggregated_price)
+                    .await;
 
                 // Try to generate signal
-                if let Ok(signal) = app_state.mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+                if let Ok(signal) = app_state
+                    .mpc_service
+                    .generate_signal_for_symbol(&normalized_symbol)
+                    .await
+                {
                     info!(
                         "Signal for {}: {:?} (confidence: {:.2})",
                         normalized_symbol, signal.signal, signal.confidence
                     );
 
                     // Store the signal for automated execution
-                    app_state.mpc_service.store_signal(normalized_symbol.clone(), signal).await;
+                    app_state
+                        .mpc_service
+                        .store_signal(normalized_symbol.clone(), signal)
+                        .await;
                 }
 
                 // Update position prices and metrics
@@ -308,15 +386,24 @@ async fn signal_generation_task(app_state: AppState) {
                 // Update trading metrics
                 let positions = app_state.mpc_service.get_open_positions().await;
                 let total_unrealized_pnl = app_state.mpc_service.get_total_unrealized_pnl().await;
-                app_state.mpc_service.update_unrealized_pnl(total_unrealized_pnl).await;
+                app_state
+                    .mpc_service
+                    .update_unrealized_pnl(total_unrealized_pnl)
+                    .await;
 
                 // Update system health with position count
-                app_state.mpc_service.update_trading_status(
-                    positions.len() as u32,
-                    0 // TODO: track pending orders
-                ).await;
+                app_state
+                    .mpc_service
+                    .update_trading_status(
+                        positions.len() as u32,
+                        0, // TODO: track pending orders
+                    )
+                    .await;
             } else {
-                debug!("Impossible d'obtenir le prix agrégé pour {}", normalized_symbol);
+                debug!(
+                    "Impossible d'obtenir le prix agrégé pour {}",
+                    normalized_symbol
+                );
             }
         }
     }
@@ -367,20 +454,27 @@ async fn get_all_prices(
 ) -> Json<HashMap<String, serde_json::Value>> {
     let symbols = app_state.mpc_service.get_all_symbols().await;
     let mut normalized_symbols = std::collections::HashSet::new();
-    
+
     for symbol in &symbols {
         let normalized = crate::config::TradingConfig::normalize_symbol(symbol);
         normalized_symbols.insert(normalized);
     }
-    
+
     let mut prices = HashMap::new();
 
     for normalized_symbol in normalized_symbols {
-        if let Ok(price) = app_state.mpc_service.get_aggregated_price(&normalized_symbol).await {
-            prices.insert(normalized_symbol, serde_json::json!({
-                "price": price.value(),
-                "aggregated": true
-            }));
+        if let Ok(price) = app_state
+            .mpc_service
+            .get_aggregated_price(&normalized_symbol)
+            .await
+        {
+            prices.insert(
+                normalized_symbol,
+                serde_json::json!({
+                    "price": price.value(),
+                    "aggregated": true
+                }),
+            );
         }
     }
 
@@ -393,7 +487,11 @@ async fn get_symbol_price(
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
-    match app_state.mpc_service.get_aggregated_price(&normalized_symbol).await {
+    match app_state
+        .mpc_service
+        .get_aggregated_price(&normalized_symbol)
+        .await
+    {
         Ok(price) => Json(serde_json::json!({
             "symbol": symbol,
             "normalized_symbol": normalized_symbol,
@@ -412,20 +510,27 @@ async fn get_all_signals(
 ) -> Json<HashMap<String, serde_json::Value>> {
     let symbols = app_state.mpc_service.get_all_symbols().await;
     let mut normalized_symbols = std::collections::HashSet::new();
-    
+
     for symbol in symbols {
         let normalized = crate::config::TradingConfig::normalize_symbol(&symbol);
         normalized_symbols.insert(normalized);
     }
-    
+
     let mut signals = HashMap::new();
 
     for normalized_symbol in normalized_symbols {
-        if let Ok(signal) = app_state.mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
-            signals.insert(normalized_symbol, serde_json::json!({
-                "signal": format!("{:?}", signal.signal),
-                "confidence": signal.confidence
-            }));
+        if let Ok(signal) = app_state
+            .mpc_service
+            .generate_signal_for_symbol(&normalized_symbol)
+            .await
+        {
+            signals.insert(
+                normalized_symbol,
+                serde_json::json!({
+                    "signal": format!("{:?}", signal.signal),
+                    "confidence": signal.confidence
+                }),
+            );
         }
     }
 
@@ -438,7 +543,11 @@ async fn get_symbol_signal(
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
-    match app_state.mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+    match app_state
+        .mpc_service
+        .generate_signal_for_symbol(&normalized_symbol)
+        .await
+    {
         Ok(signal) => Json(serde_json::json!({
             "symbol": symbol,
             "normalized_symbol": normalized_symbol,
@@ -447,22 +556,22 @@ async fn get_symbol_signal(
         })),
         Err(e) => Json(serde_json::json!({
             "error": format!("Failed to generate signal: {}", e)
-        }))
+        })),
     }
 }
 
 /// Execute pending orders for all symbols
-async fn execute_pending_orders(
-    State(app_state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn execute_pending_orders(State(app_state): State<AppState>) -> Json<serde_json::Value> {
     let results = app_state.mpc_service.check_and_execute_orders().await;
 
-    let successful: Vec<String> = results.iter()
+    let successful: Vec<String> = results
+        .iter()
         .filter_map(|r| r.as_ref().ok())
         .cloned()
         .collect();
 
-    let failed: Vec<String> = results.iter()
+    let failed: Vec<String> = results
+        .iter()
         .filter_map(|r| r.as_ref().err())
         .map(|e| e.to_string())
         .collect();
@@ -482,9 +591,17 @@ async fn execute_symbol_order(
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
 
-    match app_state.mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+    match app_state
+        .mpc_service
+        .generate_signal_for_symbol(&normalized_symbol)
+        .await
+    {
         Ok(signal) => {
-            match app_state.mpc_service.execute_order_from_signal(&normalized_symbol, &signal).await {
+            match app_state
+                .mpc_service
+                .execute_order_from_signal(&normalized_symbol, &signal)
+                .await
+            {
                 Ok(msg) => Json(serde_json::json!({
                     "success": true,
                     "symbol": symbol,
@@ -498,15 +615,15 @@ async fn execute_symbol_order(
                     "symbol": symbol,
                     "normalized_symbol": normalized_symbol,
                     "error": e.to_string()
-                }))
+                })),
             }
-        },
+        }
         Err(e) => Json(serde_json::json!({
             "success": false,
             "symbol": symbol,
             "normalized_symbol": normalized_symbol,
             "error": format!("Failed to generate signal: {}", e)
-        }))
+        })),
     }
 }
 
@@ -518,34 +635,61 @@ async fn place_manual_order(
     use crate::domain::entities::order::{Order, OrderSide, OrderType};
 
     // Parse the payload
-    let symbol = payload["symbol"].as_str()
-        .ok_or((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Missing symbol field"}))))?;
+    let symbol = payload["symbol"].as_str().ok_or((
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": "Missing symbol field"})),
+    ))?;
 
-    let side_str = payload["side"].as_str()
-        .ok_or((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Missing side field"}))))?;
+    let side_str = payload["side"].as_str().ok_or((
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": "Missing side field"})),
+    ))?;
 
-    let quantity = payload["quantity"].as_f64()
-        .ok_or((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Missing or invalid quantity field"}))))?;
+    let quantity = payload["quantity"].as_f64().ok_or((
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"error": "Missing or invalid quantity field"})),
+    ))?;
 
-    let order_type_str = payload.get("order_type").and_then(|v| v.as_str()).unwrap_or("market");
+    let order_type_str = payload
+        .get("order_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("market");
     let price = payload.get("price").and_then(|v| v.as_f64());
 
     // Parse side
     let side = match side_str.to_uppercase().as_str() {
         "BUY" => OrderSide::Buy,
         "SELL" => OrderSide::Sell,
-        _ => return Err((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid side. Must be 'BUY' or 'SELL'"})))),
+        _ => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid side. Must be 'BUY' or 'SELL'"})),
+            ))
+        }
     };
 
     // Parse order type
     let order_type = match order_type_str.to_uppercase().as_str() {
         "MARKET" => OrderType::Market,
         "LIMIT" => OrderType::Limit,
-        _ => return Err((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid order_type. Must be 'MARKET' or 'LIMIT'"})))),
+        _ => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(
+                    serde_json::json!({"error": "Invalid order_type. Must be 'MARKET' or 'LIMIT'"}),
+                ),
+            ))
+        }
     };
 
     // Generate order ID
-    let order_id = format!("manual_order_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    let order_id = format!(
+        "manual_order_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
 
     // Create order
     let order = match Order::new(
@@ -557,20 +701,32 @@ async fn place_manual_order(
         quantity,
     ) {
         Ok(order) => order,
-        Err(e) => return Err((axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("Failed to create order: {}", e)})))),
+        Err(e) => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Failed to create order: {}", e)})),
+            ))
+        }
     };
 
     // Place order on dYdX
-    match app_state.mpc_service.place_order(&crate::domain::entities::exchange::Exchange::Dydx, order).await {
+    match app_state
+        .mpc_service
+        .place_order(&crate::domain::entities::exchange::Exchange::Dydx, order)
+        .await
+    {
         Ok(order_id) => Ok(Json(serde_json::json!({
             "success": true,
             "order_id": order_id,
             "message": "Order placed successfully on dYdX"
         }))),
-        Err(e) => Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-            "success": false,
-            "error": e
-        })))),
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "success": false,
+                "error": e
+            })),
+        )),
     }
 }
 
@@ -579,7 +735,14 @@ async fn cancel_order(
     State(app_state): State<AppState>,
     Path(order_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    match app_state.mpc_service.cancel_order(&crate::domain::entities::exchange::Exchange::Dydx, &order_id).await {
+    match app_state
+        .mpc_service
+        .cancel_order(
+            &crate::domain::entities::exchange::Exchange::Dydx,
+            &order_id,
+        )
+        .await
+    {
         Ok(()) => Json(serde_json::json!({
             "success": true,
             "message": format!("Order {} cancelled successfully", order_id)
@@ -587,7 +750,7 @@ async fn cancel_order(
         Err(e) => Json(serde_json::json!({
             "success": false,
             "error": e
-        }))
+        })),
     }
 }
 
@@ -596,7 +759,14 @@ async fn get_order_status(
     State(app_state): State<AppState>,
     Path(order_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    match app_state.mpc_service.get_order_status(&crate::domain::entities::exchange::Exchange::Dydx, &order_id).await {
+    match app_state
+        .mpc_service
+        .get_order_status(
+            &crate::domain::entities::exchange::Exchange::Dydx,
+            &order_id,
+        )
+        .await
+    {
         Ok(status) => Json(serde_json::json!({
             "success": true,
             "order_id": order_id,
@@ -605,7 +775,7 @@ async fn get_order_status(
         Err(e) => Json(serde_json::json!({
             "success": false,
             "error": e
-        }))
+        })),
     }
 }
 
@@ -616,15 +786,18 @@ async fn get_symbol_candles(
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
     let candles = app_state.mpc_service.get_candles(&normalized_symbol).await;
-    let candle_data: Vec<serde_json::Value> = candles.iter().map(|c| {
-        serde_json::json!({
-            "open": c.open.value(),
-            "high": c.high.value(),
-            "low": c.low.value(),
-            "close": c.close.value(),
-            "volume": c.volume
+    let candle_data: Vec<serde_json::Value> = candles
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "open": c.open.value(),
+                "high": c.high.value(),
+                "low": c.low.value(),
+                "close": c.close.value(),
+                "volume": c.volume
+            })
         })
-    }).collect();
+        .collect();
 
     Json(serde_json::json!({
         "symbol": symbol,
@@ -635,23 +808,27 @@ async fn get_symbol_candles(
 }
 
 /// Get all open positions
-async fn get_positions(
-    State(app_state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn get_positions(State(app_state): State<AppState>) -> Json<serde_json::Value> {
     let positions = app_state.mpc_service.get_open_positions().await;
-    let position_data: HashMap<String, serde_json::Value> = positions.iter().map(|(id, position)| {
-        (id.clone(), serde_json::json!({
-            "symbol": position.symbol,
-            "side": format!("{:?}", position.side),
-            "quantity": position.quantity.value(),
-            "entry_price": position.entry_price.value(),
-            "current_price": position.current_price.map(|p| p.value()),
-            "unrealized_pnl": position.unrealized_pnl().map(|p| p.value()),
-            "entry_time": position.entry_time.to_rfc3339(),
-            "stop_loss_price": position.stop_loss_price.map(|p| p.value()),
-            "take_profit_price": position.take_profit_price.map(|p| p.value())
-        }))
-    }).collect();
+    let position_data: HashMap<String, serde_json::Value> = positions
+        .iter()
+        .map(|(id, position)| {
+            (
+                id.clone(),
+                serde_json::json!({
+                    "symbol": position.symbol,
+                    "side": format!("{:?}", position.side),
+                    "quantity": position.quantity.value(),
+                    "entry_price": position.entry_price.value(),
+                    "current_price": position.current_price.map(|p| p.value()),
+                    "unrealized_pnl": position.unrealized_pnl().map(|p| p.value()),
+                    "entry_time": position.entry_time.to_rfc3339(),
+                    "stop_loss_price": position.stop_loss_price.map(|p| p.value()),
+                    "take_profit_price": position.take_profit_price.map(|p| p.value())
+                }),
+            )
+        })
+        .collect();
 
     Json(serde_json::json!({
         "positions": position_data,
@@ -660,9 +837,7 @@ async fn get_positions(
 }
 
 /// Get total unrealized PnL across all positions
-async fn get_total_pnl(
-    State(app_state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn get_total_pnl(State(app_state): State<AppState>) -> Json<serde_json::Value> {
     let total_pnl = app_state.mpc_service.get_total_unrealized_pnl().await;
 
     Json(serde_json::json!({
@@ -672,20 +847,24 @@ async fn get_total_pnl(
 }
 
 /// Get performance profiles
-async fn get_performance_profiles(
-    State(app_state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn get_performance_profiles(State(app_state): State<AppState>) -> Json<serde_json::Value> {
     let profiles = app_state.mpc_service.get_performance_profiles().await;
-    let profile_data: HashMap<String, serde_json::Value> = profiles.iter().map(|(name, profile)| {
-        (name.clone(), serde_json::json!({
-            "operation": profile.operation,
-            "avg_execution_time_ms": profile.avg_execution_time_ms,
-            "max_execution_time_ms": profile.max_execution_time_ms,
-            "min_execution_time_ms": profile.min_execution_time_ms,
-            "execution_count": profile.execution_count,
-            "last_execution": profile.last_execution
-        }))
-    }).collect();
+    let profile_data: HashMap<String, serde_json::Value> = profiles
+        .iter()
+        .map(|(name, profile)| {
+            (
+                name.clone(),
+                serde_json::json!({
+                    "operation": profile.operation,
+                    "avg_execution_time_ms": profile.avg_execution_time_ms,
+                    "max_execution_time_ms": profile.max_execution_time_ms,
+                    "min_execution_time_ms": profile.min_execution_time_ms,
+                    "execution_count": profile.execution_count,
+                    "last_execution": profile.last_execution
+                }),
+            )
+        })
+        .collect();
 
     Json(serde_json::json!({
         "profiles": profile_data,
@@ -694,19 +873,20 @@ async fn get_performance_profiles(
 }
 
 /// Get active alerts
-async fn get_alerts(
-    State(app_state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn get_alerts(State(app_state): State<AppState>) -> Json<serde_json::Value> {
     let alerts = app_state.mpc_service.get_active_alerts().await;
-    let alert_data: Vec<serde_json::Value> = alerts.iter().map(|alert| {
-        serde_json::json!({
-            "type": format!("{:?}", alert.alert_type),
-            "message": alert.message,
-            "severity": format!("{:?}", alert.severity),
-            "timestamp": alert.timestamp,
-            "resolved": alert.resolved
+    let alert_data: Vec<serde_json::Value> = alerts
+        .iter()
+        .map(|alert| {
+            serde_json::json!({
+                "type": format!("{:?}", alert.alert_type),
+                "message": alert.message,
+                "severity": format!("{:?}", alert.severity),
+                "timestamp": alert.timestamp,
+                "resolved": alert.resolved
+            })
         })
-    }).collect();
+        .collect();
 
     Json(serde_json::json!({
         "alerts": alert_data,
@@ -715,9 +895,7 @@ async fn get_alerts(
 }
 
 /// Get current configuration
-async fn get_config(
-    State(app_state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn get_config(State(app_state): State<AppState>) -> Json<serde_json::Value> {
     let mpc_service = &app_state.mpc_service;
     Json(serde_json::json!({
         "min_confidence_threshold": mpc_service.config.min_confidence_threshold,
@@ -735,9 +913,7 @@ async fn get_config(
 }
 
 /// Get current trading metrics
-async fn get_metrics(
-    State(app_state): State<AppState>,
-) -> Json<serde_json::Value> {
+async fn get_metrics(State(app_state): State<AppState>) -> Json<serde_json::Value> {
     let trading_metrics = app_state.mpc_service.get_trading_metrics().await;
     let system_health = app_state.mpc_service.get_system_health().await;
 
@@ -788,7 +964,8 @@ async fn handle_metrics_socket(mut socket: WebSocket, app_state: AppState) {
     let mut rx = app_state.metrics_tx.subscribe();
 
     // Send initial metrics
-    if let Ok(metrics_json) = serde_json::to_string(&get_metrics(State(app_state.clone())).await.0) {
+    if let Ok(metrics_json) = serde_json::to_string(&get_metrics(State(app_state.clone())).await.0)
+    {
         if socket.send(Message::Text(metrics_json)).await.is_err() {
             return;
         }
@@ -805,8 +982,12 @@ async fn handle_metrics_socket(mut socket: WebSocket, app_state: AppState) {
 }
 
 /// Background task that broadcasts metrics updates
-async fn metrics_broadcast_task(app_state: AppState, tx: broadcast::Sender<String>) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5)); // Update every 5 seconds
+async fn metrics_broadcast_task(
+    app_state: AppState,
+    tx: broadcast::Sender<String>,
+    interval_duration: Duration,
+) {
+    let mut interval = tokio::time::interval(interval_duration);
 
     loop {
         interval.tick().await;
@@ -843,8 +1024,8 @@ async fn metrics_broadcast_task(app_state: AppState, tx: broadcast::Sender<Strin
 }
 
 /// Background task for automatic strategy weight adjustment
-async fn strategy_weight_adjustment_task(app_state: AppState) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // Adjust every 5 minutes
+async fn strategy_weight_adjustment_task(app_state: AppState, interval_duration: Duration) {
+    let mut interval = tokio::time::interval(interval_duration);
 
     loop {
         interval.tick().await;
@@ -853,7 +1034,7 @@ async fn strategy_weight_adjustment_task(app_state: AppState) {
         match app_state.mpc_service.adjust_strategy_weights().await {
             Ok(()) => {
                 debug!("Strategy weights adjusted successfully");
-            },
+            }
             Err(e) => {
                 warn!("Failed to adjust strategy weights: {}", e);
             }
@@ -888,16 +1069,16 @@ async fn alerting_task(app_state: AppState) {
             match alert.severity {
                 crate::domain::services::metrics::AlertSeverity::Critical => {
                     error!("🚨 CRITICAL ALERT: {}", alert.message);
-                },
+                }
                 crate::domain::services::metrics::AlertSeverity::High => {
                     error!("⚠️ HIGH ALERT: {}", alert.message);
-                },
+                }
                 crate::domain::services::metrics::AlertSeverity::Medium => {
                     warn!("⚡ MEDIUM ALERT: {}", alert.message);
-                },
+                }
                 crate::domain::services::metrics::AlertSeverity::Low => {
                     info!("ℹ️ LOW ALERT: {}", alert.message);
-                },
+                }
             }
         }
 
@@ -906,5 +1087,92 @@ async fn alerting_task(app_state: AppState) {
         if !active_alerts.is_empty() {
             debug!("Currently {} active alerts", active_alerts.len());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn metrics_broadcast_task_emits_updates() {
+        let config = crate::config::TradingConfig::default();
+        let mpc_service = MpcService::new(config);
+        let (metrics_tx, _) = broadcast::channel::<String>(8);
+        let app_state = AppState {
+            mpc_service: std::sync::Arc::new(mpc_service),
+            metrics_tx: metrics_tx.clone(),
+        };
+
+        let mut rx = metrics_tx.subscribe();
+        let task_handle = tokio::spawn(metrics_broadcast_task(
+            app_state,
+            metrics_tx.clone(),
+            Duration::from_millis(20),
+        ));
+
+        let result = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
+        task_handle.abort();
+
+        assert!(
+            result.is_ok(),
+            "expected to receive at least one metrics update"
+        );
+    }
+
+    #[tokio::test]
+    async fn strategy_weight_adjustment_task_respects_interval() {
+        let config = crate::config::TradingConfig::default();
+        let service = MpcService::new(config);
+        let strategies = vec![
+            (
+                "FastScalping".to_string(),
+                Box::new(FastScalping::new()) as Box<dyn Strategy + Send + Sync>,
+            ),
+            (
+                "MomentumScalping".to_string(),
+                Box::new(MomentumScalping::new()) as Box<dyn Strategy + Send + Sync>,
+            ),
+        ];
+        let weights = vec![0.5, 0.5];
+        let combiner =
+            SignalCombiner::new(strategies, weights).expect("combiner should initialize");
+        service.set_signal_combiner(combiner).await;
+
+        {
+            let mut metrics = service.strategy_metrics.lock().await;
+            if let Some(fast) = metrics.get_mut("FastScalping") {
+                fast.performance_score = 0.9;
+            }
+            if let Some(momentum) = metrics.get_mut("MomentumScalping") {
+                momentum.performance_score = 0.1;
+            }
+        }
+
+        let (metrics_tx, _) = broadcast::channel::<String>(4);
+        let app_state = AppState {
+            mpc_service: std::sync::Arc::new(service),
+            metrics_tx,
+        };
+
+        let handle = tokio::spawn(strategy_weight_adjustment_task(
+            app_state.clone(),
+            Duration::from_millis(20),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(70)).await;
+
+        let weights = {
+            let guard = app_state.mpc_service.signal_combiner.read().await;
+            guard.as_ref().unwrap().weights().to_vec()
+        };
+
+        handle.abort();
+
+        assert!(
+            weights[0] > weights[1],
+            "higher-performing strategy should gain weight"
+        );
     }
 }

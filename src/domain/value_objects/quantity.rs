@@ -65,7 +65,10 @@ mod tests {
     fn test_quantity_new_negative() {
         let qty = Quantity::new(-5.0);
         assert!(qty.is_err());
-        assert!(matches!(qty.unwrap_err(), ValidationError::MustBeNonNegative));
+        assert!(matches!(
+            qty.unwrap_err(),
+            ValidationError::MustBeNonNegative
+        ));
     }
 
     #[test]
@@ -98,7 +101,10 @@ mod tests {
         let q2 = Quantity::new(10.0).unwrap();
         let result = q1.subtract(q2);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ValidationError::MustBeNonNegative));
+        assert!(matches!(
+            result.unwrap_err(),
+            ValidationError::MustBeNonNegative
+        ));
     }
 
     #[test]

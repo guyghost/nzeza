@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc;
-use serde::{Serialize, Deserialize};
 
 use crate::domain::entities::exchange::Exchange;
 

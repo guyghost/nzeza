@@ -1,33 +1,37 @@
+use crate::config::TradingConfig;
 use crate::domain::entities::exchange::Exchange;
-use crate::infrastructure::adapters::exchange_actor::ExchangeMessage;
-use crate::domain::services::strategies::{SignalCombiner, TradingSignal};
-use crate::domain::services::candle_builder::CandleBuilder;
-use crate::domain::services::metrics::{TradingMetrics, StrategyMetrics, SystemHealthMetrics, AlertConfig, SystemAlert, PerformanceProfiler, OperationTimer};
-use crate::domain::value_objects::price::Price;
-use crate::domain::value_objects::quantity::Quantity;
 use crate::domain::entities::order::Order;
 use crate::domain::entities::position::{Position, PositionSide};
-use crate::config::TradingConfig;
 use crate::domain::errors::MpcError;
-use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, info, warn, error};
+use crate::domain::services::candle_builder::CandleBuilder;
+use crate::domain::services::metrics::{
+    AlertConfig, PerformanceProfiler, StrategyMetrics, SystemAlert, SystemHealthMetrics,
+    TradingMetrics,
+};
+use crate::domain::services::strategies::{SignalCombiner, TradingSignal};
+use crate::domain::value_objects::price::Price;
+use crate::domain::value_objects::quantity::Quantity;
+use crate::infrastructure::adapters::exchange_actor::ExchangeMessage;
 use lru::LruCache;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+use tokio::sync::{mpsc, Mutex, RwLock};
+use tracing::{debug, error, info, warn};
 
 pub struct MpcService {
-    pub senders: HashMap<Exchange, mpsc::Sender<ExchangeMessage>>,
-    pub signal_combiner: Arc<Mutex<Option<SignalCombiner>>>,
+    pub senders: Arc<HashMap<Exchange, mpsc::Sender<ExchangeMessage>>>, // Immutable after init
+    pub signal_combiner: Arc<RwLock<Option<SignalCombiner>>>, // RwLock for better concurrency
     pub candle_builder: Arc<Mutex<CandleBuilder>>,
-    pub last_signals: Arc<Mutex<HashMap<String, TradingSignal>>>,
+    pub last_signals: Arc<Mutex<LruCache<String, TradingSignal>>>, // LRU cache to prevent unbounded growth
     pub open_positions: Arc<Mutex<HashMap<String, Position>>>,
     pub config: TradingConfig,
     pub trade_history: Arc<Mutex<Vec<(SystemTime, String)>>>, // (timestamp, symbol) for rate limiting
     pub trading_metrics: Arc<Mutex<TradingMetrics>>,
     pub system_health: Arc<Mutex<SystemHealthMetrics>>,
     pub strategy_metrics: Arc<Mutex<HashMap<String, StrategyMetrics>>>,
+    pub strategy_order: Arc<Mutex<Vec<String>>>,
     pub alert_config: AlertConfig,
     pub active_alerts: Arc<Mutex<Vec<SystemAlert>>>,
     pub performance_profiler: Arc<Mutex<PerformanceProfiler>>,
@@ -36,21 +40,23 @@ pub struct MpcService {
 impl MpcService {
     pub fn new(config: TradingConfig) -> Self {
         // 1 minute candles, keep 100 candles in history
-        let candle_builder = Arc::new(Mutex::new(
-            CandleBuilder::new(Duration::from_secs(60), 100)
-        ));
+        let candle_builder = Arc::new(Mutex::new(CandleBuilder::new(Duration::from_secs(60), 100)));
+
+        // LRU cache capacity: keep last 1000 signals
+        let cache_capacity = NonZeroUsize::new(1000).expect("Cache capacity must be non-zero");
 
         Self {
-            senders: HashMap::new(),
-            signal_combiner: Arc::new(Mutex::new(None)),
+            senders: Arc::new(HashMap::new()),
+            signal_combiner: Arc::new(RwLock::new(None)),
             candle_builder,
-            last_signals: Arc::new(Mutex::new(HashMap::new())),
+            last_signals: Arc::new(Mutex::new(LruCache::new(cache_capacity))),
             open_positions: Arc::new(Mutex::new(HashMap::new())),
             config,
             trade_history: Arc::new(Mutex::new(Vec::new())),
             trading_metrics: Arc::new(Mutex::new(TradingMetrics::new())),
             system_health: Arc::new(Mutex::new(SystemHealthMetrics::new())),
             strategy_metrics: Arc::new(Mutex::new(HashMap::new())),
+            strategy_order: Arc::new(Mutex::new(Vec::new())),
             alert_config: AlertConfig::default(),
             active_alerts: Arc::new(Mutex::new(Vec::new())),
             performance_profiler: Arc::new(Mutex::new(PerformanceProfiler::new())),
@@ -68,33 +74,47 @@ impl MpcService {
     }
 
     pub fn add_actor(&mut self, exchange: Exchange, sender: mpsc::Sender<ExchangeMessage>) {
-        self.senders.insert(exchange, sender);
+        // Get mutable access to the inner HashMap via Arc::get_mut
+        // This should only be called during initialization before the service is shared
+        Arc::get_mut(&mut self.senders)
+            .expect("Cannot add actors after service is shared")
+            .insert(exchange, sender);
     }
 
     pub async fn set_signal_combiner(&self, combiner: SignalCombiner) {
-        let mut signal_combiner_guard = self.signal_combiner.lock().await;
+        let mut signal_combiner_guard = self.signal_combiner.write().await;
         *signal_combiner_guard = Some(combiner);
 
         // Initialize strategy metrics
         let mut strategy_metrics = self.strategy_metrics.lock().await;
-        let strategy_names = signal_combiner_guard.as_ref().unwrap().get_strategy_names();
+        if let Some(combiner) = signal_combiner_guard.as_ref() {
+            let strategy_names = combiner.get_strategy_names();
 
-        for name in strategy_names {
-            strategy_metrics.insert(name.clone(), StrategyMetrics::new(name));
+            {
+                let mut order = self.strategy_order.lock().await;
+                *order = strategy_names.clone();
+            }
+
+            strategy_metrics.clear();
+            for name in strategy_names {
+                strategy_metrics.insert(name.clone(), StrategyMetrics::new(name));
+            }
         }
     }
 
     /// Check health of a specific actor
     pub async fn check_actor_health(&self, exchange: &Exchange) -> Result<bool, MpcError> {
-        if let Some(sender) = self.senders.get(exchange) {
+        if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
 
-            sender.send(ExchangeMessage::HealthCheck { reply: reply_tx })
+            sender
+                .send(ExchangeMessage::HealthCheck { reply: reply_tx })
                 .await
-                .map_err(|_| MpcError::ChannelSendError("Failed to send health check".to_string()))?;
+                .map_err(|_| {
+                    MpcError::ChannelSendError("Failed to send health check".to_string())
+                })?;
 
-            reply_rx.recv().await
-                .ok_or(MpcError::NoResponse)
+            reply_rx.recv().await.ok_or(MpcError::NoResponse)
         } else {
             Err(MpcError::ActorNotFound(exchange.clone()))
         }
@@ -105,7 +125,7 @@ impl MpcService {
         use tracing::info;
         let mut health_status = HashMap::new();
 
-        for exchange in self.senders.keys() {
+        for exchange in self.senders.as_ref().keys() {
             match self.check_actor_health(exchange).await {
                 Ok(is_healthy) => {
                     health_status.insert(exchange.clone(), is_healthy);
@@ -132,7 +152,7 @@ impl MpcService {
 
         info!("Shutting down all exchange actors...");
 
-        for (exchange, sender) in self.senders.iter() {
+        for (exchange, sender) in self.senders.as_ref().iter() {
             info!("Sending shutdown signal to {:?}", exchange);
             if let Err(e) = sender.send(ExchangeMessage::Shutdown).await {
                 use tracing::error;
@@ -147,14 +167,16 @@ impl MpcService {
 
     #[allow(dead_code)]
     pub async fn get_price(&self, exchange: &Exchange, symbol: &str) -> Result<Price, MpcError> {
-        if let Some(sender) = self.senders.get(exchange) {
+        if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::GetPrice {
                 symbol: symbol.to_string(),
                 reply: reply_tx,
             };
             sender.send(msg).await?;
-            reply_rx.recv().await
+            reply_rx
+                .recv()
+                .await
                 .ok_or(MpcError::NoResponse)?
                 .map_err(|e| MpcError::AggregationFailed(e))
         } else {
@@ -164,14 +186,16 @@ impl MpcService {
 
     #[allow(dead_code)]
     pub async fn subscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), MpcError> {
-        if let Some(sender) = self.senders.get(exchange) {
+        if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::Subscribe {
                 symbol: symbol.to_string(),
                 reply: reply_tx,
             };
             sender.send(msg).await?;
-            reply_rx.recv().await
+            reply_rx
+                .recv()
+                .await
                 .ok_or(MpcError::NoResponse)?
                 .map_err(|e| MpcError::AggregationFailed(e))
         } else {
@@ -181,14 +205,16 @@ impl MpcService {
 
     #[allow(dead_code)]
     pub async fn unsubscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), MpcError> {
-        if let Some(sender) = self.senders.get(exchange) {
+        if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::Unsubscribe {
                 symbol: symbol.to_string(),
                 reply: reply_tx,
             };
             sender.send(msg).await?;
-            reply_rx.recv().await
+            reply_rx
+                .recv()
+                .await
                 .ok_or(MpcError::NoResponse)?
                 .map_err(|e| MpcError::AggregationFailed(e))
         } else {
@@ -198,7 +224,7 @@ impl MpcService {
 
     #[allow(dead_code)]
     pub async fn get_subscriptions(&self, exchange: &Exchange) -> Result<Vec<String>, MpcError> {
-        if let Some(sender) = self.senders.get(exchange) {
+        if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::GetSubscriptions { reply: reply_tx };
             sender.send(msg).await?;
@@ -212,7 +238,9 @@ impl MpcService {
     #[allow(dead_code)]
     pub fn aggregate_prices(prices: &[Price]) -> Result<Price, MpcError> {
         if prices.is_empty() {
-            return Err(MpcError::NoPricesAvailable { symbol: "unknown".to_string() });
+            return Err(MpcError::NoPricesAvailable {
+                symbol: "unknown".to_string(),
+            });
         }
         let sum: f64 = prices.iter().map(|p| p.value()).sum();
         let avg = sum / prices.len() as f64;
@@ -221,25 +249,34 @@ impl MpcService {
 
     // Generate trading signal using combined strategies
     #[allow(dead_code)]
-    pub async fn generate_trading_signal(&self, candles: &[crate::domain::services::indicators::Candle]) -> Result<TradingSignal, MpcError> {
-        let signal_combiner_guard = self.signal_combiner.lock().await;
-        signal_combiner_guard.as_ref()
+    pub async fn generate_trading_signal(
+        &self,
+        candles: &[crate::domain::services::indicators::Candle],
+    ) -> Result<TradingSignal, MpcError> {
+        let signal_combiner_guard = self.signal_combiner.read().await;
+        signal_combiner_guard
+            .as_ref()
             .and_then(|combiner| combiner.combine_signals(candles))
             .ok_or(MpcError::SignalCombinerNotInitialized)
     }
 
     /// Generate trading signal and track individual strategy signals
     #[allow(dead_code)]
-    pub async fn generate_trading_signal_with_tracking(&self, candles: &[crate::domain::services::indicators::Candle]) -> Result<TradingSignal, MpcError> {
-        let signal_combiner_guard = self.signal_combiner.lock().await;
+    pub async fn generate_trading_signal_with_tracking(
+        &self,
+        candles: &[crate::domain::services::indicators::Candle],
+    ) -> Result<TradingSignal, MpcError> {
+        let signal_combiner_guard = self.signal_combiner.read().await;
         if let Some(combiner) = signal_combiner_guard.as_ref() {
             // Record signals for each strategy
-            for strategy in &combiner.strategies {
+            for _strategy in &combiner.strategies {
                 // We can't easily identify which strategy this is without modifying the trait
                 // For now, we'll record signals when they're actually used in execution
             }
 
-            combiner.combine_signals(candles).ok_or(MpcError::SignalCombinerNotInitialized)
+            combiner
+                .combine_signals(candles)
+                .ok_or(MpcError::SignalCombinerNotInitialized)
         } else {
             Err(MpcError::SignalCombinerNotInitialized)
         }
@@ -250,13 +287,14 @@ impl MpcService {
     pub async fn get_aggregated_price(&self, symbol: &str) -> Result<Price, MpcError> {
         use crate::config::TradingConfig;
         let normalized_symbol = TradingConfig::normalize_symbol(symbol);
-        
+
         let mut prices = Vec::new();
 
-        for (exchange, sender) in self.senders.iter() {
+        for (exchange, sender) in self.senders.as_ref().iter() {
             // Get subscriptions for this exchange
             let (sub_tx, mut sub_rx) = mpsc::channel(1);
-            sender.send(ExchangeMessage::GetSubscriptions { reply: sub_tx })
+            sender
+                .send(ExchangeMessage::GetSubscriptions { reply: sub_tx })
                 .await?;
 
             if let Some(subs) = sub_rx.recv().await {
@@ -266,18 +304,29 @@ impl MpcService {
                     if normalized_sub == normalized_symbol {
                         // Get price for this symbol on this exchange
                         let (price_tx, mut price_rx) = mpsc::channel(1);
-                        sender.send(ExchangeMessage::GetPrice {
-                            symbol: sub_symbol.to_string(),
-                            reply: price_tx,
-                        })
-                        .await?;
+                        sender
+                            .send(ExchangeMessage::GetPrice {
+                                symbol: sub_symbol.to_string(),
+                                reply: price_tx,
+                            })
+                            .await?;
 
-                    if let Some(Ok(price)) = price_rx.recv().await {
-                        debug!("Price obtained {:.2} from {} for {} (normalized: {})", price.value(), Self::get_exchange_name(exchange), sub_symbol, normalized_symbol);
-                        prices.push(price);
-                    } else {
-                        debug!("No price available from {} for {}", Self::get_exchange_name(exchange), sub_symbol);
-                    }
+                        if let Some(Ok(price)) = price_rx.recv().await {
+                            debug!(
+                                "Price obtained {:.2} from {} for {} (normalized: {})",
+                                price.value(),
+                                Self::get_exchange_name(exchange),
+                                sub_symbol,
+                                normalized_symbol
+                            );
+                            prices.push(price);
+                        } else {
+                            debug!(
+                                "No price available from {} for {}",
+                                Self::get_exchange_name(exchange),
+                                sub_symbol
+                            );
+                        }
                         break; // Found a matching symbol, no need to check others
                     }
                 }
@@ -285,11 +334,18 @@ impl MpcService {
         }
 
         if prices.is_empty() {
-            return Err(MpcError::NoPricesAvailable { symbol: symbol.to_string() });
+            return Err(MpcError::NoPricesAvailable {
+                symbol: symbol.to_string(),
+            });
         }
 
         let aggregated = Self::aggregate_prices(&prices)?;
-        debug!("Aggregated price calculated {:.2} for {} (based on {} exchanges)", aggregated.value(), normalized_symbol, prices.len());
+        debug!(
+            "Aggregated price calculated {:.2} for {} (based on {} exchanges)",
+            aggregated.value(),
+            normalized_symbol,
+            prices.len()
+        );
         Ok(aggregated)
     }
 
@@ -298,9 +354,13 @@ impl MpcService {
     pub async fn get_all_symbols(&self) -> Vec<String> {
         let mut all_symbols = std::collections::HashSet::new();
 
-        for sender in self.senders.values() {
+        for sender in self.senders.as_ref().values() {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
-            if sender.send(ExchangeMessage::GetSubscriptions { reply: reply_tx }).await.is_ok() {
+            if sender
+                .send(ExchangeMessage::GetSubscriptions { reply: reply_tx })
+                .await
+                .is_ok()
+            {
                 if let Some(symbols) = reply_rx.recv().await {
                     for symbol in symbols {
                         all_symbols.insert(symbol);
@@ -317,21 +377,32 @@ impl MpcService {
     pub async fn update_candle(&self, symbol: String, price: Price) {
         let mut builder = self.candle_builder.lock().await;
         builder.add_price(symbol.clone(), price);
-        debug!("Candle updated for {} with price {:.2}", symbol, price.value());
+        debug!(
+            "Candle updated for {} with price {:.2}",
+            symbol,
+            price.value()
+        );
     }
 
     /// Get candles for a symbol
     #[allow(dead_code)]
-    pub async fn get_candles(&self, symbol: &str) -> Vec<crate::domain::services::indicators::Candle> {
+    pub async fn get_candles(
+        &self,
+        symbol: &str,
+    ) -> Vec<crate::domain::services::indicators::Candle> {
         let builder = self.candle_builder.lock().await;
         builder.get_candles(symbol)
     }
 
     /// Generate trading signal for a specific symbol
     #[allow(dead_code)]
-    pub async fn generate_signal_for_symbol(&self, symbol: &str) -> Result<TradingSignal, MpcError> {
+    pub async fn generate_signal_for_symbol(
+        &self,
+        symbol: &str,
+    ) -> Result<TradingSignal, MpcError> {
         let candles = self.get_candles(symbol).await;
-        if candles.len() >= 10 { // Need minimum candles for signal generation
+        if candles.len() >= 10 {
+            // Need minimum candles for signal generation
             self.generate_trading_signal(&candles).await
         } else {
             Err(MpcError::NoSignalsAvailable)
@@ -341,14 +412,16 @@ impl MpcService {
     /// Place an order on a specific exchange
     #[allow(dead_code)]
     pub async fn place_order(&self, exchange: &Exchange, order: Order) -> Result<String, MpcError> {
-        if let Some(sender) = self.senders.get(exchange) {
+        if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::PlaceOrder {
                 order,
                 reply: reply_tx,
             };
             sender.send(msg).await?;
-            reply_rx.recv().await
+            reply_rx
+                .recv()
+                .await
                 .ok_or(MpcError::NoResponse)?
                 .map_err(|e| MpcError::OrderPlacementFailed(e))
         } else {
@@ -359,14 +432,16 @@ impl MpcService {
     /// Cancel an order on a specific exchange
     #[allow(dead_code)]
     pub async fn cancel_order(&self, exchange: &Exchange, order_id: &str) -> Result<(), MpcError> {
-        if let Some(sender) = self.senders.get(exchange) {
+        if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::CancelOrder {
                 order_id: order_id.to_string(),
                 reply: reply_tx,
             };
             sender.send(msg).await?;
-            reply_rx.recv().await
+            reply_rx
+                .recv()
+                .await
                 .ok_or(MpcError::NoResponse)?
                 .map_err(|e| MpcError::OrderPlacementFailed(e))
         } else {
@@ -376,15 +451,21 @@ impl MpcService {
 
     /// Get order status from a specific exchange
     #[allow(dead_code)]
-    pub async fn get_order_status(&self, exchange: &Exchange, order_id: &str) -> Result<String, MpcError> {
-        if let Some(sender) = self.senders.get(exchange) {
+    pub async fn get_order_status(
+        &self,
+        exchange: &Exchange,
+        order_id: &str,
+    ) -> Result<String, MpcError> {
+        if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::GetOrderStatus {
                 order_id: order_id.to_string(),
                 reply: reply_tx,
             };
             sender.send(msg).await?;
-            reply_rx.recv().await
+            reply_rx
+                .recv()
+                .await
                 .ok_or(MpcError::NoResponse)?
                 .map_err(|e| MpcError::OrderPlacementFailed(e))
         } else {
@@ -392,23 +473,32 @@ impl MpcService {
         }
     }
 
-    /// Store last signal for a symbol
+    /// Store last signal for a symbol (using LRU cache)
     #[allow(dead_code)]
     pub async fn store_signal(&self, symbol: String, signal: TradingSignal) {
         let mut last_signals = self.last_signals.lock().await;
-        last_signals.insert(symbol, signal);
+        last_signals.put(symbol, signal); // LRU cache uses .put() instead of .insert()
     }
 
-    /// Get all last signals
+    /// Get all last signals from LRU cache
     #[allow(dead_code)]
     pub async fn get_all_last_signals(&self) -> HashMap<String, TradingSignal> {
         let last_signals = self.last_signals.lock().await;
-        last_signals.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        last_signals
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     /// Open a new position
     #[allow(dead_code)]
-    pub async fn open_position(&self, symbol: &str, side: PositionSide, quantity: Quantity, entry_price: Price) -> Result<String, MpcError> {
+    pub async fn open_position(
+        &self,
+        symbol: &str,
+        side: PositionSide,
+        quantity: Quantity,
+        entry_price: Price,
+    ) -> Result<String, MpcError> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| MpcError::InvalidConfiguration("System time error".to_string()))?
@@ -424,18 +514,31 @@ impl MpcService {
             entry_price,
             self.config.stop_loss_percentage,
             self.config.take_profit_percentage,
-        );
+        )
+        .map_err(|e| {
+            MpcError::InvalidConfiguration(format!("Failed to create position: {}", e))
+        })?;
 
         let mut positions = self.open_positions.lock().await;
         positions.insert(position_id.clone(), position);
 
-        let stop_info = if let (Some(sl), Some(tp)) = (self.config.stop_loss_percentage, self.config.take_profit_percentage) {
+        let stop_info = if let (Some(sl), Some(tp)) = (
+            self.config.stop_loss_percentage,
+            self.config.take_profit_percentage,
+        ) {
             format!(" (SL: {:.1}%, TP: {:.1}%)", sl * 100.0, tp * 100.0)
         } else {
             "".to_string()
         };
 
-        info!("Opened position: {} {} {} @ {}{}", position_id, side, quantity.value(), entry_price.value(), stop_info);
+        info!(
+            "Opened position: {} {} {} @ {}{}",
+            position_id,
+            side,
+            quantity.value(),
+            entry_price.value(),
+            stop_info
+        );
         Ok(position_id)
     }
 
@@ -444,10 +547,17 @@ impl MpcService {
     pub async fn close_position(&self, position_id: &str) -> Result<(), MpcError> {
         let mut positions = self.open_positions.lock().await;
         if let Some(position) = positions.remove(position_id) {
-            info!("Closed position: {} (PnL: {:?})", position_id, position.unrealized_pnl());
+            info!(
+                "Closed position: {} (PnL: {:?})",
+                position_id,
+                position.unrealized_pnl()
+            );
             Ok(())
         } else {
-            Err(MpcError::InvalidConfiguration(format!("Position {} not found", position_id)))
+            Err(MpcError::InvalidConfiguration(format!(
+                "Position {} not found",
+                position_id
+            )))
         }
     }
 
@@ -495,12 +605,21 @@ impl MpcService {
             }
         }
 
-        Price::new(total_pnl).unwrap_or_else(|_| Price::new(0.0).unwrap())
+        // Return zero price if calculation fails (shouldn't happen with valid PnL sum)
+        Price::new(total_pnl.max(0.0)).unwrap_or_else(|_| {
+            warn!("Failed to create price from total PnL: {}", total_pnl);
+            // Safe: 0.0 is always a valid price
+            Price::new(0.0).expect("Zero price should always be valid")
+        })
     }
 
     /// Calculate position size based on portfolio percentage and current price
     #[allow(dead_code)]
-    pub async fn calculate_position_size(&self, symbol: &str, current_price: Price) -> Result<f64, MpcError> {
+    pub async fn calculate_position_size(
+        &self,
+        _symbol: &str,
+        current_price: Price,
+    ) -> Result<f64, MpcError> {
         // For now, we'll use a simple calculation based on portfolio percentage
         // In a real implementation, this would consider the actual portfolio value
         // For demo purposes, we'll assume a portfolio value of $100,000 USD
@@ -523,7 +642,7 @@ impl MpcService {
     pub async fn check_and_execute_stops(&self) -> Vec<Result<String, MpcError>> {
         let mut results = Vec::new();
         let mut positions_to_close = Vec::new();
-        
+
         {
             let positions = self.open_positions.lock().await;
             for (position_id, position) in positions.iter() {
@@ -538,8 +657,11 @@ impl MpcService {
         for (position_id, reason) in positions_to_close {
             match self.close_position(&position_id).await {
                 Ok(()) => {
-                    results.push(Ok(format!("Position {} closed due to {}", position_id, reason)));
-                },
+                    results.push(Ok(format!(
+                        "Position {} closed due to {}",
+                        position_id, reason
+                    )));
+                }
                 Err(e) => {
                     results.push(Err(e));
                 }
@@ -551,8 +673,12 @@ impl MpcService {
 
     /// Execute order based on signal
     #[allow(dead_code)]
-    pub async fn execute_order_from_signal(&self, symbol: &str, signal: &TradingSignal) -> Result<String, MpcError> {
-        use crate::domain::entities::order::{Order, OrderType, OrderSide};
+    pub async fn execute_order_from_signal(
+        &self,
+        symbol: &str,
+        signal: &TradingSignal,
+    ) -> Result<String, MpcError> {
+        use crate::domain::entities::order::{Order, OrderSide, OrderType};
 
         // Check if automated trading is enabled
         if !self.config.enable_automated_trading {
@@ -564,15 +690,15 @@ impl MpcService {
 
         // Get current price (for logging purposes)
         let current_price = self.get_aggregated_price(symbol).await?;
-        
+
         // Determine order side and calculate position size based on signal
         let (order_side, position_side) = match signal.signal {
             crate::domain::services::strategies::Signal::Buy => {
                 (OrderSide::Buy, PositionSide::Long)
-            },
+            }
             crate::domain::services::strategies::Signal::Sell => {
                 (OrderSide::Sell, PositionSide::Short)
-            },
+            }
             crate::domain::services::strategies::Signal::Hold => {
                 return Ok("No order executed - signal is HOLD".to_string());
             }
@@ -580,30 +706,35 @@ impl MpcService {
 
         // Calculate position size based on portfolio percentage
         let quantity = self.calculate_position_size(symbol, current_price).await?;
-        let quantity = Quantity::new(quantity)
-            .map_err(|e| MpcError::InvalidConfiguration(format!("Invalid quantity calculation: {}", e)))?;
+        let quantity = Quantity::new(quantity).map_err(|e| {
+            MpcError::InvalidConfiguration(format!("Invalid quantity calculation: {}", e))
+        })?;
 
         // Check position limits
         let positions = self.open_positions.lock().await;
-        let symbol_positions: Vec<_> = positions.values()
-            .filter(|p| p.symbol == symbol)
-            .collect();
-        
+        let symbol_positions: Vec<_> = positions.values().filter(|p| p.symbol == symbol).collect();
+
         if symbol_positions.len() >= self.config.max_positions_per_symbol {
-            return Ok(format!("Maximum positions per symbol ({}) reached for {}", 
-                            self.config.max_positions_per_symbol, symbol));
+            return Ok(format!(
+                "Maximum positions per symbol ({}) reached for {}",
+                self.config.max_positions_per_symbol, symbol
+            ));
         }
-        
+
         if positions.len() >= self.config.max_total_positions {
-            return Ok(format!("Maximum total positions ({}) reached", 
-                            self.config.max_total_positions));
+            return Ok(format!(
+                "Maximum total positions ({}) reached",
+                self.config.max_total_positions
+            ));
         }
         drop(positions); // Release the lock
 
         // Only execute if confidence is high enough
         if signal.confidence < self.config.min_confidence_threshold {
-            return Ok(format!("Signal confidence {:.2} too low for execution (minimum {:.2})", 
-                            signal.confidence, self.config.min_confidence_threshold));
+            return Ok(format!(
+                "Signal confidence {:.2} too low for execution (minimum {:.2})",
+                signal.confidence, self.config.min_confidence_threshold
+            ));
         }
 
         // Generate unique order ID
@@ -621,7 +752,8 @@ impl MpcService {
             OrderType::Market,
             None, // Market order has no price
             quantity.value(),
-        ).map_err(|e| MpcError::InvalidConfiguration(format!("Failed to create order: {}", e)))?;
+        )
+        .map_err(|e| MpcError::InvalidConfiguration(format!("Failed to create order: {}", e)))?;
 
         // Place order on dYdX (for now, only dYdX is implemented)
         let order_result = self.place_order(&Exchange::Dydx, order).await;
@@ -632,28 +764,37 @@ impl MpcService {
                 {
                     let mut trade_history = self.trade_history.lock().await;
                     trade_history.push((SystemTime::now(), symbol.to_string()));
-                    
+
                     // Clean up old trades (keep only last 24 hours)
-                    let one_day_ago = SystemTime::now().checked_sub(Duration::from_secs(86400)).unwrap_or(SystemTime::now());
+                    let one_day_ago = SystemTime::now()
+                        .checked_sub(Duration::from_secs(86400))
+                        .unwrap_or(SystemTime::now());
                     trade_history.retain(|(timestamp, _)| *timestamp >= one_day_ago);
                 }
 
                 // Record strategy execution for all strategies (simplified approach)
                 // In a real implementation, we'd track which strategies contributed to the signal
                 let strategy_names = {
-                    let combiner_guard = self.signal_combiner.lock().await;
-                    combiner_guard.as_ref().map(|c| c.get_strategy_names()).unwrap_or_default()
+                    let combiner_guard = self.signal_combiner.read().await;
+                    combiner_guard
+                        .as_ref()
+                        .map(|c| c.get_strategy_names())
+                        .unwrap_or_default()
                 };
 
                 for strategy_name in strategy_names {
                     // Calculate proportional PnL based on strategy weight
                     // For simplicity, assume equal contribution for now
-                    let proportional_pnl = Price::new(0.0).unwrap(); // Will be updated when position closes
-                    self.record_strategy_execution(&strategy_name, proportional_pnl).await;
+                    // Safe: 0.0 is always a valid price
+                    let proportional_pnl = Price::new(0.0).expect("Zero price should always be valid");
+                    self.record_strategy_execution(&strategy_name, proportional_pnl)
+                        .await;
                 }
 
                 // Open position after successful order execution
-                let position_result = self.open_position(symbol, position_side, quantity, current_price).await;
+                let position_result = self
+                    .open_position(symbol, position_side, quantity, current_price)
+                    .await;
 
                 match position_result {
                     Ok(position_id) => {
@@ -661,14 +802,14 @@ impl MpcService {
                               order_side, quantity, symbol, signal.confidence, order_id, position_id);
                         Ok(format!("Order executed and position opened on dYdX: {:?} {} {} - Order ID: {}, Position ID: {}", 
                                   order_side, quantity, symbol, order_id, position_id))
-                    },
+                    }
                     Err(e) => {
                         warn!("Order executed but failed to open position: {}", e);
                         Ok(format!("Order executed on dYdX: {:?} {} {} - Order ID: {} (position tracking failed: {})", 
                                   order_side, quantity, symbol, order_id, e))
                     }
                 }
-            },
+            }
             Err(e) => {
                 error!("Failed to execute order on dYdX: {}", e);
                 Err(e)
@@ -686,7 +827,7 @@ impl MpcService {
             match self.execute_order_from_signal(&symbol, &signal).await {
                 Ok(msg) => {
                     results.push(Ok(msg));
-                },
+                }
                 Err(e) => {
                     warn!("Failed to execute order for {}: {}", symbol, e);
                     results.push(Err(e));
@@ -705,28 +846,30 @@ impl MpcService {
 
         // Count trades in the last hour
         let one_hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap_or(now);
-        let trades_last_hour = trade_history.iter()
+        let trades_last_hour = trade_history
+            .iter()
             .filter(|(timestamp, _)| *timestamp >= one_hour_ago)
             .count();
 
         if trades_last_hour >= self.config.max_trades_per_hour {
-            return Err(MpcError::InvalidConfiguration(
-                format!("Hourly trade limit exceeded: {} trades in last hour (max: {})",
-                       trades_last_hour, self.config.max_trades_per_hour)
-            ));
+            return Err(MpcError::InvalidConfiguration(format!(
+                "Hourly trade limit exceeded: {} trades in last hour (max: {})",
+                trades_last_hour, self.config.max_trades_per_hour
+            )));
         }
 
         // Count trades in the last 24 hours
         let one_day_ago = now.checked_sub(Duration::from_secs(86400)).unwrap_or(now);
-        let trades_last_day = trade_history.iter()
+        let trades_last_day = trade_history
+            .iter()
             .filter(|(timestamp, _)| *timestamp >= one_day_ago)
             .count();
 
         if trades_last_day >= self.config.max_trades_per_day {
-            return Err(MpcError::InvalidConfiguration(
-                format!("Daily trade limit exceeded: {} trades in last 24 hours (max: {})",
-                       trades_last_day, self.config.max_trades_per_day)
-            ));
+            return Err(MpcError::InvalidConfiguration(format!(
+                "Daily trade limit exceeded: {} trades in last 24 hours (max: {})",
+                trades_last_day, self.config.max_trades_per_day
+            )));
         }
 
         Ok(())
@@ -783,7 +926,11 @@ impl MpcService {
 
     /// Update WebSocket health for an exchange
     #[allow(dead_code)]
-    pub async fn update_websocket_health(&self, exchange: String, time_since_last_message: Duration) {
+    pub async fn update_websocket_health(
+        &self,
+        exchange: String,
+        time_since_last_message: Duration,
+    ) {
         let mut health = self.system_health.lock().await;
         health.update_websocket_health(exchange, time_since_last_message);
     }
@@ -838,11 +985,23 @@ impl MpcService {
     #[allow(dead_code)]
     pub async fn adjust_strategy_weights(&self) -> Result<(), String> {
         let strategy_metrics = {
-            let metrics = self.strategy_metrics.lock().await;
-            metrics.values().cloned().collect::<Vec<_>>()
+            let order = {
+                let order_guard = self.strategy_order.lock().await;
+                order_guard.clone()
+            };
+            let metrics_guard = self.strategy_metrics.lock().await;
+            order
+                .iter()
+                .map(|name| {
+                    metrics_guard
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| StrategyMetrics::new(name.clone()))
+                })
+                .collect::<Vec<_>>()
         };
 
-        let mut signal_combiner_guard = self.signal_combiner.lock().await;
+        let mut signal_combiner_guard = self.signal_combiner.write().await;
         if let Some(combiner) = signal_combiner_guard.as_mut() {
             combiner.adjust_weights(&strategy_metrics)?;
             info!("Strategy weights adjusted based on performance metrics");
@@ -874,13 +1033,17 @@ impl MpcService {
 
         // Filter out already active alerts (avoid duplicates)
         let mut active_alerts = self.active_alerts.lock().await;
-        let existing_alert_types: std::collections::HashSet<_> = active_alerts.iter()
+        let existing_alert_types: std::collections::HashSet<_> = active_alerts
+            .iter()
             .filter(|alert| !alert.resolved)
             .map(|alert| std::mem::discriminant(&alert.alert_type))
             .collect();
 
-        let filtered_new_alerts: Vec<SystemAlert> = new_alerts.into_iter()
-            .filter(|alert| !existing_alert_types.contains(&std::mem::discriminant(&alert.alert_type)))
+        let filtered_new_alerts: Vec<SystemAlert> = new_alerts
+            .into_iter()
+            .filter(|alert| {
+                !existing_alert_types.contains(&std::mem::discriminant(&alert.alert_type))
+            })
             .collect();
 
         // Add new alerts to active alerts
@@ -895,12 +1058,18 @@ impl MpcService {
     #[allow(dead_code)]
     pub async fn get_active_alerts(&self) -> Vec<SystemAlert> {
         let active_alerts = self.active_alerts.lock().await;
-        active_alerts.iter().filter(|alert| !alert.resolved).cloned().collect()
+        active_alerts
+            .iter()
+            .filter(|alert| !alert.resolved)
+            .cloned()
+            .collect()
     }
 
     /// Get performance profiles
     #[allow(dead_code)]
-    pub async fn get_performance_profiles(&self) -> HashMap<String, crate::domain::services::metrics::PerformanceProfile> {
+    pub async fn get_performance_profiles(
+        &self,
+    ) -> HashMap<String, crate::domain::services::metrics::PerformanceProfile> {
         let profiler = self.performance_profiler.lock().await;
         profiler.get_all_profiles().clone()
     }
@@ -908,8 +1077,8 @@ impl MpcService {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::services::strategies::Strategy;
     use super::*;
+    use crate::domain::services::strategies::{ConservativeScalping, FastScalping, MomentumScalping, Strategy};
 
     #[test]
     fn test_mpc_service_new() {
@@ -927,18 +1096,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_trading_signal() {
-        use crate::domain::services::strategies::{FastScalping, MomentumScalping};
         use crate::domain::services::indicators::Candle;
+        use crate::domain::services::strategies::{FastScalping, MomentumScalping};
 
         let config = TradingConfig::default();
         let service = MpcService::new(config);
-        let strategies: Vec<Box<dyn Strategy + Send + Sync>> = vec![
-            Box::new(FastScalping::new()),
-            Box::new(MomentumScalping::new()),
+        let strategies = vec![
+            (
+                "FastScalping".to_string(),
+                Box::new(FastScalping::new()) as Box<dyn Strategy + Send + Sync>,
+            ),
+            (
+                "MomentumScalping".to_string(),
+                Box::new(MomentumScalping::new()) as Box<dyn Strategy + Send + Sync>,
+            ),
         ];
         let weights = vec![0.5, 0.5];
-        let combiner = SignalCombiner::new(strategies, weights)
-            .expect("Failed to create signal combiner");
+        let combiner =
+            SignalCombiner::new(strategies, weights).expect("Failed to create signal combiner");
         service.set_signal_combiner(combiner).await;
 
         let candles = vec![
@@ -994,7 +1169,12 @@ mod tests {
         service.add_actor(crate::domain::entities::exchange::Exchange::Binance, sender);
 
         // Get price from mock actor
-        let result = service.get_price(&crate::domain::entities::exchange::Exchange::Binance, "BTCUSDT").await;
+        let result = service
+            .get_price(
+                &crate::domain::entities::exchange::Exchange::Binance,
+                "BTCUSDT",
+            )
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().value(), 55000.0);
     }
@@ -1012,11 +1192,21 @@ mod tests {
         service.add_actor(crate::domain::entities::exchange::Exchange::Binance, sender);
 
         // Test subscribe
-        let result = service.subscribe(&crate::domain::entities::exchange::Exchange::Binance, "BTCUSDT").await;
+        let result = service
+            .subscribe(
+                &crate::domain::entities::exchange::Exchange::Binance,
+                "BTCUSDT",
+            )
+            .await;
         assert!(result.is_ok());
 
         // Test unsubscribe
-        let result = service.unsubscribe(&crate::domain::entities::exchange::Exchange::Binance, "BTCUSDT").await;
+        let result = service
+            .unsubscribe(
+                &crate::domain::entities::exchange::Exchange::Binance,
+                "BTCUSDT",
+            )
+            .await;
         assert!(result.is_ok());
     }
 
@@ -1033,8 +1223,75 @@ mod tests {
         service.add_actor(crate::domain::entities::exchange::Exchange::Binance, sender);
 
         // Get subscriptions
-        let result = service.get_subscriptions(&crate::domain::entities::exchange::Exchange::Binance).await;
+        let result = service
+            .get_subscriptions(&crate::domain::entities::exchange::Exchange::Binance)
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().len(), 0); // Mock actor returns empty list
+    }
+
+    #[tokio::test]
+    async fn test_adjust_strategy_weights_respects_strategy_order() {
+        let config = TradingConfig::default();
+        let service = MpcService::new(config);
+
+        let strategies: Vec<(String, Box<dyn Strategy + Send + Sync>)> = vec![
+            ("FastScalping".to_string(), Box::new(FastScalping::new())),
+            (
+                "MomentumScalping".to_string(),
+                Box::new(MomentumScalping::new()),
+            ),
+            (
+                "ConservativeScalping".to_string(),
+                Box::new(ConservativeScalping::new()),
+            ),
+        ];
+        let weights = vec![0.4, 0.4, 0.2];
+        let combiner =
+            SignalCombiner::new(strategies, weights).expect("Failed to create signal combiner");
+        service.set_signal_combiner(combiner).await;
+
+        {
+            let mut metrics = service.strategy_metrics.lock().await;
+            let mut reordered = std::collections::HashMap::new();
+            if let Some(conservative) = metrics.remove("ConservativeScalping") {
+                reordered.insert("ConservativeScalping".to_string(), conservative);
+            }
+            if let Some(momentum) = metrics.remove("MomentumScalping") {
+                reordered.insert("MomentumScalping".to_string(), momentum);
+            }
+            if let Some(fast) = metrics.remove("FastScalping") {
+                reordered.insert("FastScalping".to_string(), fast);
+            }
+            for metrics in reordered.values_mut() {
+                metrics.performance_score = 0.1;
+            }
+            if let Some(fast) = reordered.get_mut("FastScalping") {
+                fast.performance_score = 0.9;
+            }
+            if let Some(momentum) = reordered.get_mut("MomentumScalping") {
+                momentum.performance_score = 0.3;
+            }
+            *metrics = reordered;
+        }
+
+        service
+            .adjust_strategy_weights()
+            .await
+            .expect("weight adjustment should succeed");
+
+        let weights = {
+            let guard = service.signal_combiner.read().await;
+            guard.as_ref().unwrap().weights().to_vec()
+        };
+
+        assert!(
+            weights[0] > weights[1],
+            "FastScalping weight should be higher than MomentumScalping"
+        );
+        assert!(
+            weights[1] > weights[2],
+            "MomentumScalping weight should be higher than ConservativeScalping"
+        );
     }
 }

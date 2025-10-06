@@ -13,8 +13,8 @@ pub struct TradingConfig {
     pub stop_loss_percentage: Option<f64>,
     pub take_profit_percentage: Option<f64>,
     pub portfolio_percentage_per_position: f64, // Pourcentage du portefeuille par position
-    pub max_trades_per_hour: usize, // Limite de trades par heure
-    pub max_trades_per_day: usize, // Limite de trades par jour
+    pub max_trades_per_hour: usize,             // Limite de trades par heure
+    pub max_trades_per_day: usize,              // Limite de trades par jour
 }
 
 impl TradingConfig {
@@ -55,11 +55,7 @@ impl TradingConfig {
         // Hyperliquid symbols (just the asset name)
         symbols.insert(
             Exchange::Hyperliquid,
-            vec![
-                "BTC".to_string(),
-                "ETH".to_string(),
-                "SOL".to_string(),
-            ],
+            vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()],
         );
 
         // Kraken symbols (with slash)
@@ -79,11 +75,11 @@ impl TradingConfig {
             max_total_positions: 5,
             default_position_size: 0.001,
             enable_automated_trading: true,
-            stop_loss_percentage: Some(0.05), // 5% stop loss
-            take_profit_percentage: Some(0.10), // 10% take profit
+            stop_loss_percentage: Some(0.05),        // 5% stop loss
+            take_profit_percentage: Some(0.10),      // 10% take profit
             portfolio_percentage_per_position: 0.02, // 2% du portefeuille par position
-            max_trades_per_hour: 10, // 10 trades par heure max
-            max_trades_per_day: 50, // 50 trades par jour max
+            max_trades_per_hour: 10,                 // 10 trades par heure max
+            max_trades_per_day: 50,                  // 50 trades par jour max
         }
     }
 
@@ -141,7 +137,8 @@ impl TradingConfig {
 
         if let Ok(portfolio_pct) = std::env::var("PORTFOLIO_PERCENTAGE_PER_POSITION") {
             if let Ok(value) = portfolio_pct.parse::<f64>() {
-                if (0.001..=0.1).contains(&value) { // Entre 0.1% et 10%
+                if (0.001..=0.1).contains(&value) {
+                    // Entre 0.1% et 10%
                     config.portfolio_percentage_per_position = value;
                 }
             }

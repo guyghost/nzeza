@@ -1,4 +1,6 @@
-use crate::domain::services::indicators::{Indicator, EMA, RSI, BollingerBands, MACD, StochasticOscillator, VWAP, Candle};
+use crate::domain::services::indicators::{
+    BollingerBands, Candle, Indicator, StochasticOscillator, EMA, MACD, RSI, VWAP,
+};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
@@ -48,11 +50,20 @@ impl Strategy for FastScalping {
         let last_long = *long_ema.last()?;
 
         if last_short > last_long {
-            Some(TradingSignal { signal: Signal::Buy, confidence: 0.8 })
+            Some(TradingSignal {
+                signal: Signal::Buy,
+                confidence: 0.8,
+            })
         } else if last_short < last_long {
-            Some(TradingSignal { signal: Signal::Sell, confidence: 0.8 })
+            Some(TradingSignal {
+                signal: Signal::Sell,
+                confidence: 0.8,
+            })
         } else {
-            Some(TradingSignal { signal: Signal::Hold, confidence: 0.5 })
+            Some(TradingSignal {
+                signal: Signal::Hold,
+                confidence: 0.5,
+            })
         }
     }
 }
@@ -88,12 +99,21 @@ impl Strategy for MomentumScalping {
 
         if last_rsi < 30.0 && last_macd > 0.0 {
             confidence = 0.9;
-            Some(TradingSignal { signal: Signal::Buy, confidence })
+            Some(TradingSignal {
+                signal: Signal::Buy,
+                confidence,
+            })
         } else if last_rsi > 70.0 && last_macd < 0.0 {
             confidence = 0.9;
-            Some(TradingSignal { signal: Signal::Sell, confidence })
+            Some(TradingSignal {
+                signal: Signal::Sell,
+                confidence,
+            })
         } else {
-            Some(TradingSignal { signal: Signal::Hold, confidence })
+            Some(TradingSignal {
+                signal: Signal::Hold,
+                confidence,
+            })
         }
     }
 }
@@ -135,12 +155,21 @@ impl Strategy for ConservativeScalping {
 
         if last_close < last_bb_lower && last_stoch < 20.0 && last_close < last_vwap {
             confidence = 0.7;
-            Some(TradingSignal { signal: Signal::Buy, confidence })
+            Some(TradingSignal {
+                signal: Signal::Buy,
+                confidence,
+            })
         } else if last_close > last_bb_upper && last_stoch > 80.0 && last_close > last_vwap {
             confidence = 0.7;
-            Some(TradingSignal { signal: Signal::Sell, confidence })
+            Some(TradingSignal {
+                signal: Signal::Sell,
+                confidence,
+            })
         } else {
-            Some(TradingSignal { signal: Signal::Hold, confidence })
+            Some(TradingSignal {
+                signal: Signal::Hold,
+                confidence,
+            })
         }
     }
 }
@@ -148,14 +177,15 @@ impl Strategy for ConservativeScalping {
 #[allow(dead_code)]
 pub struct SignalCombiner {
     pub strategies: Vec<Box<dyn Strategy + Send + Sync>>,
+    pub strategy_names: Vec<String>,
     pub weights: Vec<f64>,
 }
 
 #[allow(dead_code)]
 impl SignalCombiner {
     pub fn new(
-        strategies: Vec<Box<dyn Strategy + Send + Sync>>,
-        weights: Vec<f64>
+        strategies: Vec<(String, Box<dyn Strategy + Send + Sync>)>,
+        weights: Vec<f64>,
     ) -> Result<Self, String> {
         if strategies.len() != weights.len() {
             return Err(format!(
@@ -167,7 +197,16 @@ impl SignalCombiner {
         if strategies.is_empty() {
             return Err("At least one strategy is required".to_string());
         }
-        Ok(SignalCombiner { strategies, weights })
+        let strategy_names = strategies.iter().map(|(name, _)| name.clone()).collect();
+        let strategy_instances = strategies
+            .into_iter()
+            .map(|(_, strategy)| strategy)
+            .collect();
+        Ok(SignalCombiner {
+            strategies: strategy_instances,
+            strategy_names,
+            weights,
+        })
     }
 
     pub fn combine_signals(&self, candles: &[Candle]) -> Option<TradingSignal> {
@@ -194,17 +233,29 @@ impl SignalCombiner {
         let sell_confidence = sell_score / total_weight;
 
         if buy_confidence > sell_confidence && buy_confidence > 0.5 {
-            Some(TradingSignal { signal: Signal::Buy, confidence: buy_confidence })
+            Some(TradingSignal {
+                signal: Signal::Buy,
+                confidence: buy_confidence,
+            })
         } else if sell_confidence > buy_confidence && sell_confidence > 0.5 {
-            Some(TradingSignal { signal: Signal::Sell, confidence: sell_confidence })
+            Some(TradingSignal {
+                signal: Signal::Sell,
+                confidence: sell_confidence,
+            })
         } else {
-            Some(TradingSignal { signal: Signal::Hold, confidence: 0.5 })
+            Some(TradingSignal {
+                signal: Signal::Hold,
+                confidence: 0.5,
+            })
         }
     }
 
     /// Adjust strategy weights based on performance metrics
     /// Uses a reinforcement learning approach where better performing strategies get higher weights
-    pub fn adjust_weights(&mut self, strategy_metrics: &[crate::domain::services::metrics::StrategyMetrics]) -> Result<(), String> {
+    pub fn adjust_weights(
+        &mut self,
+        strategy_metrics: &[crate::domain::services::metrics::StrategyMetrics],
+    ) -> Result<(), String> {
         if strategy_metrics.len() != self.strategies.len() {
             return Err(format!(
                 "Strategy metrics count ({}) must match strategies count ({})",
@@ -251,11 +302,11 @@ impl SignalCombiner {
 
     /// Get current strategy names for metrics tracking
     pub fn get_strategy_names(&self) -> Vec<String> {
-        vec![
-            "FastScalping".to_string(),
-            "MomentumScalping".to_string(),
-            "ConservativeScalping".to_string(),
-        ]
+        self.strategy_names.clone()
+    }
+
+    pub fn weights(&self) -> &[f64] {
+        &self.weights
     }
 }
 
@@ -304,7 +355,10 @@ mod tests {
         let candles = create_test_candles();
         let signal = strategy.generate_signal(&candles);
         assert!(signal.is_some());
-        assert!(matches!(signal.unwrap().signal, Signal::Buy | Signal::Sell | Signal::Hold));
+        assert!(matches!(
+            signal.unwrap().signal,
+            Signal::Buy | Signal::Sell | Signal::Hold
+        ));
     }
 
     #[test]
@@ -325,9 +379,15 @@ mod tests {
 
     #[test]
     fn test_signal_combiner() {
-        let strategies: Vec<Box<dyn Strategy + Send + Sync>> = vec![
-            Box::new(FastScalping::new()),
-            Box::new(MomentumScalping::new()),
+        let strategies = vec![
+            (
+                "FastScalping".to_string(),
+                Box::new(FastScalping::new()) as Box<dyn Strategy + Send + Sync>,
+            ),
+            (
+                "MomentumScalping".to_string(),
+                Box::new(MomentumScalping::new()) as Box<dyn Strategy + Send + Sync>,
+            ),
         ];
         let weights = vec![0.6, 0.4];
         let combiner = SignalCombiner::new(strategies, weights).unwrap();

@@ -68,7 +68,8 @@ impl Order {
 
     #[allow(dead_code)]
     pub fn total_value(&self) -> Option<Price> {
-        self.price.and_then(|p| p.multiply(self.quantity.value()).ok())
+        self.price
+            .and_then(|p| p.multiply(self.quantity.value()).ok())
     }
 }
 
@@ -149,7 +150,8 @@ mod tests {
             OrderType::Limit,
             Some(50000.0),
             0.1,
-        ).unwrap();
+        )
+        .unwrap();
         let total = order.total_value();
         assert!(total.is_some());
         assert_eq!(total.unwrap().value(), 5000.0);
@@ -164,7 +166,8 @@ mod tests {
             OrderType::Market,
             None,
             0.1,
-        ).unwrap();
+        )
+        .unwrap();
         let total = order.total_value();
         assert!(total.is_none());
     }

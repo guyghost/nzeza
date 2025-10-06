@@ -1,17 +1,15 @@
-use tokio::sync::mpsc;
-use tokio::sync::broadcast;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message;
-use futures_util::{SinkExt, StreamExt};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use std::collections::{HashMap, HashSet};
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::value_objects::price::Price;
-use chrono::Utc;
-use tracing::{info, warn, error, debug};
-use ethers::prelude::{LocalWallet, MnemonicBuilder};
-use ethers::signers::Signer;
+use futures_util::{SinkExt, StreamExt};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
+use tokio::sync::Mutex;
+use tokio::time::Instant;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
 pub enum SubscriptionCommand {
@@ -19,18 +17,40 @@ pub enum SubscriptionCommand {
     Unsubscribe(String),
 }
 
-use crate::domain::entities::order::{Order, OrderSide, OrderType};
+use crate::domain::entities::order::Order;
 
 #[derive(Debug)]
 pub enum ExchangeMessage {
-    GetPrice { symbol: String, reply: mpsc::Sender<Result<Price, String>> },
-    Subscribe { symbol: String, reply: mpsc::Sender<Result<(), String>> },
-    Unsubscribe { symbol: String, reply: mpsc::Sender<Result<(), String>> },
-    GetSubscriptions { reply: mpsc::Sender<Vec<String>> },
-    HealthCheck { reply: mpsc::Sender<bool> },
-    PlaceOrder { order: Order, reply: mpsc::Sender<Result<String, String>> },
-    CancelOrder { order_id: String, reply: mpsc::Sender<Result<(), String>> },
-    GetOrderStatus { order_id: String, reply: mpsc::Sender<Result<String, String>> },
+    GetPrice {
+        symbol: String,
+        reply: mpsc::Sender<Result<Price, String>>,
+    },
+    Subscribe {
+        symbol: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    Unsubscribe {
+        symbol: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    GetSubscriptions {
+        reply: mpsc::Sender<Vec<String>>,
+    },
+    HealthCheck {
+        reply: mpsc::Sender<bool>,
+    },
+    PlaceOrder {
+        order: Order,
+        reply: mpsc::Sender<Result<String, String>>,
+    },
+    CancelOrder {
+        order_id: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    GetOrderStatus {
+        order_id: String,
+        reply: mpsc::Sender<Result<String, String>>,
+    },
     Shutdown,
 }
 
@@ -40,6 +60,30 @@ pub struct ExchangeActor {
     pub subscriptions: Arc<Mutex<HashSet<String>>>,
     pub shutdown_tx: broadcast::Sender<()>,
     pub subscription_tx: mpsc::Sender<SubscriptionCommand>,
+    activity_tracker: ActivityTracker,
+}
+
+#[derive(Clone)]
+struct ActivityTracker {
+    last_activity: Arc<Mutex<Instant>>,
+}
+
+impl ActivityTracker {
+    fn new() -> Self {
+        Self {
+            last_activity: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
+
+    async fn mark_active(&self) {
+        let mut guard = self.last_activity.lock().await;
+        *guard = Instant::now();
+    }
+
+    async fn is_healthy(&self, timeout: std::time::Duration) -> bool {
+        let guard = self.last_activity.lock().await;
+        guard.elapsed() <= timeout
+    }
 }
 
 impl ExchangeActor {
@@ -50,6 +94,7 @@ impl ExchangeActor {
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         let (subscription_tx, subscription_rx) = mpsc::channel(100);
         let exchange_clone = exchange.clone();
+        let activity_tracker = ActivityTracker::new();
 
         let actor = Self {
             exchange,
@@ -57,6 +102,7 @@ impl ExchangeActor {
             subscriptions: subscriptions.clone(),
             shutdown_tx: shutdown_tx.clone(),
             subscription_tx: subscription_tx.clone(),
+            activity_tracker: activity_tracker.clone(),
         };
 
         tokio::spawn(async move {
@@ -71,6 +117,7 @@ impl ExchangeActor {
                 subscriptions,
                 subscription_rx,
                 shutdown_rx,
+                activity_tracker,
             )
             .await;
         });
@@ -89,10 +136,13 @@ impl ExchangeActor {
     }
 
     async fn run(self, mut rx: mpsc::Receiver<ExchangeMessage>) {
-        info!("Actor started for exchange: {}", Self::get_exchange_name(&self.exchange));
+        info!(
+            "Actor started for exchange: {}",
+            Self::get_exchange_name(&self.exchange)
+        );
 
         while let Some(msg) = rx.recv().await {
-            let last_heartbeat = tokio::time::Instant::now();
+            self.activity_tracker.mark_active().await;
 
             match msg {
                 ExchangeMessage::GetPrice { symbol, reply } => {
@@ -104,11 +154,17 @@ impl ExchangeActor {
                     let _ = reply.send(result).await;
                 }
                 ExchangeMessage::Subscribe { symbol, reply } => {
-                    info!("Subscribe request for {}: {}", Self::get_exchange_name(&self.exchange), symbol);
+                    info!(
+                        "Subscribe request for {}: {}",
+                        Self::get_exchange_name(&self.exchange),
+                        symbol
+                    );
                     let mut subscriptions = self.subscriptions.lock().await;
 
                     if subscriptions.contains(&symbol) {
-                        let _ = reply.send(Err(format!("Already subscribed to {}", symbol))).await;
+                        let _ = reply
+                            .send(Err(format!("Already subscribed to {}", symbol)))
+                            .await;
                     } else {
                         subscriptions.insert(symbol.clone());
 
@@ -120,15 +176,25 @@ impl ExchangeActor {
                             .map_err(|e| format!("Failed to send subscription command: {}", e));
 
                         let _ = reply.send(result).await;
-                        info!("Subscribed to {}: {}", Self::get_exchange_name(&self.exchange), symbol);
+                        info!(
+                            "Subscribed to {}: {}",
+                            Self::get_exchange_name(&self.exchange),
+                            symbol
+                        );
                     }
                 }
                 ExchangeMessage::Unsubscribe { symbol, reply } => {
-                    info!("Unsubscribe request for {}: {}", Self::get_exchange_name(&self.exchange), symbol);
+                    info!(
+                        "Unsubscribe request for {}: {}",
+                        Self::get_exchange_name(&self.exchange),
+                        symbol
+                    );
                     let mut subscriptions = self.subscriptions.lock().await;
 
                     if !subscriptions.contains(&symbol) {
-                        let _ = reply.send(Err(format!("Not subscribed to {}", symbol))).await;
+                        let _ = reply
+                            .send(Err(format!("Not subscribed to {}", symbol)))
+                            .await;
                     } else {
                         subscriptions.remove(&symbol);
 
@@ -140,7 +206,11 @@ impl ExchangeActor {
                             .map_err(|e| format!("Failed to send unsubscription command: {}", e));
 
                         let _ = reply.send(result).await;
-                        info!("Unsubscribed from {}: {}", Self::get_exchange_name(&self.exchange), symbol);
+                        info!(
+                            "Unsubscribed from {}: {}",
+                            Self::get_exchange_name(&self.exchange),
+                            symbol
+                        );
                     }
                 }
                 ExchangeMessage::GetSubscriptions { reply } => {
@@ -149,28 +219,49 @@ impl ExchangeActor {
                     let _ = reply.send(symbols).await;
                 }
                 ExchangeMessage::HealthCheck { reply } => {
-                    // Actor is healthy if it's responding
-                    let is_healthy = last_heartbeat.elapsed() < tokio::time::Duration::from_secs(30);
+                    let is_healthy = self
+                        .activity_tracker
+                        .is_healthy(std::time::Duration::from_secs(30))
+                        .await;
                     let _ = reply.send(is_healthy).await;
-                    debug!("Health check for {}: {}", Self::get_exchange_name(&self.exchange), is_healthy);
+                    debug!(
+                        "Health check for {}: {}",
+                        Self::get_exchange_name(&self.exchange),
+                        is_healthy
+                    );
                 }
                 ExchangeMessage::PlaceOrder { order, reply } => {
-                    info!("Place order request for {}: {:?}", Self::get_exchange_name(&self.exchange), order.id);
+                    info!(
+                        "Place order request for {}: {:?}",
+                        Self::get_exchange_name(&self.exchange),
+                        order.id
+                    );
                     let result = Self::place_order(&self.exchange, &order).await;
                     let _ = reply.send(result).await;
                 }
                 ExchangeMessage::CancelOrder { order_id, reply } => {
-                    info!("Cancel order request for {}: {}", Self::get_exchange_name(&self.exchange), order_id);
+                    info!(
+                        "Cancel order request for {}: {}",
+                        Self::get_exchange_name(&self.exchange),
+                        order_id
+                    );
                     let result = Self::cancel_order(&self.exchange, &order_id).await;
                     let _ = reply.send(result).await;
                 }
                 ExchangeMessage::GetOrderStatus { order_id, reply } => {
-                    debug!("Get order status request for {}: {}", Self::get_exchange_name(&self.exchange), order_id);
+                    debug!(
+                        "Get order status request for {}: {}",
+                        Self::get_exchange_name(&self.exchange),
+                        order_id
+                    );
                     let result = Self::get_order_status(&self.exchange, &order_id).await;
                     let _ = reply.send(result).await;
                 }
                 ExchangeMessage::Shutdown => {
-                    info!("Shutdown signal received for exchange: {}", Self::get_exchange_name(&self.exchange));
+                    info!(
+                        "Shutdown signal received for exchange: {}",
+                        Self::get_exchange_name(&self.exchange)
+                    );
                     // Signal the WebSocket task to shutdown
                     let _ = self.shutdown_tx.send(());
                     break;
@@ -178,7 +269,10 @@ impl ExchangeActor {
             }
         }
 
-        info!("Actor stopped for exchange: {}", Self::get_exchange_name(&self.exchange));
+        info!(
+            "Actor stopped for exchange: {}",
+            Self::get_exchange_name(&self.exchange)
+        );
     }
 
     async fn run_websocket(
@@ -187,6 +281,7 @@ impl ExchangeActor {
         subscriptions: Arc<Mutex<HashSet<String>>>,
         mut subscription_rx: mpsc::Receiver<SubscriptionCommand>,
         mut shutdown_rx: broadcast::Receiver<()>,
+        activity_tracker: ActivityTracker,
     ) {
         use std::time::Duration;
 
@@ -194,10 +289,13 @@ impl ExchangeActor {
         let max_backoff = Duration::from_secs(60);
 
         loop {
-            info!("Starting WebSocket connection for exchange: {}", Self::get_exchange_name(&exchange));
+            info!(
+                "Starting WebSocket connection for exchange: {}",
+                Self::get_exchange_name(&exchange)
+            );
 
             tokio::select! {
-                result = Self::try_websocket_connection(&exchange, &prices, &subscriptions, &mut subscription_rx) => {
+                result = Self::try_websocket_connection(&exchange, &prices, &subscriptions, &mut subscription_rx, &activity_tracker) => {
                     match result {
                         Ok(()) => {
                             info!("WebSocket connection ended normally for {}, reconnecting...", Self::get_exchange_name(&exchange));
@@ -232,12 +330,18 @@ impl ExchangeActor {
         prices: &Arc<Mutex<HashMap<String, Price>>>,
         subscriptions: &Arc<Mutex<HashSet<String>>>,
         subscription_rx: &mut mpsc::Receiver<SubscriptionCommand>,
+        activity_tracker: &ActivityTracker,
     ) -> Result<(), String> {
         let ws_url = Self::get_websocket_url(exchange);
 
-        let (stream, _) = connect_async(&ws_url).await
+        let (stream, _) = connect_async(&ws_url)
+            .await
             .map_err(|e| format!("Failed to connect: {}", e))?;
-        info!("Successfully connected to {} WebSocket", Self::get_exchange_name(exchange));
+        info!(
+            "Successfully connected to {} WebSocket",
+            Self::get_exchange_name(exchange)
+        );
+        activity_tracker.mark_active().await;
 
         let (mut write, mut read) = stream.split();
 
@@ -245,9 +349,16 @@ impl ExchangeActor {
         let current_subscriptions = subscriptions.lock().await.clone();
         for symbol in current_subscriptions {
             if let Some(msg) = Self::build_subscribe_message(exchange, &symbol) {
-                write.send(Message::Text(msg.clone())).await
+                write
+                    .send(Message::Text(msg.clone()))
+                    .await
                     .map_err(|e| format!("Failed to send subscribe message: {}", e))?;
-                info!("Sent subscribe message to {} for {}: {}", Self::get_exchange_name(exchange), symbol, msg);
+                info!(
+                    "Sent subscribe message to {} for {}: {}",
+                    Self::get_exchange_name(exchange),
+                    symbol,
+                    msg
+                );
             }
         }
 
@@ -261,6 +372,7 @@ impl ExchangeActor {
                                 if let Some((symbol, price)) = Self::parse_price_with_symbol(exchange, &data) {
                                     prices.lock().await.insert(symbol.clone(), price);
                                     debug!("Prix mis à jour pour {} {}: {:.2}", Self::get_exchange_name(exchange), symbol, price.value());
+                                    activity_tracker.mark_active().await;
                                 }
                             } else {
                                 warn!("Received invalid JSON from {:?}: {}", exchange, text);
@@ -295,6 +407,7 @@ impl ExchangeActor {
                                 write.send(Message::Text(msg.clone())).await
                                     .map_err(|e| format!("Failed to send subscribe message: {}", e))?;
                                 info!("Subscribed to {} {}: {}", Self::get_exchange_name(exchange), symbol, msg);
+                                activity_tracker.mark_active().await;
                             }
                         }
                         SubscriptionCommand::Unsubscribe(symbol) => {
@@ -305,6 +418,7 @@ impl ExchangeActor {
                             }
                             // Remove from prices map
                             prices.lock().await.remove(&symbol);
+                            activity_tracker.mark_active().await;
                         }
                     }
                 }
@@ -326,20 +440,26 @@ impl ExchangeActor {
         match exchange {
             Exchange::Binance => {
                 let stream = format!("{}@ticker", symbol.to_lowercase());
-                Some(format!(r#"{{"method":"SUBSCRIBE","params":["{}"],"id":1}}"#, stream))
+                Some(format!(
+                    r#"{{"method":"SUBSCRIBE","params":["{}"],"id":1}}"#,
+                    stream
+                ))
             }
-            Exchange::Dydx => {
-                Some(format!(r#"{{"type":"subscribe","channel":"v4_markets","id":"{}"}}"#, symbol))
-            }
+            Exchange::Dydx => Some(format!(
+                r#"{{"type":"subscribe","channel":"v4_markets","id":"{}"}}"#,
+                symbol
+            )),
             Exchange::Hyperliquid => {
                 Some(r#"{"method":"subscribe","subscription":{"type":"allMids"}}"#.to_string())
             }
-            Exchange::Coinbase => {
-                Some(format!(r#"{{"type":"subscribe","product_ids":["{}"],"channels":["ticker"]}}"#, symbol))
-            }
-            Exchange::Kraken => {
-                Some(format!(r#"{{"event":"subscribe","pair":["{}"],"subscription":{{"name":"ticker"}}}}"#, symbol))
-            }
+            Exchange::Coinbase => Some(format!(
+                r#"{{"type":"subscribe","product_ids":["{}"],"channels":["ticker"]}}"#,
+                symbol
+            )),
+            Exchange::Kraken => Some(format!(
+                r#"{{"event":"subscribe","pair":["{}"],"subscription":{{"name":"ticker"}}}}"#,
+                symbol
+            )),
         }
     }
 
@@ -347,24 +467,33 @@ impl ExchangeActor {
         match exchange {
             Exchange::Binance => {
                 let stream = format!("{}@ticker", symbol.to_lowercase());
-                Some(format!(r#"{{"method":"UNSUBSCRIBE","params":["{}"],"id":1}}"#, stream))
+                Some(format!(
+                    r#"{{"method":"UNSUBSCRIBE","params":["{}"],"id":1}}"#,
+                    stream
+                ))
             }
-            Exchange::Dydx => {
-                Some(format!(r#"{{"type":"unsubscribe","channel":"v4_markets","id":"{}"}}"#, symbol))
-            }
+            Exchange::Dydx => Some(format!(
+                r#"{{"type":"unsubscribe","channel":"v4_markets","id":"{}"}}"#,
+                symbol
+            )),
             Exchange::Hyperliquid => {
                 Some(r#"{"method":"unsubscribe","subscription":{"type":"allMids"}}"#.to_string())
             }
-            Exchange::Coinbase => {
-                Some(format!(r#"{{"type":"unsubscribe","product_ids":["{}"],"channels":["ticker"]}}"#, symbol))
-            }
-            Exchange::Kraken => {
-                Some(format!(r#"{{"event":"unsubscribe","pair":["{}"],"subscription":{{"name":"ticker"}}}}"#, symbol))
-            }
+            Exchange::Coinbase => Some(format!(
+                r#"{{"type":"unsubscribe","product_ids":["{}"],"channels":["ticker"]}}"#,
+                symbol
+            )),
+            Exchange::Kraken => Some(format!(
+                r#"{{"event":"unsubscribe","pair":["{}"],"subscription":{{"name":"ticker"}}}}"#,
+                symbol
+            )),
         }
     }
 
-    fn parse_price_with_symbol(exchange: &Exchange, data: &serde_json::Value) -> Option<(String, Price)> {
+    fn parse_price_with_symbol(
+        exchange: &Exchange,
+        data: &serde_json::Value,
+    ) -> Option<(String, Price)> {
         match exchange {
             Exchange::Binance => {
                 let symbol = data["s"].as_str()?.to_string();
@@ -420,12 +549,14 @@ impl ExchangeActor {
     #[allow(dead_code)]
     fn parse_price(exchange: &Exchange, data: &serde_json::Value) -> Option<Price> {
         match exchange {
-            Exchange::Binance => {
-                data["c"].as_str().and_then(|s| s.parse::<f64>().ok()).and_then(|p| Price::new(p).ok())
-            }
-            Exchange::Dydx => {
-                data["contents"]["markets"]["BTC-USD"]["oraclePrice"].as_str().and_then(|s| s.parse::<f64>().ok()).and_then(|p| Price::new(p).ok())
-            }
+            Exchange::Binance => data["c"]
+                .as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .and_then(|p| Price::new(p).ok()),
+            Exchange::Dydx => data["contents"]["markets"]["BTC-USD"]["oraclePrice"]
+                .as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .and_then(|p| Price::new(p).ok()),
             Exchange::Hyperliquid => {
                 // For allMids, find BTC
                 if let Some(arr) = data.as_array() {
@@ -437,12 +568,14 @@ impl ExchangeActor {
                 }
                 None
             }
-            Exchange::Coinbase => {
-                data["price"].as_str().and_then(|s| s.parse::<f64>().ok()).and_then(|p| Price::new(p).ok())
-            }
-            Exchange::Kraken => {
-                data[1]["c"][0].as_str().and_then(|s| s.parse::<f64>().ok()).and_then(|p| Price::new(p).ok())
-            }
+            Exchange::Coinbase => data["price"]
+                .as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .and_then(|p| Price::new(p).ok()),
+            Exchange::Kraken => data[1]["c"][0]
+                .as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .and_then(|p| Price::new(p).ok()),
         }
     }
 
@@ -450,7 +583,10 @@ impl ExchangeActor {
     async fn place_order(exchange: &Exchange, order: &Order) -> Result<String, String> {
         match exchange {
             Exchange::Dydx => Self::place_order_dydx(order).await,
-            _ => Err(format!("Order placement not implemented for {:?}", exchange)),
+            _ => Err(format!(
+                "Order placement not implemented for {:?}",
+                exchange
+            )),
         }
     }
 
@@ -458,7 +594,10 @@ impl ExchangeActor {
     async fn cancel_order(exchange: &Exchange, order_id: &str) -> Result<(), String> {
         match exchange {
             Exchange::Dydx => Self::cancel_order_dydx(order_id).await,
-            _ => Err(format!("Order cancellation not implemented for {:?}", exchange)),
+            _ => Err(format!(
+                "Order cancellation not implemented for {:?}",
+                exchange
+            )),
         }
     }
 
@@ -483,18 +622,24 @@ impl ExchangeActor {
 
     /// Place order on dYdX v4 using mnemonic wallet
     async fn place_order_dydx(order: &Order) -> Result<String, String> {
-        let wallet = Self::get_dydx_wallet()?;
+        let _wallet = Self::get_dydx_wallet()?;
 
         // For now, return a mock order ID since full dYdX v4 integration requires
         // more complex setup with order signing, sequence numbers, etc.
         // This is a placeholder that will be expanded with full implementation
-        let order_id = format!("dydx_order_{}", std::time::SystemTime::now()
+        let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis());
+            .map_err(|e| format!("System time error: {}", e))?
+            .as_millis();
 
-        info!("dYdX order placement requested: {:?} {} {} (wallet ready)",
-              order.side, order.quantity.value(), order.symbol);
+        let order_id = format!("dydx_order_{}", timestamp);
+
+        info!(
+            "dYdX order placement requested: {:?} {} {} (wallet ready)",
+            order.side,
+            order.quantity.value(),
+            order.symbol
+        );
 
         // TODO: Implement full dYdX v4 order placement with proper signing
         Ok(order_id)
@@ -531,7 +676,10 @@ pub struct MockExchangeActor {
 impl MockExchangeActor {
     pub fn spawn(exchange: Exchange, mock_price: Price) -> mpsc::Sender<ExchangeMessage> {
         let (tx, rx) = mpsc::channel(100);
-        let actor = Self { exchange, mock_price };
+        let actor = Self {
+            exchange,
+            mock_price,
+        };
         tokio::spawn(async move {
             actor.run(rx).await;
         });
@@ -645,11 +793,26 @@ mod tests {
 
     #[test]
     fn test_get_websocket_url() {
-        assert_eq!(ExchangeActor::get_websocket_url(&Exchange::Binance), "wss://stream.binance.com:9443/ws");
-        assert_eq!(ExchangeActor::get_websocket_url(&Exchange::Dydx), "wss://indexer.dydx.trade/v4/ws");
-        assert_eq!(ExchangeActor::get_websocket_url(&Exchange::Hyperliquid), "wss://api.hyperliquid.xyz/ws");
-        assert_eq!(ExchangeActor::get_websocket_url(&Exchange::Coinbase), "wss://ws-feed.exchange.coinbase.com");
-        assert_eq!(ExchangeActor::get_websocket_url(&Exchange::Kraken), "wss://ws.kraken.com");
+        assert_eq!(
+            ExchangeActor::get_websocket_url(&Exchange::Binance),
+            "wss://stream.binance.com:9443/ws"
+        );
+        assert_eq!(
+            ExchangeActor::get_websocket_url(&Exchange::Dydx),
+            "wss://indexer.dydx.trade/v4/ws"
+        );
+        assert_eq!(
+            ExchangeActor::get_websocket_url(&Exchange::Hyperliquid),
+            "wss://api.hyperliquid.xyz/ws"
+        );
+        assert_eq!(
+            ExchangeActor::get_websocket_url(&Exchange::Coinbase),
+            "wss://ws-feed.exchange.coinbase.com"
+        );
+        assert_eq!(
+            ExchangeActor::get_websocket_url(&Exchange::Kraken),
+            "wss://ws.kraken.com"
+        );
     }
 
     #[test]
@@ -696,5 +859,13 @@ mod tests {
         let (symbol, price) = result.unwrap();
         assert_eq!(symbol, "BTC-USD");
         assert_eq!(price.value(), 53000.0);
+    }
+
+    #[tokio::test]
+    async fn test_activity_tracker_detects_staleness() {
+        let tracker = ActivityTracker::new();
+        assert!(tracker.is_healthy(std::time::Duration::from_millis(50)).await);
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!tracker.is_healthy(std::time::Duration::from_millis(50)).await);
     }
 }

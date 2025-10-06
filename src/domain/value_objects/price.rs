@@ -50,7 +50,10 @@ mod tests {
     fn test_price_new_negative() {
         let price = Price::new(-10.0);
         assert!(price.is_err());
-        assert!(matches!(price.unwrap_err(), ValidationError::MustBeNonNegative));
+        assert!(matches!(
+            price.unwrap_err(),
+            ValidationError::MustBeNonNegative
+        ));
     }
 
     #[test]

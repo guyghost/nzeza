@@ -1,6 +1,7 @@
 // Tests d'intégration pour vérifier le fonctionnement end-to-end du système
 
 use crate::application::services::mpc_service::MpcService;
+use crate::config::TradingConfig;
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::services::strategies::{FastScalping, MomentumScalping, SignalCombiner, Strategy};
 use crate::domain::value_objects::price::Price;
@@ -9,17 +10,23 @@ use crate::infrastructure::adapters::exchange_actor::MockExchangeActor;
 #[tokio::test]
 async fn test_full_mpc_workflow() {
     // Créer le service MPC
-    let mut service = MpcService::new();
+    let mut service = MpcService::new(TradingConfig::default());
 
     // Ajouter des stratégies
-    let strategies: Vec<Box<dyn Strategy + Send + Sync>> = vec![
-        Box::new(FastScalping::new()),
-        Box::new(MomentumScalping::new()),
+    let strategies = vec![
+        (
+            "FastScalping".to_string(),
+            Box::new(FastScalping::new()) as Box<dyn Strategy + Send + Sync>
+        ),
+        (
+            "MomentumScalping".to_string(),
+            Box::new(MomentumScalping::new()) as Box<dyn Strategy + Send + Sync>
+        ),
     ];
     let weights = vec![0.5, 0.5];
     let combiner = SignalCombiner::new(strategies, weights)
         .expect("Failed to create signal combiner");
-    service.set_signal_combiner(combiner);
+    service.set_signal_combiner(combiner).await;
 
     // Ajouter des acteurs mock pour les tests
     let mock_price = Price::new(50000.0).unwrap();
@@ -56,7 +63,7 @@ async fn test_full_mpc_workflow() {
 #[tokio::test]
 async fn test_order_workflow() {
     // Créer le service MPC
-    let mut service = MpcService::new();
+    let mut service = MpcService::new(TradingConfig::default());
 
     // Ajouter un acteur mock
     let mock_price = Price::new(50000.0).unwrap();
@@ -93,7 +100,7 @@ async fn test_order_workflow() {
 #[tokio::test]
 async fn test_symbol_normalization_workflow() {
     // Créer le service MPC
-    let mut service = MpcService::new();
+    let mut service = MpcService::new(TradingConfig::default());
 
     // Ajouter des acteurs mock avec différents formats de symboles
     let mock_price = Price::new(50000.0).unwrap();

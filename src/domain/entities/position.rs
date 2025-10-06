@@ -1,4 +1,5 @@
 use crate::domain::value_objects::{price::Price, quantity::Quantity};
+use crate::domain::errors::ValidationError;
 use chrono::{DateTime, Utc};
 
 #[allow(dead_code)]
@@ -62,24 +63,34 @@ impl Position {
         entry_price: Price,
         stop_loss_percentage: Option<f64>,
         take_profit_percentage: Option<f64>,
-    ) -> Self {
+    ) -> Result<Self, ValidationError> {
         let mut position = Self::new(id, symbol, side, quantity, entry_price);
 
         if let Some(sl_pct) = stop_loss_percentage {
-            position.stop_loss_price = Some(match position.side {
-                PositionSide::Long => Price::new(position.entry_price.value() * (1.0 - sl_pct)).unwrap(),
-                PositionSide::Short => Price::new(position.entry_price.value() * (1.0 + sl_pct)).unwrap(),
-            });
+            let sl_price = match position.side {
+                PositionSide::Long => {
+                    Price::new(position.entry_price.value() * (1.0 - sl_pct))?
+                }
+                PositionSide::Short => {
+                    Price::new(position.entry_price.value() * (1.0 + sl_pct))?
+                }
+            };
+            position.stop_loss_price = Some(sl_price);
         }
 
         if let Some(tp_pct) = take_profit_percentage {
-            position.take_profit_price = Some(match position.side {
-                PositionSide::Long => Price::new(position.entry_price.value() * (1.0 + tp_pct)).unwrap(),
-                PositionSide::Short => Price::new(position.entry_price.value() * (1.0 - tp_pct)).unwrap(),
-            });
+            let tp_price = match position.side {
+                PositionSide::Long => {
+                    Price::new(position.entry_price.value() * (1.0 + tp_pct))?
+                }
+                PositionSide::Short => {
+                    Price::new(position.entry_price.value() * (1.0 - tp_pct))?
+                }
+            };
+            position.take_profit_price = Some(tp_price);
         }
 
-        position
+        Ok(position)
     }
 
     #[allow(dead_code)]
@@ -112,7 +123,9 @@ impl Position {
 
     #[allow(dead_code)]
     pub fn should_take_profit(&self) -> bool {
-        if let (Some(current_price), Some(take_profit)) = (self.current_price, self.take_profit_price) {
+        if let (Some(current_price), Some(take_profit)) =
+            (self.current_price, self.take_profit_price)
+        {
             match self.side {
                 PositionSide::Long => current_price.value() >= take_profit.value(),
                 PositionSide::Short => current_price.value() <= take_profit.value(),
@@ -123,19 +136,31 @@ impl Position {
     }
 
     #[allow(dead_code)]
-    pub fn set_stop_loss_percentage(&mut self, percentage: f64) {
-        self.stop_loss_price = Some(match self.side {
-            PositionSide::Long => Price::new(self.entry_price.value() * (1.0 - percentage)).unwrap(),
-            PositionSide::Short => Price::new(self.entry_price.value() * (1.0 + percentage)).unwrap(),
-        });
+    pub fn set_stop_loss_percentage(&mut self, percentage: f64) -> Result<(), ValidationError> {
+        let sl_price = match self.side {
+            PositionSide::Long => {
+                Price::new(self.entry_price.value() * (1.0 - percentage))?
+            }
+            PositionSide::Short => {
+                Price::new(self.entry_price.value() * (1.0 + percentage))?
+            }
+        };
+        self.stop_loss_price = Some(sl_price);
+        Ok(())
     }
 
     #[allow(dead_code)]
-    pub fn set_take_profit_percentage(&mut self, percentage: f64) {
-        self.take_profit_price = Some(match self.side {
-            PositionSide::Long => Price::new(self.entry_price.value() * (1.0 + percentage)).unwrap(),
-            PositionSide::Short => Price::new(self.entry_price.value() * (1.0 - percentage)).unwrap(),
-        });
+    pub fn set_take_profit_percentage(&mut self, percentage: f64) -> Result<(), ValidationError> {
+        let tp_price = match self.side {
+            PositionSide::Long => {
+                Price::new(self.entry_price.value() * (1.0 + percentage))?
+            }
+            PositionSide::Short => {
+                Price::new(self.entry_price.value() * (1.0 - percentage))?
+            }
+        };
+        self.take_profit_price = Some(tp_price);
+        Ok(())
     }
 }
 
@@ -235,7 +260,8 @@ mod tests {
             entry_price,
             Some(0.05), // 5% stop loss
             Some(0.10), // 10% take profit
-        );
+        )
+        .unwrap();
 
         let sl_price = position.stop_loss_price.unwrap().value();
         let tp_price = position.take_profit_price.unwrap().value();
@@ -256,7 +282,8 @@ mod tests {
             entry_price,
             Some(0.05), // 5% stop loss
             None,
-        );
+        )
+        .unwrap();
 
         // Price above stop loss - should not trigger
         position.update_price(Price::new(48000.0).unwrap());
@@ -279,7 +306,8 @@ mod tests {
             entry_price,
             None,
             Some(0.10), // 10% take profit
-        );
+        )
+        .unwrap();
 
         // Price above take profit - should not trigger
         position.update_price(Price::new(46000.0).unwrap());

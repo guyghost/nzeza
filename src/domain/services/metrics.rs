@@ -1,6 +1,6 @@
 use crate::domain::value_objects::price::Price;
-use std::time::{Duration, SystemTime};
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
 
 /// Performance metrics for the trading system
 #[derive(Debug, Clone)]
@@ -72,16 +72,19 @@ impl TradingMetrics {
     pub fn record_trade(&mut self, pnl: Price, volume: f64, latency_ms: f64) {
         self.total_trades += 1;
         self.total_volume += volume;
-        self.total_realized_pnl = Price::new(self.total_realized_pnl.value() + pnl.value()).unwrap();
+        self.total_realized_pnl =
+            Price::new(self.total_realized_pnl.value() + pnl.value()).unwrap();
 
         // Update trade counts and averages
         if pnl.value() > 0.0 {
             self.winning_trades += 1;
-            let total_win_pnl = self.avg_win.value() * (self.winning_trades - 1) as f64 + pnl.value();
+            let total_win_pnl =
+                self.avg_win.value() * (self.winning_trades - 1) as f64 + pnl.value();
             self.avg_win = Price::new(total_win_pnl / self.winning_trades as f64).unwrap();
         } else if pnl.value() < 0.0 {
             self.losing_trades += 1;
-            let total_loss_pnl = self.avg_loss.value() * (self.losing_trades - 1) as f64 + pnl.value().abs();
+            let total_loss_pnl =
+                self.avg_loss.value() * (self.losing_trades - 1) as f64 + pnl.value().abs();
             self.avg_loss = Price::new(total_loss_pnl / self.losing_trades as f64).unwrap();
         }
 
@@ -103,7 +106,9 @@ impl TradingMetrics {
         if self.total_trades == 1 {
             self.avg_trade_latency_ms = latency_ms;
         } else {
-            self.avg_trade_latency_ms = (self.avg_trade_latency_ms * (self.total_trades - 1) as f64 + latency_ms) / self.total_trades as f64;
+            self.avg_trade_latency_ms =
+                (self.avg_trade_latency_ms * (self.total_trades - 1) as f64 + latency_ms)
+                    / self.total_trades as f64;
         }
 
         self.last_updated = SystemTime::now();
@@ -144,7 +149,8 @@ impl TradingMetrics {
     pub fn expectancy(&self) -> Price {
         let win_rate_decimal = self.win_rate / 100.0;
         let loss_rate_decimal = 1.0 - win_rate_decimal;
-        let expectancy_value = self.avg_win.value() * win_rate_decimal - self.avg_loss.value() * loss_rate_decimal;
+        let expectancy_value =
+            self.avg_win.value() * win_rate_decimal - self.avg_loss.value() * loss_rate_decimal;
         Price::new(expectancy_value).unwrap()
     }
 }
@@ -205,7 +211,8 @@ impl StrategyMetrics {
 
     fn update_execution_rate(&mut self) {
         if self.signals_generated > 0 {
-            self.execution_rate = (self.signals_executed as f64 / self.signals_generated as f64) * 100.0;
+            self.execution_rate =
+                (self.signals_executed as f64 / self.signals_generated as f64) * 100.0;
         }
     }
 
@@ -230,12 +237,16 @@ impl TradingMetrics {
         let mut alerts = Vec::new();
 
         // Check drawdown
-        let current_drawdown_percent = (self.current_drawdown.value() / self.current_equity().value()).abs();
+        let current_drawdown_percent =
+            (self.current_drawdown.value() / self.current_equity().value()).abs();
         if current_drawdown_percent > config.max_drawdown_threshold {
             alerts.push(SystemAlert {
                 alert_type: AlertType::HighDrawdown,
-                message: format!("Current drawdown is {:.1}% (threshold: {:.1}%)",
-                               current_drawdown_percent * 100.0, config.max_drawdown_threshold * 100.0),
+                message: format!(
+                    "Current drawdown is {:.1}% (threshold: {:.1}%)",
+                    current_drawdown_percent * 100.0,
+                    config.max_drawdown_threshold * 100.0
+                ),
                 severity: AlertSeverity::High,
                 timestamp: SystemTime::now(),
                 resolved: false,
@@ -246,8 +257,11 @@ impl TradingMetrics {
         if self.total_trades > 10 && self.win_rate < config.min_win_rate_threshold {
             alerts.push(SystemAlert {
                 alert_type: AlertType::LowWinRate,
-                message: format!("Win rate is {:.1}% (minimum required: {:.1}%)",
-                               self.win_rate * 100.0, config.min_win_rate_threshold * 100.0),
+                message: format!(
+                    "Win rate is {:.1}% (minimum required: {:.1}%)",
+                    self.win_rate * 100.0,
+                    config.min_win_rate_threshold * 100.0
+                ),
                 severity: AlertSeverity::Medium,
                 timestamp: SystemTime::now(),
                 resolved: false,
@@ -278,12 +292,12 @@ pub struct AlertConfig {
 impl Default for AlertConfig {
     fn default() -> Self {
         Self {
-            max_drawdown_threshold: 0.10, // 10% max drawdown
-            min_win_rate_threshold: 0.40, // 40% minimum win rate
+            max_drawdown_threshold: 0.10,  // 10% max drawdown
+            min_win_rate_threshold: 0.40,  // 40% minimum win rate
             max_error_rate_threshold: 5.0, // 5 errors per minute max
             min_exchange_connections: 3,   // At least 3 exchanges connected
-            max_memory_usage_mb: 1000.0,  // 1GB max memory
-            max_cpu_usage_percent: 80.0,  // 80% max CPU
+            max_memory_usage_mb: 1000.0,   // 1GB max memory
+            max_cpu_usage_percent: 80.0,   // 80% max CPU
         }
     }
 }
@@ -327,7 +341,8 @@ impl PerformanceProfile {
 
         // Update rolling average
         let old_avg = self.avg_execution_time_ms;
-        self.avg_execution_time_ms = old_avg + (execution_time_ms - old_avg) / self.execution_count as f64;
+        self.avg_execution_time_ms =
+            old_avg + (execution_time_ms - old_avg) / self.execution_count as f64;
     }
 }
 
@@ -346,7 +361,10 @@ impl PerformanceProfiler {
 
     pub fn start_operation(&mut self, operation: &str) -> OperationTimer {
         if !self.profiles.contains_key(operation) {
-            self.profiles.insert(operation.to_string(), PerformanceProfile::new(operation.to_string()));
+            self.profiles.insert(
+                operation.to_string(),
+                PerformanceProfile::new(operation.to_string()),
+            );
         }
         OperationTimer::new(operation.to_string())
     }
@@ -462,7 +480,8 @@ impl SystemHealthMetrics {
     }
 
     pub fn update_websocket_health(&mut self, exchange: String, time_since_last_message: Duration) {
-        self.websocket_health.insert(exchange, time_since_last_message);
+        self.websocket_health
+            .insert(exchange, time_since_last_message);
         self.last_health_check = SystemTime::now();
     }
 
@@ -486,7 +505,11 @@ impl SystemHealthMetrics {
 
     pub fn is_system_healthy(&self) -> bool {
         // Basic health check criteria
-        let connected_exchanges = self.exchange_connections.values().filter(|&&connected| connected).count();
+        let connected_exchanges = self
+            .exchange_connections
+            .values()
+            .filter(|&&connected| connected)
+            .count();
         let total_exchanges = self.exchange_connections.len();
 
         // At least 50% of exchanges connected
@@ -506,12 +529,20 @@ impl SystemHealthMetrics {
         let mut alerts = Vec::new();
 
         // Check exchange connectivity
-        let connected_exchanges = self.exchange_connections.values().filter(|&&connected| connected).count();
+        let connected_exchanges = self
+            .exchange_connections
+            .values()
+            .filter(|&&connected| connected)
+            .count();
         if connected_exchanges < config.min_exchange_connections {
             alerts.push(SystemAlert {
                 alert_type: AlertType::ExchangeConnectivity,
-                message: format!("Only {}/{} exchanges connected (minimum required: {})",
-                               connected_exchanges, self.exchange_connections.len(), config.min_exchange_connections),
+                message: format!(
+                    "Only {}/{} exchanges connected (minimum required: {})",
+                    connected_exchanges,
+                    self.exchange_connections.len(),
+                    config.min_exchange_connections
+                ),
                 severity: AlertSeverity::High,
                 timestamp: SystemTime::now(),
                 resolved: false,
@@ -522,8 +553,10 @@ impl SystemHealthMetrics {
         if self.memory_usage_mb > config.max_memory_usage_mb {
             alerts.push(SystemAlert {
                 alert_type: AlertType::HighMemoryUsage,
-                message: format!("Memory usage is {:.1}MB (threshold: {:.1}MB)",
-                               self.memory_usage_mb, config.max_memory_usage_mb),
+                message: format!(
+                    "Memory usage is {:.1}MB (threshold: {:.1}MB)",
+                    self.memory_usage_mb, config.max_memory_usage_mb
+                ),
                 severity: AlertSeverity::Medium,
                 timestamp: SystemTime::now(),
                 resolved: false,
@@ -534,8 +567,10 @@ impl SystemHealthMetrics {
         if self.cpu_usage_percent > config.max_cpu_usage_percent {
             alerts.push(SystemAlert {
                 alert_type: AlertType::HighCpuUsage,
-                message: format!("CPU usage is {:.1}% (threshold: {:.1}%)",
-                               self.cpu_usage_percent, config.max_cpu_usage_percent),
+                message: format!(
+                    "CPU usage is {:.1}% (threshold: {:.1}%)",
+                    self.cpu_usage_percent, config.max_cpu_usage_percent
+                ),
                 severity: AlertSeverity::Medium,
                 timestamp: SystemTime::now(),
                 resolved: false,
@@ -546,8 +581,10 @@ impl SystemHealthMetrics {
         if self.error_rate_per_minute > config.max_error_rate_threshold {
             alerts.push(SystemAlert {
                 alert_type: AlertType::HighErrorRate,
-                message: format!("Error rate is {:.1} errors/minute (threshold: {:.1})",
-                               self.error_rate_per_minute, config.max_error_rate_threshold),
+                message: format!(
+                    "Error rate is {:.1} errors/minute (threshold: {:.1})",
+                    self.error_rate_per_minute, config.max_error_rate_threshold
+                ),
                 severity: AlertSeverity::High,
                 timestamp: SystemTime::now(),
                 resolved: false,

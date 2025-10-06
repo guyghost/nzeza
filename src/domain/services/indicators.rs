@@ -130,7 +130,11 @@ impl Indicator for RSI {
             let end_idx = i - 1;
             let avg_gain = gains[start_idx..=end_idx].iter().sum::<f64>() / self.period as f64;
             let avg_loss = losses[start_idx..=end_idx].iter().sum::<f64>() / self.period as f64;
-            let rs = if avg_loss == 0.0 { 100.0 } else { avg_gain / avg_loss };
+            let rs = if avg_loss == 0.0 {
+                100.0
+            } else {
+                avg_gain / avg_loss
+            };
             let rsi = 100.0 - (100.0 / (1.0 + rs));
             rsi_values.push(rsi);
         }
@@ -178,7 +182,11 @@ impl BollingerBands {
             let end_idx = i - 1;
             let slice = &candles[start_idx..=end_idx];
             let sma = slice.iter().map(|c| c.close.value()).sum::<f64>() / self.period as f64;
-            let variance = slice.iter().map(|c| (c.close.value() - sma).powi(2)).sum::<f64>() / self.period as f64;
+            let variance = slice
+                .iter()
+                .map(|c| (c.close.value() - sma).powi(2))
+                .sum::<f64>()
+                / self.period as f64;
             let std = variance.sqrt();
 
             upper.push(sma + self.std_dev * std);
@@ -186,7 +194,11 @@ impl BollingerBands {
             lower.push(sma - self.std_dev * std);
         }
 
-        BollingerBandsValues { upper, middle, lower }
+        BollingerBandsValues {
+            upper,
+            middle,
+            lower,
+        }
     }
 }
 
@@ -202,7 +214,11 @@ impl Indicator for BollingerBands {
             let end_idx = i - 1;
             let slice = &candles[start_idx..=end_idx];
             let sma = slice.iter().map(|c| c.close.value()).sum::<f64>() / self.period as f64;
-            let variance = slice.iter().map(|c| (c.close.value() - sma).powi(2)).sum::<f64>() / self.period as f64;
+            let variance = slice
+                .iter()
+                .map(|c| (c.close.value() - sma).powi(2))
+                .sum::<f64>()
+                / self.period as f64;
             let std = variance.sqrt();
             bands.push(sma + self.std_dev * std); // Upper band
             bands.push(sma); // Middle (SMA)
@@ -223,7 +239,11 @@ pub struct MACD {
 #[allow(dead_code)]
 impl MACD {
     pub fn new(fast_period: usize, slow_period: usize, signal_period: usize) -> Self {
-        MACD { fast_period, slow_period, signal_period }
+        MACD {
+            fast_period,
+            slow_period,
+            signal_period,
+        }
     }
 }
 
@@ -234,7 +254,11 @@ impl Indicator for MACD {
         let fast_values = fast_ema.calculate(candles);
         let slow_values = slow_ema.calculate(candles);
 
-        let macd_line: Vec<f64> = fast_values.iter().zip(slow_values.iter()).map(|(f, s)| f - s).collect();
+        let macd_line: Vec<f64> = fast_values
+            .iter()
+            .zip(slow_values.iter())
+            .map(|(f, s)| f - s)
+            .collect();
 
         let signal_ema = EMA::new(self.signal_period);
         signal_ema.calculate_on_values(&macd_line)
@@ -265,8 +289,14 @@ impl Indicator for StochasticOscillator {
             let start_idx = i - self.k_period;
             let end_idx = i - 1;
             let slice = &candles[start_idx..=end_idx];
-            let highest = slice.iter().map(|c| c.high.value()).fold(f64::NEG_INFINITY, f64::max);
-            let lowest = slice.iter().map(|c| c.low.value()).fold(f64::INFINITY, f64::min);
+            let highest = slice
+                .iter()
+                .map(|c| c.high.value())
+                .fold(f64::NEG_INFINITY, f64::max);
+            let lowest = slice
+                .iter()
+                .map(|c| c.low.value())
+                .fold(f64::INFINITY, f64::min);
             let current_close = candles[end_idx].close.value();
 
             // Handle division by zero when highest == lowest (no price movement)
@@ -304,7 +334,8 @@ impl Indicator for VWAP {
         let mut cumulative_volume_price = 0.0;
 
         for candle in candles {
-            let typical_price = (candle.high.value() + candle.low.value() + candle.close.value()) / 3.0;
+            let typical_price =
+                (candle.high.value() + candle.low.value() + candle.close.value()) / 3.0;
             cumulative_volume += candle.volume;
             cumulative_volume_price += typical_price * candle.volume;
 
