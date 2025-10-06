@@ -17,6 +17,76 @@ Le serveur inclut des outils avancés pour le trading algorithmique :
 - **Strategies** : Fast Scalping, Momentum Scalping, Conservative Scalping
 - **Signal Combination** : Weighted combination with confidence scoring
 
+## Configuration des Logs
+
+Le système utilise `tracing` pour la journalisation avec différents niveaux de verbosité. La configuration se fait via la variable d'environnement `RUST_LOG`.
+
+### Niveaux de Log Disponibles
+
+- **`trace`** : Le plus verbeux - tous les détails internes
+- **`debug`** : Informations de débogage (prix individuels, détails techniques)
+- **`info`** : Informations générales importantes (prix agrégés, connexions)
+- **`warn`** : Avertissements (problèmes non critiques)
+- **`error`** : Erreurs (problèmes critiques)
+
+### Configuration par Défaut
+
+Par défaut, le système affiche uniquement les logs de niveau `info` et supérieur pour le module `nzeza` :
+
+```bash
+# Configuration par défaut (équivalent à RUST_LOG=nzeza=info)
+cargo run
+```
+
+### Afficher Plus de Détails
+
+Pour voir les logs de débogage (prix individuels par échange) :
+
+```bash
+# Afficher debug et supérieur pour nzeza
+RUST_LOG=nzeza=debug cargo run
+
+# Afficher tous les détails (très verbeux)
+RUST_LOG=nzeza=trace cargo run
+```
+
+### Configuration Avancée
+
+```bash
+# Différents niveaux par module
+RUST_LOG=nzeza=info,tokio=warn cargo run
+
+# Tout en debug sauf certains modules
+RUST_LOG=debug,tokio=warn,hyper=warn cargo run
+
+# Uniquement les erreurs
+RUST_LOG=error cargo run
+```
+
+### Exemples Pratiques
+
+```bash
+# Développement : voir les prix individuels et détails de débogage
+RUST_LOG=nzeza=debug cargo run
+
+# Production : uniquement les informations importantes
+RUST_LOG=nzeza=info cargo run
+
+# Diagnostic : voir tous les détails internes
+RUST_LOG=nzeza=trace cargo run
+
+# Silencieux : uniquement les erreurs
+RUST_LOG=error cargo run
+```
+
+### Logs Actuellement Configurés
+
+- **Prix individuels par échange** : `debug` (masqué par défaut)
+- **Prix agrégés** : `info` (visible par défaut)
+- **Connexions WebSocket** : `info` (visible par défaut)
+- **Erreurs** : `error` (toujours visible)
+- **Vérifications de santé** : `info` (visible par défaut)
+
 ## Approche de développement : Test-Driven Development (TDD)
 
 ### Principe fondamental
