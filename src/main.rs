@@ -8,9 +8,19 @@ use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
 use crate::infrastructure::adapters::exchange_actor::ExchangeActor;
 use crate::domain::services::strategies::{FastScalping, MomentumScalping, ConservativeScalping, SignalCombiner};
-use tracing::{info, error, warn};
+use tracing::{info, error, warn, debug};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::collections::HashMap;
+
+fn get_exchange_name(exchange: &Exchange) -> &'static str {
+    match exchange {
+        Exchange::Binance => "Binance",
+        Exchange::Dydx => "dYdX",
+        Exchange::Hyperliquid => "Hyperliquid",
+        Exchange::Coinbase => "Coinbase",
+        Exchange::Kraken => "Kraken",
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,7 +33,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    info!("MPC Trading Server starting with actors and strategies...");
+    info!("MPC Trading Server démarrage avec acteurs et stratégies...");
+    info!("Échanges supportés: Binance, dYdX, Hyperliquid, Coinbase, Kraken");
+    info!("Stratégies: Fast Scalping, Momentum Scalping, Conservative Scalping");
 
     // Spawn actor tasks for all exchanges
     let binance_sender = ExchangeActor::spawn(Exchange::Binance);
@@ -53,13 +65,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load trading configuration and subscribe to symbols
     let config = crate::config::TradingConfig::default();
-    info!("Subscribing to configured symbols...");
+    info!("Souscription aux symboles configurés...");
+    info!("Configuration chargée: {} échanges", config.symbols.len());
 
     for (exchange, symbols) in &config.symbols {
+        info!("Souscription à {} symboles sur {}", symbols.len(), get_exchange_name(exchange));
         for symbol in symbols {
             match mpc_service.subscribe(exchange, symbol).await {
-                Ok(_) => info!("Subscribed to {} on {:?}", symbol, exchange),
-                Err(e) => error!("Failed to subscribe to {} on {:?}: {}", symbol, exchange, e),
+                Ok(_) => info!("✓ Souscrit à {} sur {}", symbol, get_exchange_name(exchange)),
+                Err(e) => error!("✗ Échec de souscription à {} sur {}: {}", symbol, get_exchange_name(exchange), e),
             }
         }
     }
@@ -166,14 +180,23 @@ async fn supervision_task(mpc_service: std::sync::Arc<MpcService>) {
     loop {
         interval.tick().await;
 
-        info!("Running periodic health check...");
+        info!("Vérification périodique de santé des acteurs...");
         let health = mpc_service.check_all_actors_health().await;
 
         let unhealthy_count = health.values().filter(|&&v| !v).count();
         if unhealthy_count > 0 {
-            warn!("{} actors are unhealthy", unhealthy_count);
+            warn!("{} acteurs sont défaillants", unhealthy_count);
         } else {
-            info!("All actors are healthy");
+            info!("Tous les acteurs sont opérationnels");
+        }
+
+        // Afficher le statut détaillé de chaque acteur
+        for (exchange, is_healthy) in &health {
+            if *is_healthy {
+                info!("✓ {} : opérationnel", get_exchange_name(exchange));
+            } else {
+                warn!("✗ {} : défaillant", get_exchange_name(exchange));
+            }
         }
     }
 }
@@ -185,22 +208,31 @@ async fn signal_generation_task(mpc_service: std::sync::Arc<MpcService>) {
     loop {
         interval.tick().await;
 
-        // Get all tracked symbols
+        // Get all tracked symbols and normalize them
         let symbols = mpc_service.get_all_symbols().await;
-
+        let mut normalized_symbols = std::collections::HashSet::new();
+        
         for symbol in symbols {
-            // Get aggregated price for the symbol
-            if let Ok(aggregated_price) = mpc_service.get_aggregated_price(&symbol).await {
+            let normalized = crate::config::TradingConfig::normalize_symbol(&symbol);
+            normalized_symbols.insert(normalized);
+        }
+
+        for normalized_symbol in normalized_symbols {
+            // Get aggregated price for the normalized symbol
+            if let Ok(aggregated_price) = mpc_service.get_aggregated_price(&normalized_symbol).await {
+                info!("Prix agrégé pour {}: {:.2}", normalized_symbol, aggregated_price.value());
                 // Update candle builder
-                mpc_service.update_candle(symbol.clone(), aggregated_price).await;
+                mpc_service.update_candle(normalized_symbol.clone(), aggregated_price).await;
 
                 // Try to generate signal
-                if let Some(signal) = mpc_service.generate_signal_for_symbol(&symbol).await {
+                if let Some(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
                     info!(
                         "Signal for {}: {:?} (confidence: {:.2})",
-                        symbol, signal.signal, signal.confidence
+                        normalized_symbol, signal.signal, signal.confidence
                     );
                 }
+            } else {
+                debug!("Impossible d'obtenir le prix agrégé pour {}", normalized_symbol);
             }
         }
     }
@@ -211,11 +243,18 @@ async fn get_all_prices(
     State(mpc_service): State<std::sync::Arc<MpcService>>,
 ) -> Json<HashMap<String, serde_json::Value>> {
     let symbols = mpc_service.get_all_symbols().await;
+    let mut normalized_symbols = std::collections::HashSet::new();
+    
+    for symbol in symbols {
+        let normalized = crate::config::TradingConfig::normalize_symbol(&symbol);
+        normalized_symbols.insert(normalized);
+    }
+    
     let mut prices = HashMap::new();
 
-    for symbol in symbols {
-        if let Ok(price) = mpc_service.get_aggregated_price(&symbol).await {
-            prices.insert(symbol, serde_json::json!({
+    for normalized_symbol in normalized_symbols {
+        if let Ok(price) = mpc_service.get_aggregated_price(&normalized_symbol).await {
+            prices.insert(normalized_symbol, serde_json::json!({
                 "price": price.value(),
                 "aggregated": true
             }));
@@ -230,9 +269,11 @@ async fn get_symbol_price(
     State(mpc_service): State<std::sync::Arc<MpcService>>,
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
-    match mpc_service.get_aggregated_price(&symbol).await {
+    let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
+    match mpc_service.get_aggregated_price(&normalized_symbol).await {
         Ok(price) => Json(serde_json::json!({
             "symbol": symbol,
+            "normalized_symbol": normalized_symbol,
             "price": price.value(),
             "aggregated": true
         })),
@@ -247,11 +288,18 @@ async fn get_all_signals(
     State(mpc_service): State<std::sync::Arc<MpcService>>,
 ) -> Json<HashMap<String, serde_json::Value>> {
     let symbols = mpc_service.get_all_symbols().await;
+    let mut normalized_symbols = std::collections::HashSet::new();
+    
+    for symbol in symbols {
+        let normalized = crate::config::TradingConfig::normalize_symbol(&symbol);
+        normalized_symbols.insert(normalized);
+    }
+    
     let mut signals = HashMap::new();
 
-    for symbol in symbols {
-        if let Some(signal) = mpc_service.generate_signal_for_symbol(&symbol).await {
-            signals.insert(symbol, serde_json::json!({
+    for normalized_symbol in normalized_symbols {
+        if let Some(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+            signals.insert(normalized_symbol, serde_json::json!({
                 "signal": format!("{:?}", signal.signal),
                 "confidence": signal.confidence
             }));
@@ -266,9 +314,11 @@ async fn get_symbol_signal(
     State(mpc_service): State<std::sync::Arc<MpcService>>,
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
-    match mpc_service.generate_signal_for_symbol(&symbol).await {
+    let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
+    match mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
         Some(signal) => Json(serde_json::json!({
             "symbol": symbol,
+            "normalized_symbol": normalized_symbol,
             "signal": format!("{:?}", signal.signal),
             "confidence": signal.confidence
         })),
@@ -283,7 +333,8 @@ async fn get_symbol_candles(
     State(mpc_service): State<std::sync::Arc<MpcService>>,
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
-    let candles = mpc_service.get_candles(&symbol).await;
+    let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
+    let candles = mpc_service.get_candles(&normalized_symbol).await;
     let candle_data: Vec<serde_json::Value> = candles.iter().map(|c| {
         serde_json::json!({
             "open": c.open.value(),
@@ -296,6 +347,7 @@ async fn get_symbol_candles(
 
     Json(serde_json::json!({
         "symbol": symbol,
+        "normalized_symbol": normalized_symbol,
         "candles": candle_data,
         "count": candles.len()
     }))

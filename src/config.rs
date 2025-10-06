@@ -77,15 +77,20 @@ impl TradingConfig {
     /// Normalize symbol to standard format (BTC-USD)
     #[allow(dead_code)]
     pub fn normalize_symbol(symbol: &str) -> String {
-        symbol
-            .replace("USDT", "-USD")
-            .replace("/", "-")
-            .replace("BTC", "BTC-USD")
-            .replace("ETH", "ETH-USD")
-            .split('-')
-            .take(2)
-            .collect::<Vec<_>>()
-            .join("-")
+        // Handle different symbol formats to standardize them
+        let normalized = if symbol.contains("USDT") {
+            symbol.replace("USDT", "-USD")
+        } else if symbol.contains("/") {
+            symbol.replace("/", "-")
+        } else if symbol == "BTC" {
+            "BTC-USD".to_string()
+        } else if symbol == "ETH" {
+            "ETH-USD".to_string()
+        } else {
+            symbol.to_string()
+        };
+
+        normalized
     }
 }
 
@@ -106,6 +111,11 @@ mod tests {
         assert_eq!(TradingConfig::normalize_symbol("BTCUSDT"), "BTC-USD");
         assert_eq!(TradingConfig::normalize_symbol("BTC-USD"), "BTC-USD");
         assert_eq!(TradingConfig::normalize_symbol("BTC/USD"), "BTC-USD");
+        assert_eq!(TradingConfig::normalize_symbol("BTC"), "BTC-USD");
+        assert_eq!(TradingConfig::normalize_symbol("ETHUSDT"), "ETH-USD");
+        assert_eq!(TradingConfig::normalize_symbol("ETH-USD"), "ETH-USD");
+        assert_eq!(TradingConfig::normalize_symbol("ETH/USD"), "ETH-USD");
+        assert_eq!(TradingConfig::normalize_symbol("ETH"), "ETH-USD");
     }
 
     #[test]

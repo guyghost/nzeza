@@ -70,8 +70,18 @@ impl ExchangeActor {
         tx
     }
 
+    fn get_exchange_name(exchange: &Exchange) -> &'static str {
+        match exchange {
+            Exchange::Binance => "Binance",
+            Exchange::Dydx => "dYdX",
+            Exchange::Hyperliquid => "Hyperliquid",
+            Exchange::Coinbase => "Coinbase",
+            Exchange::Kraken => "Kraken",
+        }
+    }
+
     async fn run(self, mut rx: mpsc::Receiver<ExchangeMessage>) {
-        info!("Actor started for exchange: {:?}", self.exchange);
+        info!("Actor started for exchange: {}", Self::get_exchange_name(&self.exchange));
 
         while let Some(msg) = rx.recv().await {
             let last_heartbeat = tokio::time::Instant::now();
@@ -86,7 +96,7 @@ impl ExchangeActor {
                     let _ = reply.send(result).await;
                 }
                 ExchangeMessage::Subscribe { symbol, reply } => {
-                    info!("Subscribe request for {:?}: {}", self.exchange, symbol);
+                    info!("Subscribe request for {}: {}", Self::get_exchange_name(&self.exchange), symbol);
                     let mut subscriptions = self.subscriptions.lock().await;
 
                     if subscriptions.contains(&symbol) {
@@ -102,11 +112,11 @@ impl ExchangeActor {
                             .map_err(|e| format!("Failed to send subscription command: {}", e));
 
                         let _ = reply.send(result).await;
-                        info!("Subscribed to {:?}: {}", self.exchange, symbol);
+                        info!("Subscribed to {}: {}", Self::get_exchange_name(&self.exchange), symbol);
                     }
                 }
                 ExchangeMessage::Unsubscribe { symbol, reply } => {
-                    info!("Unsubscribe request for {:?}: {}", self.exchange, symbol);
+                    info!("Unsubscribe request for {}: {}", Self::get_exchange_name(&self.exchange), symbol);
                     let mut subscriptions = self.subscriptions.lock().await;
 
                     if !subscriptions.contains(&symbol) {
@@ -122,7 +132,7 @@ impl ExchangeActor {
                             .map_err(|e| format!("Failed to send unsubscription command: {}", e));
 
                         let _ = reply.send(result).await;
-                        info!("Unsubscribed from {:?}: {}", self.exchange, symbol);
+                        info!("Unsubscribed from {}: {}", Self::get_exchange_name(&self.exchange), symbol);
                     }
                 }
                 ExchangeMessage::GetSubscriptions { reply } => {
@@ -134,10 +144,10 @@ impl ExchangeActor {
                     // Actor is healthy if it's responding
                     let is_healthy = last_heartbeat.elapsed() < tokio::time::Duration::from_secs(30);
                     let _ = reply.send(is_healthy).await;
-                    debug!("Health check for {:?}: {}", self.exchange, is_healthy);
+                    debug!("Health check for {}: {}", Self::get_exchange_name(&self.exchange), is_healthy);
                 }
                 ExchangeMessage::Shutdown => {
-                    info!("Shutdown signal received for exchange: {:?}", self.exchange);
+                    info!("Shutdown signal received for exchange: {}", Self::get_exchange_name(&self.exchange));
                     // Signal the WebSocket task to shutdown
                     let _ = self.shutdown_tx.send(());
                     break;
@@ -145,7 +155,7 @@ impl ExchangeActor {
             }
         }
 
-        info!("Actor stopped for exchange: {:?}", self.exchange);
+        info!("Actor stopped for exchange: {}", Self::get_exchange_name(&self.exchange));
     }
 
     async fn run_websocket(
@@ -161,17 +171,17 @@ impl ExchangeActor {
         let max_backoff = Duration::from_secs(60);
 
         loop {
-            info!("Starting WebSocket connection for exchange: {:?}", exchange);
+            info!("Starting WebSocket connection for exchange: {}", Self::get_exchange_name(&exchange));
 
             tokio::select! {
                 result = Self::try_websocket_connection(&exchange, &prices, &subscriptions, &mut subscription_rx) => {
                     match result {
                         Ok(()) => {
-                            info!("WebSocket connection ended normally for {:?}, reconnecting...", exchange);
+                            info!("WebSocket connection ended normally for {}, reconnecting...", Self::get_exchange_name(&exchange));
                             backoff = Duration::from_secs(1); // Reset on successful connection
                         }
                         Err(e) => {
-                            error!("WebSocket error for {:?}: {}, retrying in {:?}", exchange, e, backoff);
+                            error!("WebSocket error for {}: {}, retrying in {:?}", Self::get_exchange_name(&exchange), e, backoff);
                         }
                     }
 
@@ -181,13 +191,13 @@ impl ExchangeActor {
                             backoff = (backoff * 2).min(max_backoff);
                         }
                         _ = shutdown_rx.recv() => {
-                            info!("WebSocket task received shutdown signal for {:?}", exchange);
+                            info!("WebSocket task received shutdown signal for {}", Self::get_exchange_name(&exchange));
                             return;
                         }
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    info!("WebSocket task received shutdown signal for {:?}", exchange);
+                    info!("WebSocket task received shutdown signal for {}", Self::get_exchange_name(&exchange));
                     return;
                 }
             }
@@ -204,7 +214,7 @@ impl ExchangeActor {
 
         let (stream, _) = connect_async(&ws_url).await
             .map_err(|e| format!("Failed to connect: {}", e))?;
-        info!("Successfully connected to {:?} WebSocket", exchange);
+        info!("Successfully connected to {} WebSocket", Self::get_exchange_name(exchange));
 
         let (mut write, mut read) = stream.split();
 
@@ -214,7 +224,7 @@ impl ExchangeActor {
             if let Some(msg) = Self::build_subscribe_message(exchange, &symbol) {
                 write.send(Message::Text(msg.clone())).await
                     .map_err(|e| format!("Failed to send subscribe message: {}", e))?;
-                info!("Sent subscribe message to {:?} for {}: {}", exchange, symbol, msg);
+                info!("Sent subscribe message to {} for {}: {}", Self::get_exchange_name(exchange), symbol, msg);
             }
         }
 
@@ -227,29 +237,29 @@ impl ExchangeActor {
                             if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if let Some((symbol, price)) = Self::parse_price_with_symbol(exchange, &data) {
                                     prices.lock().await.insert(symbol.clone(), price);
-                                    debug!("Updated price for {:?} {}: {}", exchange, symbol, price.value());
+                                    debug!("Prix mis à jour pour {} {}: {:.2}", Self::get_exchange_name(exchange), symbol, price.value());
                                 }
                             } else {
                                 warn!("Received invalid JSON from {:?}: {}", exchange, text);
                             }
                         }
                         Some(Ok(Message::Close(frame))) => {
-                            info!("WebSocket connection closed for {:?}: {:?}", exchange, frame);
+                            info!("WebSocket connection closed for {}: {:?}", Self::get_exchange_name(exchange), frame);
                             return Ok(());
                         }
                         Some(Ok(Message::Ping(payload))) => {
-                            debug!("Received ping from {:?}, responding with pong", exchange);
+                            debug!("Received ping from {}, responding with pong", Self::get_exchange_name(exchange));
                             write.send(Message::Pong(payload)).await
                                 .map_err(|e| format!("Failed to send pong: {}", e))?;
                         }
                         Some(Ok(other)) => {
-                            debug!("Received other message type from {:?}: {:?}", exchange, other);
+                            debug!("Received other message type from {}: {:?}", Self::get_exchange_name(exchange), other);
                         }
                         Some(Err(e)) => {
                             return Err(format!("WebSocket read error: {}", e));
                         }
                         None => {
-                            info!("WebSocket stream ended for {:?}", exchange);
+                            info!("WebSocket stream ended for {}", Self::get_exchange_name(exchange));
                             return Ok(());
                         }
                     }
@@ -261,14 +271,14 @@ impl ExchangeActor {
                             if let Some(msg) = Self::build_subscribe_message(exchange, &symbol) {
                                 write.send(Message::Text(msg.clone())).await
                                     .map_err(|e| format!("Failed to send subscribe message: {}", e))?;
-                                info!("Subscribed to {:?} {}: {}", exchange, symbol, msg);
+                                info!("Subscribed to {} {}: {}", Self::get_exchange_name(exchange), symbol, msg);
                             }
                         }
                         SubscriptionCommand::Unsubscribe(symbol) => {
                             if let Some(msg) = Self::build_unsubscribe_message(exchange, &symbol) {
                                 write.send(Message::Text(msg.clone())).await
                                     .map_err(|e| format!("Failed to send unsubscribe message: {}", e))?;
-                                info!("Unsubscribed from {:?} {}: {}", exchange, symbol, msg);
+                                info!("Unsubscribed from {} {}: {}", Self::get_exchange_name(exchange), symbol, msg);
                             }
                             // Remove from prices map
                             prices.lock().await.remove(&symbol);

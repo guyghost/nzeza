@@ -1,12 +1,13 @@
-use std::collections::HashMap;
-use tokio::sync::{mpsc, Mutex};
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::value_objects::price::Price;
 use crate::infrastructure::adapters::exchange_actor::ExchangeMessage;
 use crate::domain::services::strategies::{SignalCombiner, TradingSignal};
 use crate::domain::services::candle_builder::CandleBuilder;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{mpsc, Mutex};
+use tracing::debug;
 
 pub struct MpcService {
     pub senders: HashMap<Exchange, mpsc::Sender<ExchangeMessage>>,
@@ -25,6 +26,16 @@ impl MpcService {
             senders: HashMap::new(),
             signal_combiner: None,
             candle_builder,
+        }
+    }
+
+    fn get_exchange_name(exchange: &Exchange) -> &'static str {
+        match exchange {
+            Exchange::Binance => "Binance",
+            Exchange::Dydx => "dYdX",
+            Exchange::Hyperliquid => "Hyperliquid",
+            Exchange::Coinbase => "Coinbase",
+            Exchange::Kraken => "Kraken",
         }
     }
 
@@ -171,9 +182,12 @@ impl MpcService {
         self.signal_combiner.as_ref()?.combine_signals(candles)
     }
 
-    /// Get aggregated price for a symbol across all exchanges
+    /// Get aggregated price for a symbol across all exchanges (using normalized symbols)
     #[allow(dead_code)]
     pub async fn get_aggregated_price(&self, symbol: &str) -> Result<Price, String> {
+        use crate::config::TradingConfig;
+        let normalized_symbol = TradingConfig::normalize_symbol(symbol);
+        
         let mut prices = Vec::new();
 
         for (exchange, sender) in &self.senders {
@@ -184,30 +198,38 @@ impl MpcService {
                 .map_err(|e| format!("Failed to get subscriptions: {}", e))?;
 
             if let Some(subs) = sub_rx.recv().await {
-                if subs.contains(&symbol.to_string()) {
-                    // Get price for this symbol on this exchange
-                    let (price_tx, mut price_rx) = mpsc::channel(1);
-                    sender.send(ExchangeMessage::GetPrice {
-                        symbol: symbol.to_string(),
-                        reply: price_tx,
-                    })
-                    .await
-                    .map_err(|e| format!("Failed to request price: {}", e))?;
+                // Check if any of the subscribed symbols normalize to our target symbol
+                for sub_symbol in &subs {
+                    let normalized_sub = TradingConfig::normalize_symbol(sub_symbol);
+                    if normalized_sub == normalized_symbol {
+                        // Get price for this symbol on this exchange
+                        let (price_tx, mut price_rx) = mpsc::channel(1);
+                        sender.send(ExchangeMessage::GetPrice {
+                            symbol: sub_symbol.to_string(),
+                            reply: price_tx,
+                        })
+                        .await
+                        .map_err(|e| format!("Failed to request price: {}", e))?;
 
                     if let Some(Ok(price)) = price_rx.recv().await {
+                        debug!("Prix obtenu {:.2} depuis {} pour {} (normalisé: {})", price.value(), Self::get_exchange_name(exchange), sub_symbol, normalized_symbol);
                         prices.push(price);
-                        use tracing::debug;
-                        debug!("Got price {} from {:?} for {}", price.value(), exchange, symbol);
+                    } else {
+                        debug!("Aucun prix disponible depuis {} pour {}", Self::get_exchange_name(exchange), sub_symbol);
+                    }
+                        break; // Found a matching symbol, no need to check others
                     }
                 }
             }
         }
 
         if prices.is_empty() {
-            return Err(format!("No prices available for symbol: {}", symbol));
+            return Err(format!("No prices available for symbol: {} (normalized: {})", symbol, normalized_symbol));
         }
 
-        Self::aggregate_prices(prices)
+        let aggregated = Self::aggregate_prices(prices.clone())?;
+        debug!("Prix agrégé calculé {:.2} pour {} (basé sur {} échanges)", aggregated.value(), normalized_symbol, prices.len());
+        Ok(aggregated)
     }
 
     /// Get all tracked symbols across all exchanges
@@ -233,7 +255,8 @@ impl MpcService {
     #[allow(dead_code)]
     pub async fn update_candle(&self, symbol: String, price: Price) {
         let mut builder = self.candle_builder.lock().await;
-        builder.add_price(symbol, price);
+        builder.add_price(symbol.clone(), price);
+        debug!("Bougie mise à jour pour {} avec prix {:.2}", symbol, price.value());
     }
 
     /// Get candles for a symbol
