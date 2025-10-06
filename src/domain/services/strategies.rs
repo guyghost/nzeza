@@ -32,8 +32,8 @@ pub struct FastScalping {
 impl FastScalping {
     pub fn new() -> Self {
         FastScalping {
-            ema_short: EMA::new(5),
-            ema_long: EMA::new(10),
+            ema_short: EMA::new(3),  // Reduced from 5 for faster signals with 10s candles
+            ema_long: EMA::new(5),   // Reduced from 10 for faster signals
         }
     }
 }
@@ -78,15 +78,15 @@ pub struct MomentumScalping {
 impl MomentumScalping {
     pub fn new() -> Self {
         MomentumScalping {
-            rsi: RSI::new(14),
-            macd: MACD::new(12, 26, 9),
+            rsi: RSI::new(7),           // Reduced from 14 for faster signals with 10s candles
+            macd: MACD::new(6, 13, 5),  // Reduced from (12, 26, 9) for faster signals
         }
     }
 }
 
 impl Strategy for MomentumScalping {
     fn generate_signal(&self, candles: &[Candle]) -> Option<TradingSignal> {
-        if candles.len() < 26 {
+        if candles.len() < 13 {  // Reduced from 26 to match new MACD slow period
             return None;
         }
         let rsi_values = self.rsi.calculate(candles);
@@ -129,8 +129,8 @@ pub struct ConservativeScalping {
 impl ConservativeScalping {
     pub fn new() -> Self {
         ConservativeScalping {
-            bollinger: BollingerBands::new(20, 2.0),
-            stoch: StochasticOscillator::new(14, 3),
+            bollinger: BollingerBands::new(10, 2.0),  // Reduced from 20 for faster signals with 10s candles
+            stoch: StochasticOscillator::new(7, 3),   // Reduced k_period from 14, d_period stays at 3
             vwap: VWAP,
         }
     }
@@ -138,7 +138,7 @@ impl ConservativeScalping {
 
 impl Strategy for ConservativeScalping {
     fn generate_signal(&self, candles: &[Candle]) -> Option<TradingSignal> {
-        if candles.len() < 20 {
+        if candles.len() < 10 {  // Reduced from 20 to match new Bollinger Bands period
             return None;
         }
         let bb_values = self.bollinger.calculate_detailed(candles);

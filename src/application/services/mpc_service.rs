@@ -39,8 +39,8 @@ pub struct MpcService {
 
 impl MpcService {
     pub fn new(config: TradingConfig) -> Self {
-        // 1 minute candles, keep 100 candles in history
-        let candle_builder = Arc::new(Mutex::new(CandleBuilder::new(Duration::from_secs(60), 100)));
+        // 10 second candles for faster signal generation, keep 100 candles in history
+        let candle_builder = Arc::new(Mutex::new(CandleBuilder::new(Duration::from_secs(10), 100)));
 
         // LRU cache capacity: keep last 1000 signals
         let cache_capacity = NonZeroUsize::new(1000).expect("Cache capacity must be non-zero");
@@ -401,10 +401,12 @@ impl MpcService {
         symbol: &str,
     ) -> Result<TradingSignal, MpcError> {
         let candles = self.get_candles(symbol).await;
-        if candles.len() >= 10 {
-            // Need minimum candles for signal generation
+        debug!("Symbol {}: {} candles available", symbol, candles.len());
+        if candles.len() >= 5 {
+            // Need minimum 5 candles for signal generation (reduced from 10 for faster signals)
             self.generate_trading_signal(&candles).await
         } else {
+            debug!("Not enough candles for {}: need 5, have {}", symbol, candles.len());
             Err(MpcError::NoSignalsAvailable)
         }
     }
