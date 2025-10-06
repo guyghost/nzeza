@@ -1,7 +1,9 @@
 mod application;
+mod auth;
 mod config;
 mod domain;
 mod infrastructure;
+mod rate_limit;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::services::strategies::{
@@ -12,6 +14,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::response::Response;
 use axum::{
     extract::{Path, State, WebSocketUpgrade},
+    middleware,
     routing::{delete, get, post},
     Json, Router,
 };
@@ -52,6 +55,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("MPC Trading Server démarrage avec acteurs et stratégies...");
     info!("Échanges supportés: Binance, dYdX, Hyperliquid, Coinbase, Kraken");
     info!("Stratégies: Fast Scalping, Momentum Scalping, Conservative Scalping");
+
+    // Initialize API authentication
+    auth::init_api_keys();
+
+    // Initialize rate limiter (100 requests per minute)
+    let rate_limiter = rate_limit::create_rate_limiter(rate_limit::RateLimiterConfig::default());
+    info!("Rate limiting initialized: 100 requests per minute");
 
     // Spawn actor tasks for all exchanges
     let binance_sender = ExchangeActor::spawn(Exchange::Binance);
@@ -197,12 +207,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         strategy_weight_adjustment_task(app_state_clone, Duration::from_secs(300)).await;
     });
 
-    let app = Router::new()
+    // Public routes (no authentication required)
+    let public_routes = Router::new()
         .route(
             "/",
             get(|| async { "MPC Trading Server with Indicators and Strategies is running!" }),
         )
         .route("/health", get(health_check))
+        .with_state(app_state.clone());
+
+    // Protected routes (require authentication and rate limiting)
+    let rate_limiter_clone = rate_limiter.clone();
+    let protected_routes = Router::new()
         .route("/metrics", get(get_metrics))
         .route("/ws/metrics", get(metrics_websocket_handler))
         .route("/prices", get(get_all_prices))
@@ -219,7 +235,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/config", get(get_config))
         .route("/alerts", get(get_alerts))
         .route("/performance", get(get_performance_profiles))
+        .route_layer(middleware::from_fn(move |req, next| {
+            rate_limit::rate_limit_middleware(rate_limiter_clone.clone(), req, next)
+        }))
+        .route_layer(middleware::from_fn(auth::require_auth))
         .with_state(app_state.clone());
+
+    // Combine public and protected routes
+    let app = Router::new()
+        .merge(public_routes)
+        .merge(protected_routes);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     info!("Listening on {}", addr);

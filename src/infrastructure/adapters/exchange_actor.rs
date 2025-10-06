@@ -151,7 +151,9 @@ impl ExchangeActor {
                         .get(&symbol)
                         .cloned()
                         .ok_or_else(|| format!("No price available for symbol: {}", symbol));
-                    let _ = reply.send(result).await;
+                    if let Err(e) = reply.send(result).await {
+                        warn!("Failed to send reply: {:?}", e);
+                    }
                 }
                 ExchangeMessage::Subscribe { symbol, reply } => {
                     info!(
@@ -175,7 +177,9 @@ impl ExchangeActor {
                             .await
                             .map_err(|e| format!("Failed to send subscription command: {}", e));
 
-                        let _ = reply.send(result).await;
+                        if let Err(e) = reply.send(result).await {
+                        warn!("Failed to send reply: {:?}", e);
+                    }
                         info!(
                             "Subscribed to {}: {}",
                             Self::get_exchange_name(&self.exchange),
@@ -205,7 +209,9 @@ impl ExchangeActor {
                             .await
                             .map_err(|e| format!("Failed to send unsubscription command: {}", e));
 
-                        let _ = reply.send(result).await;
+                        if let Err(e) = reply.send(result).await {
+                        warn!("Failed to send reply: {:?}", e);
+                    }
                         info!(
                             "Unsubscribed from {}: {}",
                             Self::get_exchange_name(&self.exchange),
@@ -216,14 +222,18 @@ impl ExchangeActor {
                 ExchangeMessage::GetSubscriptions { reply } => {
                     let subscriptions = self.subscriptions.lock().await;
                     let symbols: Vec<String> = subscriptions.iter().cloned().collect();
-                    let _ = reply.send(symbols).await;
+                    if let Err(e) = reply.send(symbols).await {
+                        warn!("Failed to send symbols reply: {:?}", e);
+                    }
                 }
                 ExchangeMessage::HealthCheck { reply } => {
                     let is_healthy = self
                         .activity_tracker
                         .is_healthy(std::time::Duration::from_secs(30))
                         .await;
-                    let _ = reply.send(is_healthy).await;
+                    if let Err(e) = reply.send(is_healthy).await {
+                        warn!("Failed to send health check reply: {:?}", e);
+                    }
                     debug!(
                         "Health check for {}: {}",
                         Self::get_exchange_name(&self.exchange),
@@ -237,7 +247,9 @@ impl ExchangeActor {
                         order.id
                     );
                     let result = Self::place_order(&self.exchange, &order).await;
-                    let _ = reply.send(result).await;
+                    if let Err(e) = reply.send(result).await {
+                        warn!("Failed to send reply: {:?}", e);
+                    }
                 }
                 ExchangeMessage::CancelOrder { order_id, reply } => {
                     info!(
@@ -246,7 +258,9 @@ impl ExchangeActor {
                         order_id
                     );
                     let result = Self::cancel_order(&self.exchange, &order_id).await;
-                    let _ = reply.send(result).await;
+                    if let Err(e) = reply.send(result).await {
+                        warn!("Failed to send reply: {:?}", e);
+                    }
                 }
                 ExchangeMessage::GetOrderStatus { order_id, reply } => {
                     debug!(
@@ -255,7 +269,9 @@ impl ExchangeActor {
                         order_id
                     );
                     let result = Self::get_order_status(&self.exchange, &order_id).await;
-                    let _ = reply.send(result).await;
+                    if let Err(e) = reply.send(result).await {
+                        warn!("Failed to send reply: {:?}", e);
+                    }
                 }
                 ExchangeMessage::Shutdown => {
                     info!(
@@ -334,9 +350,14 @@ impl ExchangeActor {
     ) -> Result<(), String> {
         let ws_url = Self::get_websocket_url(exchange);
 
-        let (stream, _) = connect_async(&ws_url)
-            .await
-            .map_err(|e| format!("Failed to connect: {}", e))?;
+        // Add timeout for WebSocket connection (10 seconds)
+        let (stream, _) = tokio::time::timeout(
+            tokio::time::Duration::from_secs(10),
+            connect_async(&ws_url)
+        )
+        .await
+        .map_err(|_| "WebSocket connection timeout (10s)".to_string())?
+        .map_err(|e| format!("Failed to connect: {}", e))?;
         info!(
             "Successfully connected to {} WebSocket",
             Self::get_exchange_name(exchange)
@@ -691,7 +712,9 @@ impl MockExchangeActor {
             match msg {
                 ExchangeMessage::GetPrice { symbol: _, reply } => {
                     let result = Ok(self.mock_price.clone());
-                    let _ = reply.send(result).await;
+                    if let Err(e) = reply.send(result).await {
+                        warn!("Failed to send reply: {:?}", e);
+                    }
                 }
                 ExchangeMessage::Subscribe { symbol: _, reply } => {
                     let _ = reply.send(Ok(())).await;
