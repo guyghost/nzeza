@@ -137,7 +137,7 @@ mod tests {
             -1.0,
         );
         assert!(order.is_err());
-        assert_eq!(order.unwrap_err(), "Quantity must be non-negative");
+        assert_eq!(order.unwrap_err(), "Value must be non-negative");
     }
 
     #[test]

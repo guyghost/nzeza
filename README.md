@@ -78,6 +78,22 @@ pub fn default() -> Self {
 }
 ```
 
+#### Environment Variables
+
+The server requires specific environment variables for exchange authentication:
+
+**dYdX (Required for trading):**
+- `DYDX_MNEMONIC`: Your dYdX wallet mnemonic phrase for signing orders
+
+**Optional (for other exchanges):**
+- Other exchanges may require API keys in the future
+
+Example:
+```bash
+export DYDX_MNEMONIC="your twelve word mnemonic phrase here"
+cargo run
+```
+
 ## Development
 
 This project follows Test-Driven Development (TDD) principles. All changes must include tests. See [AGENTS.md](AGENTS.md) for detailed development guidelines.

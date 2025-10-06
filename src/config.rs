@@ -2,13 +2,24 @@ use crate::domain::entities::exchange::Exchange;
 use std::collections::HashMap;
 
 /// Configuration for symbols to track on each exchange
+#[derive(Clone)]
 pub struct TradingConfig {
     pub symbols: HashMap<Exchange, Vec<String>>,
+    pub min_confidence_threshold: f64,
+    pub max_positions_per_symbol: usize,
+    pub max_total_positions: usize,
+    pub default_position_size: f64,
+    pub enable_automated_trading: bool,
+    pub stop_loss_percentage: Option<f64>,
+    pub take_profit_percentage: Option<f64>,
+    pub portfolio_percentage_per_position: f64, // Pourcentage du portefeuille par position
+    pub max_trades_per_hour: usize, // Limite de trades par heure
+    pub max_trades_per_day: usize, // Limite de trades par jour
 }
 
 impl TradingConfig {
     /// Default configuration with common trading pairs
-    pub fn default() -> Self {
+    pub fn default() -> TradingConfig {
         let mut symbols = HashMap::new();
 
         // Binance symbols (uppercase, no separator)
@@ -61,7 +72,98 @@ impl TradingConfig {
             ],
         );
 
-        TradingConfig { symbols }
+        TradingConfig {
+            symbols,
+            min_confidence_threshold: 0.7,
+            max_positions_per_symbol: 1,
+            max_total_positions: 5,
+            default_position_size: 0.001,
+            enable_automated_trading: true,
+            stop_loss_percentage: Some(0.05), // 5% stop loss
+            take_profit_percentage: Some(0.10), // 10% take profit
+            portfolio_percentage_per_position: 0.02, // 2% du portefeuille par position
+            max_trades_per_hour: 10, // 10 trades par heure max
+            max_trades_per_day: 50, // 50 trades par jour max
+        }
+    }
+
+    /// Load configuration from environment variables
+    pub fn from_env() -> TradingConfig {
+        let mut config = TradingConfig::default();
+
+        if let Ok(threshold) = std::env::var("MIN_CONFIDENCE_THRESHOLD") {
+            if let Ok(value) = threshold.parse::<f64>() {
+                if (0.0..=1.0).contains(&value) {
+                    config.min_confidence_threshold = value;
+                }
+            }
+        }
+
+        if let Ok(max_pos) = std::env::var("MAX_POSITIONS_PER_SYMBOL") {
+            if let Ok(value) = max_pos.parse::<usize>() {
+                config.max_positions_per_symbol = value;
+            }
+        }
+
+        if let Ok(max_total) = std::env::var("MAX_TOTAL_POSITIONS") {
+            if let Ok(value) = max_total.parse::<usize>() {
+                config.max_total_positions = value;
+            }
+        }
+
+        if let Ok(size) = std::env::var("DEFAULT_POSITION_SIZE") {
+            if let Ok(value) = size.parse::<f64>() {
+                if value > 0.0 {
+                    config.default_position_size = value;
+                }
+            }
+        }
+
+        if let Ok(enabled) = std::env::var("ENABLE_AUTOMATED_TRADING") {
+            config.enable_automated_trading = enabled.to_lowercase() == "true" || enabled == "1";
+        }
+
+        if let Ok(sl) = std::env::var("STOP_LOSS_PERCENTAGE") {
+            if let Ok(value) = sl.parse::<f64>() {
+                if value > 0.0 && value < 1.0 {
+                    config.stop_loss_percentage = Some(value);
+                }
+            }
+        }
+
+        if let Ok(tp) = std::env::var("TAKE_PROFIT_PERCENTAGE") {
+            if let Ok(value) = tp.parse::<f64>() {
+                if value > 0.0 {
+                    config.take_profit_percentage = Some(value);
+                }
+            }
+        }
+
+        if let Ok(portfolio_pct) = std::env::var("PORTFOLIO_PERCENTAGE_PER_POSITION") {
+            if let Ok(value) = portfolio_pct.parse::<f64>() {
+                if (0.001..=0.1).contains(&value) { // Entre 0.1% et 10%
+                    config.portfolio_percentage_per_position = value;
+                }
+            }
+        }
+
+        if let Ok(max_hourly) = std::env::var("MAX_TRADES_PER_HOUR") {
+            if let Ok(value) = max_hourly.parse::<usize>() {
+                if value > 0 && value <= 100 {
+                    config.max_trades_per_hour = value;
+                }
+            }
+        }
+
+        if let Ok(max_daily) = std::env::var("MAX_TRADES_PER_DAY") {
+            if let Ok(value) = max_daily.parse::<usize>() {
+                if value > 0 && value <= 500 {
+                    config.max_trades_per_day = value;
+                }
+            }
+        }
+
+        config
     }
 
     /// Get all unique normalized symbols (BTC-USD format)

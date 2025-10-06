@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
 use crate::infrastructure::adapters::exchange_actor::ExchangeActor;
-use crate::domain::services::strategies::{FastScalping, MomentumScalping, ConservativeScalping, SignalCombiner};
+use crate::domain::services::strategies::{FastScalping, MomentumScalping, ConservativeScalping, SignalCombiner, Strategy};
 use tracing::{info, error, warn, debug};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::collections::HashMap;
@@ -44,29 +44,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let coinbase_sender = ExchangeActor::spawn(Exchange::Coinbase);
     let kraken_sender = ExchangeActor::spawn(Exchange::Kraken);
 
+    // Load trading configuration and subscribe to symbols
+    let mut config = crate::config::TradingConfig::from_env();
+    
+    // Disable automated trading if DYDX_MNEMONIC is not set
+    if std::env::var("DYDX_MNEMONIC").is_err() {
+        config.enable_automated_trading = false;
+        warn!("DYDX_MNEMONIC not set - automated trading disabled");
+    }
+    
+    info!("Configuration chargée depuis l'environnement:");
+    info!("  Seuil de confiance minimum: {:.2}", config.min_confidence_threshold);
+    info!("  Trading automatisé activé: {}", config.enable_automated_trading);
+    info!("  Taille de position par défaut: {}", config.default_position_size);
+    info!("  Positions max par symbole: {}", config.max_positions_per_symbol);
+    info!("  Positions totales max: {}", config.max_total_positions);
+    if let Some(sl) = config.stop_loss_percentage {
+        info!("  Stop-loss: {:.1}%", sl * 100.0);
+    }
+    if let Some(tp) = config.take_profit_percentage {
+        info!("  Take-profit: {:.1}%", tp * 100.0);
+    }
+    info!("  Portfolio % per position: {:.2}%", config.portfolio_percentage_per_position * 100.0);
+    info!("  Max trades per hour: {}", config.max_trades_per_hour);
+    info!("  Max trades per day: {}", config.max_trades_per_day);
+
     // Create MPC service and add senders
-    let mut mpc_service = MpcService::new();
+    let mut mpc_service = MpcService::new(config.clone());
     mpc_service.add_actor(Exchange::Binance, binance_sender);
     mpc_service.add_actor(Exchange::Dydx, dydx_sender);
     mpc_service.add_actor(Exchange::Hyperliquid, hyperliquid_sender);
     mpc_service.add_actor(Exchange::Coinbase, coinbase_sender);
     mpc_service.add_actor(Exchange::Kraken, kraken_sender);
 
-    // Set up signal combiner with strategies
-    let strategies: Vec<Box<dyn crate::domain::services::strategies::Strategy + Send + Sync>> = vec![
+    // Initialize signal combiner with strategies
+    let strategies: Vec<Box<dyn Strategy + Send + Sync>> = vec![
         Box::new(FastScalping::new()),
         Box::new(MomentumScalping::new()),
         Box::new(ConservativeScalping::new()),
     ];
-    let weights = vec![0.4, 0.4, 0.2]; // Weighted combination
+    let weights = vec![0.4, 0.4, 0.2];
     let combiner = SignalCombiner::new(strategies, weights)
-        .expect("Failed to create signal combiner with valid strategies and weights");
-    mpc_service.set_signal_combiner(combiner);
-
-    // Load trading configuration and subscribe to symbols
-    let config = crate::config::TradingConfig::default();
-    info!("Souscription aux symboles configurés...");
-    info!("Configuration chargée: {} échanges", config.symbols.len());
+        .expect("Failed to create signal combiner");
+    mpc_service.set_signal_combiner(combiner).await;
 
     for (exchange, symbols) in &config.symbols {
         info!("Souscription à {} symboles sur {}", symbols.len(), get_exchange_name(exchange));
@@ -112,6 +132,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/orders/place", post(place_manual_order))
         .route("/orders/cancel/:order_id", delete(cancel_order))
         .route("/orders/status/:order_id", get(get_order_status))
+        .route("/positions", get(get_positions))
+        .route("/positions/pnl", get(get_total_pnl))
+        .route("/config", get(get_config))
         .route("/candles/:symbol", get(get_symbol_candles))
         .with_state(mpc_service.clone());
 
@@ -236,11 +259,19 @@ async fn signal_generation_task(mpc_service: std::sync::Arc<MpcService>) {
                 mpc_service.update_candle(normalized_symbol.clone(), aggregated_price).await;
 
                 // Try to generate signal
-                if let Some(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+                if let Ok(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
                     info!(
-                        "📊 Signal for {}: {:?} (confidence: {:.2})",
+                        "Signal for {}: {:?} (confidence: {:.2})",
                         normalized_symbol, signal.signal, signal.confidence
                     );
+
+                    // Store the signal for automated execution
+                    mpc_service.store_signal(normalized_symbol.clone(), signal).await;
+                }
+
+                // Update position prices
+                if let Err(e) = mpc_service.update_position_prices().await {
+                    debug!("Failed to update position prices: {}", e);
                 }
             } else {
                 debug!("Impossible d'obtenir le prix agrégé pour {}", normalized_symbol);
@@ -270,8 +301,16 @@ async fn order_execution_task(mpc_service: std::sync::Arc<MpcService>) {
             warn!("❌ {} orders failed to execute", failed_orders);
         }
 
-        if successful_orders == 0 && failed_orders == 0 {
-            debug!("No signals available for order execution");
+        // Check for stop-loss and take-profit triggers
+        let stop_results = mpc_service.check_and_execute_stops().await;
+        let stops_triggered = stop_results.iter().filter(|r| r.is_ok()).count();
+        
+        if stops_triggered > 0 {
+            info!("🛑 {} positions closed due to stops", stops_triggered);
+        }
+
+        if successful_orders == 0 && failed_orders == 0 && stops_triggered == 0 {
+            debug!("No signals available for order execution and no stops triggered");
         }
     }
 }
@@ -316,7 +355,7 @@ async fn get_symbol_price(
             "aggregated": true
         })),
         Err(e) => Json(serde_json::json!({
-            "error": e
+            "error": e.to_string()
         })),
     }
 }
@@ -336,7 +375,7 @@ async fn get_all_signals(
     let mut signals = HashMap::new();
 
     for normalized_symbol in normalized_symbols {
-        if let Some(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+        if let Ok(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
             signals.insert(normalized_symbol, serde_json::json!({
                 "signal": format!("{:?}", signal.signal),
                 "confidence": signal.confidence
@@ -354,15 +393,15 @@ async fn get_symbol_signal(
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
     match mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
-        Some(signal) => Json(serde_json::json!({
+        Ok(signal) => Json(serde_json::json!({
             "symbol": symbol,
             "normalized_symbol": normalized_symbol,
             "signal": format!("{:?}", signal.signal),
             "confidence": signal.confidence
         })),
-        None => Json(serde_json::json!({
-            "error": "Not enough data to generate signal"
-        })),
+        Err(e) => Json(serde_json::json!({
+            "error": format!("Failed to generate signal: {}", e)
+        }))
     }
 }
 
@@ -371,15 +410,15 @@ async fn execute_pending_orders(
     State(mpc_service): State<std::sync::Arc<MpcService>>,
 ) -> Json<serde_json::Value> {
     let results = mpc_service.check_and_execute_orders().await;
-    
+
     let successful: Vec<String> = results.iter()
         .filter_map(|r| r.as_ref().ok())
         .cloned()
         .collect();
-    
+
     let failed: Vec<String> = results.iter()
         .filter_map(|r| r.as_ref().err())
-        .cloned()
+        .map(|e| e.to_string())
         .collect();
 
     Json(serde_json::json!({
@@ -396,30 +435,31 @@ async fn execute_symbol_order(
     Path(symbol): Path<String>,
 ) -> Json<serde_json::Value> {
     let normalized_symbol = crate::config::TradingConfig::normalize_symbol(&symbol);
-    
-    if let Some(signal) = mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
-        match mpc_service.execute_order_from_signal(&normalized_symbol, &signal).await {
-            Ok(msg) => Json(serde_json::json!({
-                "success": true,
-                "symbol": symbol,
-                "normalized_symbol": normalized_symbol,
-                "signal": format!("{:?}", signal.signal),
-                "confidence": signal.confidence,
-                "message": msg
-            })),
-            Err(e) => Json(serde_json::json!({
-                "success": false,
-                "symbol": symbol,
-                "normalized_symbol": normalized_symbol,
-                "error": e
-            }))
-        }
-    } else {
-        Json(serde_json::json!({
+
+    match mpc_service.generate_signal_for_symbol(&normalized_symbol).await {
+        Ok(signal) => {
+            match mpc_service.execute_order_from_signal(&normalized_symbol, &signal).await {
+                Ok(msg) => Json(serde_json::json!({
+                    "success": true,
+                    "symbol": symbol,
+                    "normalized_symbol": normalized_symbol,
+                    "signal": format!("{:?}", signal.signal),
+                    "confidence": signal.confidence,
+                    "message": msg
+                })),
+                Err(e) => Json(serde_json::json!({
+                    "success": false,
+                    "symbol": symbol,
+                    "normalized_symbol": normalized_symbol,
+                    "error": e.to_string()
+                }))
+            }
+        },
+        Err(e) => Json(serde_json::json!({
             "success": false,
             "symbol": symbol,
             "normalized_symbol": normalized_symbol,
-            "error": "No signal available for this symbol"
+            "error": format!("Failed to generate signal: {}", e)
         }))
     }
 }
@@ -545,5 +585,61 @@ async fn get_symbol_candles(
         "normalized_symbol": normalized_symbol,
         "candles": candle_data,
         "count": candles.len()
+    }))
+}
+
+/// Get all open positions
+async fn get_positions(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+) -> Json<serde_json::Value> {
+    let positions = mpc_service.get_open_positions().await;
+    let position_data: HashMap<String, serde_json::Value> = positions.iter().map(|(id, position)| {
+        (id.clone(), serde_json::json!({
+            "symbol": position.symbol,
+            "side": format!("{:?}", position.side),
+            "quantity": position.quantity.value(),
+            "entry_price": position.entry_price.value(),
+            "current_price": position.current_price.map(|p| p.value()),
+            "unrealized_pnl": position.unrealized_pnl().map(|p| p.value()),
+            "entry_time": position.entry_time.to_rfc3339(),
+            "stop_loss_price": position.stop_loss_price.map(|p| p.value()),
+            "take_profit_price": position.take_profit_price.map(|p| p.value())
+        }))
+    }).collect();
+
+    Json(serde_json::json!({
+        "positions": position_data,
+        "count": positions.len()
+    }))
+}
+
+/// Get total unrealized PnL across all positions
+async fn get_total_pnl(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+) -> Json<serde_json::Value> {
+    let total_pnl = mpc_service.get_total_unrealized_pnl().await;
+
+    Json(serde_json::json!({
+        "total_unrealized_pnl": total_pnl.value(),
+        "currency": "USD"
+    }))
+}
+
+/// Get current configuration
+async fn get_config(
+    State(mpc_service): State<std::sync::Arc<MpcService>>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "min_confidence_threshold": mpc_service.config.min_confidence_threshold,
+        "max_positions_per_symbol": mpc_service.config.max_positions_per_symbol,
+        "max_total_positions": mpc_service.config.max_total_positions,
+        "default_position_size": mpc_service.config.default_position_size,
+        "enable_automated_trading": mpc_service.config.enable_automated_trading,
+        "stop_loss_percentage": mpc_service.config.stop_loss_percentage,
+        "take_profit_percentage": mpc_service.config.take_profit_percentage,
+        "portfolio_percentage_per_position": mpc_service.config.portfolio_percentage_per_position,
+        "max_trades_per_hour": mpc_service.config.max_trades_per_hour,
+        "max_trades_per_day": mpc_service.config.max_trades_per_day,
+        "symbols_count": mpc_service.config.symbols.len()
     }))
 }

@@ -1,15 +1,19 @@
+use crate::domain::errors::ValidationError;
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Quantity(f64);
 
 impl Quantity {
     #[allow(dead_code)]
-    pub fn new(value: f64) -> Result<Self, String> {
-        if value >= 0.0 {
-            Ok(Quantity(value))
-        } else {
-            Err("Quantity must be non-negative".to_string())
+    pub fn new(value: f64) -> Result<Self, ValidationError> {
+        if !value.is_finite() {
+            return Err(ValidationError::MustBeFinite);
         }
+        if value < 0.0 {
+            return Err(ValidationError::MustBeNonNegative);
+        }
+        Ok(Quantity(value))
     }
 
     #[allow(dead_code)]
@@ -18,22 +22,31 @@ impl Quantity {
     }
 
     #[allow(dead_code)]
-    pub fn add(&self, other: Quantity) -> Result<Quantity, String> {
+    pub fn add(&self, other: Quantity) -> Result<Quantity, ValidationError> {
         Quantity::new(self.0 + other.0)
     }
 
     #[allow(dead_code)]
-    pub fn subtract(&self, other: Quantity) -> Result<Quantity, String> {
+    pub fn subtract(&self, other: Quantity) -> Result<Quantity, ValidationError> {
         let result = self.0 - other.0;
         Quantity::new(result)
     }
 
     #[allow(dead_code)]
-    pub fn multiply(&self, factor: f64) -> Result<Quantity, String> {
+    pub fn multiply(&self, factor: f64) -> Result<Quantity, ValidationError> {
         if !factor.is_finite() {
-            return Err("Factor must be finite".to_string());
+            return Err(ValidationError::MustBeFinite);
+        }
+        if factor < 0.0 {
+            return Err(ValidationError::MustBeNonNegative);
         }
         Quantity::new(self.0 * factor)
+    }
+}
+
+impl std::fmt::Display for Quantity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -52,7 +65,7 @@ mod tests {
     fn test_quantity_new_negative() {
         let qty = Quantity::new(-5.0);
         assert!(qty.is_err());
-        assert_eq!(qty.unwrap_err(), "Quantity must be non-negative");
+        assert!(matches!(qty.unwrap_err(), ValidationError::MustBeNonNegative));
     }
 
     #[test]
@@ -85,7 +98,7 @@ mod tests {
         let q2 = Quantity::new(10.0).unwrap();
         let result = q1.subtract(q2);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Quantity must be non-negative");
+        assert!(matches!(result.unwrap_err(), ValidationError::MustBeNonNegative));
     }
 
     #[test]

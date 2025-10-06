@@ -1,13 +1,17 @@
+use crate::domain::errors::ValidationError;
+
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Price(f64);
 
 impl Price {
-    pub fn new(value: f64) -> Result<Self, String> {
-        if value >= 0.0 {
-            Ok(Price(value))
-        } else {
-            Err("Price must be non-negative".to_string())
+    pub fn new(value: f64) -> Result<Self, ValidationError> {
+        if !value.is_finite() {
+            return Err(ValidationError::MustBeFinite);
         }
+        if value < 0.0 {
+            return Err(ValidationError::MustBeNonNegative);
+        }
+        Ok(Price(value))
     }
 
     pub fn value(&self) -> f64 {
@@ -15,14 +19,17 @@ impl Price {
     }
 
     #[allow(dead_code)]
-    pub fn add(&self, other: Price) -> Result<Price, String> {
+    pub fn add(&self, other: Price) -> Result<Price, ValidationError> {
         Price::new(self.0 + other.0)
     }
 
     #[allow(dead_code)]
-    pub fn multiply(&self, factor: f64) -> Result<Price, String> {
+    pub fn multiply(&self, factor: f64) -> Result<Price, ValidationError> {
         if !factor.is_finite() {
-            return Err("Factor must be finite".to_string());
+            return Err(ValidationError::MustBeFinite);
+        }
+        if factor < 0.0 {
+            return Err(ValidationError::MustBeNonNegative);
         }
         Price::new(self.0 * factor)
     }
@@ -43,7 +50,7 @@ mod tests {
     fn test_price_new_negative() {
         let price = Price::new(-10.0);
         assert!(price.is_err());
-        assert_eq!(price.unwrap_err(), "Price must be non-negative");
+        assert!(matches!(price.unwrap_err(), ValidationError::MustBeNonNegative));
     }
 
     #[test]

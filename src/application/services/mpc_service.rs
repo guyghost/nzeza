@@ -3,22 +3,31 @@ use crate::infrastructure::adapters::exchange_actor::ExchangeMessage;
 use crate::domain::services::strategies::{SignalCombiner, TradingSignal};
 use crate::domain::services::candle_builder::CandleBuilder;
 use crate::domain::value_objects::price::Price;
+use crate::domain::value_objects::quantity::Quantity;
 use crate::domain::entities::order::Order;
+use crate::domain::entities::position::{Position, PositionSide};
+use crate::config::TradingConfig;
+use crate::domain::errors::MpcError;
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info, warn, error};
+use lru::LruCache;
+use std::num::NonZeroUsize;
 
 pub struct MpcService {
     pub senders: HashMap<Exchange, mpsc::Sender<ExchangeMessage>>,
-    pub signal_combiner: Option<SignalCombiner>,
+    pub signal_combiner: Arc<Mutex<Option<SignalCombiner>>>,
     pub candle_builder: Arc<Mutex<CandleBuilder>>,
     pub last_signals: Arc<Mutex<HashMap<String, TradingSignal>>>,
+    pub open_positions: Arc<Mutex<HashMap<String, Position>>>,
+    pub config: TradingConfig,
+    pub trade_history: Arc<Mutex<Vec<(SystemTime, String)>>>, // (timestamp, symbol) for rate limiting
 }
 
 impl MpcService {
-    pub fn new() -> Self {
+    pub fn new(config: TradingConfig) -> Self {
         // 1 minute candles, keep 100 candles in history
         let candle_builder = Arc::new(Mutex::new(
             CandleBuilder::new(Duration::from_secs(60), 100)
@@ -26,9 +35,12 @@ impl MpcService {
 
         Self {
             senders: HashMap::new(),
-            signal_combiner: None,
+            signal_combiner: Arc::new(Mutex::new(None)),
             candle_builder,
             last_signals: Arc::new(Mutex::new(HashMap::new())),
+            open_positions: Arc::new(Mutex::new(HashMap::new())),
+            config,
+            trade_history: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -46,23 +58,24 @@ impl MpcService {
         self.senders.insert(exchange, sender);
     }
 
-    pub fn set_signal_combiner(&mut self, combiner: SignalCombiner) {
-        self.signal_combiner = Some(combiner);
+    pub async fn set_signal_combiner(&self, combiner: SignalCombiner) {
+        let mut signal_combiner_guard = self.signal_combiner.lock().await;
+        *signal_combiner_guard = Some(combiner);
     }
 
     /// Check health of a specific actor
-    pub async fn check_actor_health(&self, exchange: &Exchange) -> Result<bool, String> {
+    pub async fn check_actor_health(&self, exchange: &Exchange) -> Result<bool, MpcError> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
 
             sender.send(ExchangeMessage::HealthCheck { reply: reply_tx })
                 .await
-                .map_err(|e| format!("Failed to send health check: {}", e))?;
+                .map_err(|_| MpcError::ChannelSendError("Failed to send health check".to_string()))?;
 
             reply_rx.recv().await
-                .ok_or_else(|| "No health check response".to_string())
+                .ok_or(MpcError::NoResponse)
         } else {
-            Err(format!("No actor found for exchange: {:?}", exchange))
+            Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
 
@@ -98,7 +111,7 @@ impl MpcService {
 
         info!("Shutting down all exchange actors...");
 
-        for (exchange, sender) in &self.senders {
+        for (exchange, sender) in self.senders.iter() {
             info!("Sending shutdown signal to {:?}", exchange);
             if let Err(e) = sender.send(ExchangeMessage::Shutdown).await {
                 use tracing::error;
@@ -112,93 +125,101 @@ impl MpcService {
     }
 
     #[allow(dead_code)]
-    pub async fn get_price(&self, exchange: &Exchange, symbol: &str) -> Result<Price, String> {
+    pub async fn get_price(&self, exchange: &Exchange, symbol: &str) -> Result<Price, MpcError> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::GetPrice {
                 symbol: symbol.to_string(),
                 reply: reply_tx,
             };
-            sender.send(msg).await.map_err(|e| e.to_string())?;
-            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+            sender.send(msg).await?;
+            reply_rx.recv().await
+                .ok_or(MpcError::NoResponse)?
+                .map_err(|e| MpcError::AggregationFailed(e))
         } else {
-            Err(format!("No actor for {:?}", exchange))
+            Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
 
     #[allow(dead_code)]
-    pub async fn subscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), String> {
+    pub async fn subscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), MpcError> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::Subscribe {
                 symbol: symbol.to_string(),
                 reply: reply_tx,
             };
-            sender.send(msg).await.map_err(|e| e.to_string())?;
-            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+            sender.send(msg).await?;
+            reply_rx.recv().await
+                .ok_or(MpcError::NoResponse)?
+                .map_err(|e| MpcError::AggregationFailed(e))
         } else {
-            Err(format!("No actor for {:?}", exchange))
+            Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
 
     #[allow(dead_code)]
-    pub async fn unsubscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), String> {
+    pub async fn unsubscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), MpcError> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::Unsubscribe {
                 symbol: symbol.to_string(),
                 reply: reply_tx,
             };
-            sender.send(msg).await.map_err(|e| e.to_string())?;
-            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+            sender.send(msg).await?;
+            reply_rx.recv().await
+                .ok_or(MpcError::NoResponse)?
+                .map_err(|e| MpcError::AggregationFailed(e))
         } else {
-            Err(format!("No actor for {:?}", exchange))
+            Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
 
     #[allow(dead_code)]
-    pub async fn get_subscriptions(&self, exchange: &Exchange) -> Result<Vec<String>, String> {
+    pub async fn get_subscriptions(&self, exchange: &Exchange) -> Result<Vec<String>, MpcError> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::GetSubscriptions { reply: reply_tx };
-            sender.send(msg).await.map_err(|e| e.to_string())?;
-            reply_rx.recv().await.ok_or("No response from actor".to_string())
+            sender.send(msg).await?;
+            reply_rx.recv().await.ok_or(MpcError::NoResponse)
         } else {
-            Err(format!("No actor for {:?}", exchange))
+            Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
 
     // Pure method: aggregate prices from multiple exchanges
     #[allow(dead_code)]
-    pub fn aggregate_prices(prices: Vec<Price>) -> Result<Price, String> {
+    pub fn aggregate_prices(prices: &[Price]) -> Result<Price, MpcError> {
         if prices.is_empty() {
-            return Err("Cannot aggregate empty price list".to_string());
+            return Err(MpcError::NoPricesAvailable { symbol: "unknown".to_string() });
         }
         let sum: f64 = prices.iter().map(|p| p.value()).sum();
         let avg = sum / prices.len() as f64;
-        Price::new(avg)
+        Price::new(avg).map_err(|e| MpcError::AggregationFailed(e.to_string()))
     }
 
     // Generate trading signal using combined strategies
     #[allow(dead_code)]
-    pub fn generate_trading_signal(&self, candles: &[crate::domain::services::indicators::Candle]) -> Option<TradingSignal> {
-        self.signal_combiner.as_ref()?.combine_signals(candles)
+    pub async fn generate_trading_signal(&self, candles: &[crate::domain::services::indicators::Candle]) -> Result<TradingSignal, MpcError> {
+        let signal_combiner_guard = self.signal_combiner.lock().await;
+        signal_combiner_guard.as_ref()
+            .and_then(|combiner| combiner.combine_signals(candles))
+            .ok_or(MpcError::SignalCombinerNotInitialized)
     }
 
     /// Get aggregated price for a symbol across all exchanges (using normalized symbols)
     #[allow(dead_code)]
-    pub async fn get_aggregated_price(&self, symbol: &str) -> Result<Price, String> {
+    pub async fn get_aggregated_price(&self, symbol: &str) -> Result<Price, MpcError> {
         use crate::config::TradingConfig;
         let normalized_symbol = TradingConfig::normalize_symbol(symbol);
         
         let mut prices = Vec::new();
 
-        for (exchange, sender) in &self.senders {
+        for (exchange, sender) in self.senders.iter() {
             // Get subscriptions for this exchange
             let (sub_tx, mut sub_rx) = mpsc::channel(1);
             sender.send(ExchangeMessage::GetSubscriptions { reply: sub_tx })
-                .await
-                .map_err(|e| format!("Failed to get subscriptions: {}", e))?;
+                .await?;
 
             if let Some(subs) = sub_rx.recv().await {
                 // Check if any of the subscribed symbols normalize to our target symbol
@@ -211,14 +232,13 @@ impl MpcService {
                             symbol: sub_symbol.to_string(),
                             reply: price_tx,
                         })
-                        .await
-                        .map_err(|e| format!("Failed to request price: {}", e))?;
+                        .await?;
 
                     if let Some(Ok(price)) = price_rx.recv().await {
-                        debug!("Prix obtenu {:.2} depuis {} pour {} (normalisé: {})", price.value(), Self::get_exchange_name(exchange), sub_symbol, normalized_symbol);
+                        debug!("Price obtained {:.2} from {} for {} (normalized: {})", price.value(), Self::get_exchange_name(exchange), sub_symbol, normalized_symbol);
                         prices.push(price);
                     } else {
-                        debug!("Aucun prix disponible depuis {} pour {}", Self::get_exchange_name(exchange), sub_symbol);
+                        debug!("No price available from {} for {}", Self::get_exchange_name(exchange), sub_symbol);
                     }
                         break; // Found a matching symbol, no need to check others
                     }
@@ -227,11 +247,11 @@ impl MpcService {
         }
 
         if prices.is_empty() {
-            return Err(format!("No prices available for symbol: {} (normalized: {})", symbol, normalized_symbol));
+            return Err(MpcError::NoPricesAvailable { symbol: symbol.to_string() });
         }
 
-        let aggregated = Self::aggregate_prices(prices.clone())?;
-        debug!("Prix agrégé calculé {:.2} pour {} (basé sur {} échanges)", aggregated.value(), normalized_symbol, prices.len());
+        let aggregated = Self::aggregate_prices(&prices)?;
+        debug!("Aggregated price calculated {:.2} for {} (based on {} exchanges)", aggregated.value(), normalized_symbol, prices.len());
         Ok(aggregated)
     }
 
@@ -259,7 +279,7 @@ impl MpcService {
     pub async fn update_candle(&self, symbol: String, price: Price) {
         let mut builder = self.candle_builder.lock().await;
         builder.add_price(symbol.clone(), price);
-        debug!("Bougie mise à jour pour {} avec prix {:.2}", symbol, price.value());
+        debug!("Candle updated for {} with price {:.2}", symbol, price.value());
     }
 
     /// Get candles for a symbol
@@ -271,140 +291,342 @@ impl MpcService {
 
     /// Generate trading signal for a specific symbol
     #[allow(dead_code)]
-    pub async fn generate_signal_for_symbol(&self, symbol: &str) -> Option<TradingSignal> {
+    pub async fn generate_signal_for_symbol(&self, symbol: &str) -> Result<TradingSignal, MpcError> {
         let candles = self.get_candles(symbol).await;
         if candles.len() >= 10 { // Need minimum candles for signal generation
-            self.generate_trading_signal(&candles)
+            self.generate_trading_signal(&candles).await
         } else {
-            None
+            Err(MpcError::NoSignalsAvailable)
         }
     }
 
     /// Place an order on a specific exchange
     #[allow(dead_code)]
-    pub async fn place_order(&self, exchange: &Exchange, order: Order) -> Result<String, String> {
+    pub async fn place_order(&self, exchange: &Exchange, order: Order) -> Result<String, MpcError> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::PlaceOrder {
                 order,
                 reply: reply_tx,
             };
-            sender.send(msg).await.map_err(|e| e.to_string())?;
-            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+            sender.send(msg).await?;
+            reply_rx.recv().await
+                .ok_or(MpcError::NoResponse)?
+                .map_err(|e| MpcError::OrderPlacementFailed(e))
         } else {
-            Err(format!("No actor for {:?}", exchange))
+            Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
 
     /// Cancel an order on a specific exchange
     #[allow(dead_code)]
-    pub async fn cancel_order(&self, exchange: &Exchange, order_id: &str) -> Result<(), String> {
+    pub async fn cancel_order(&self, exchange: &Exchange, order_id: &str) -> Result<(), MpcError> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::CancelOrder {
                 order_id: order_id.to_string(),
                 reply: reply_tx,
             };
-            sender.send(msg).await.map_err(|e| e.to_string())?;
-            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+            sender.send(msg).await?;
+            reply_rx.recv().await
+                .ok_or(MpcError::NoResponse)?
+                .map_err(|e| MpcError::OrderPlacementFailed(e))
         } else {
-            Err(format!("No actor for {:?}", exchange))
+            Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
 
     /// Get order status from a specific exchange
     #[allow(dead_code)]
-    pub async fn get_order_status(&self, exchange: &Exchange, order_id: &str) -> Result<String, String> {
+    pub async fn get_order_status(&self, exchange: &Exchange, order_id: &str) -> Result<String, MpcError> {
         if let Some(sender) = self.senders.get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
             let msg = ExchangeMessage::GetOrderStatus {
                 order_id: order_id.to_string(),
                 reply: reply_tx,
             };
-            sender.send(msg).await.map_err(|e| e.to_string())?;
-            reply_rx.recv().await.ok_or("No response from actor".to_string())?
+            sender.send(msg).await?;
+            reply_rx.recv().await
+                .ok_or(MpcError::NoResponse)?
+                .map_err(|e| MpcError::OrderPlacementFailed(e))
         } else {
-            Err(format!("No actor for {:?}", exchange))
+            Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
 
-    /// Get last signal for a symbol
+    /// Store last signal for a symbol
     #[allow(dead_code)]
-    pub async fn get_last_signal(&self, symbol: &str) -> Option<TradingSignal> {
-        let last_signals = self.last_signals.lock().await;
-        last_signals.get(symbol).cloned()
+    pub async fn store_signal(&self, symbol: String, signal: TradingSignal) {
+        let mut last_signals = self.last_signals.lock().await;
+        last_signals.insert(symbol, signal);
     }
 
     /// Get all last signals
     #[allow(dead_code)]
     pub async fn get_all_last_signals(&self) -> HashMap<String, TradingSignal> {
         let last_signals = self.last_signals.lock().await;
-        last_signals.clone()
+        last_signals.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// Open a new position
+    #[allow(dead_code)]
+    pub async fn open_position(&self, symbol: &str, side: PositionSide, quantity: Quantity, entry_price: Price) -> Result<String, MpcError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| MpcError::InvalidConfiguration("System time error".to_string()))?
+            .as_millis();
+
+        let position_id = format!("pos_{}_{}", symbol, timestamp);
+
+        let position = Position::new_with_stops(
+            position_id.clone(),
+            symbol.to_string(),
+            side.clone(),
+            quantity,
+            entry_price,
+            self.config.stop_loss_percentage,
+            self.config.take_profit_percentage,
+        );
+
+        let mut positions = self.open_positions.lock().await;
+        positions.insert(position_id.clone(), position);
+
+        let stop_info = if let (Some(sl), Some(tp)) = (self.config.stop_loss_percentage, self.config.take_profit_percentage) {
+            format!(" (SL: {:.1}%, TP: {:.1}%)", sl * 100.0, tp * 100.0)
+        } else {
+            "".to_string()
+        };
+
+        info!("Opened position: {} {} {} @ {}{}", position_id, side, quantity.value(), entry_price.value(), stop_info);
+        Ok(position_id)
+    }
+
+    /// Close a position
+    #[allow(dead_code)]
+    pub async fn close_position(&self, position_id: &str) -> Result<(), MpcError> {
+        let mut positions = self.open_positions.lock().await;
+        if let Some(position) = positions.remove(position_id) {
+            info!("Closed position: {} (PnL: {:?})", position_id, position.unrealized_pnl());
+            Ok(())
+        } else {
+            Err(MpcError::InvalidConfiguration(format!("Position {} not found", position_id)))
+        }
+    }
+
+    /// Update position prices with current market prices
+    #[allow(dead_code)]
+    pub async fn update_position_prices(&self) -> Result<(), MpcError> {
+        let mut positions = self.open_positions.lock().await;
+        let mut symbols_to_update = std::collections::HashSet::new();
+
+        // Collect all symbols that have open positions
+        for position in positions.values() {
+            symbols_to_update.insert(position.symbol.clone());
+        }
+
+        // Update prices for each symbol
+        for symbol in symbols_to_update {
+            if let Ok(current_price) = self.get_aggregated_price(&symbol).await {
+                for position in positions.values_mut() {
+                    if position.symbol == symbol {
+                        position.update_price(current_price);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get all open positions
+    #[allow(dead_code)]
+    pub async fn get_open_positions(&self) -> HashMap<String, Position> {
+        let positions = self.open_positions.lock().await;
+        positions.clone()
+    }
+
+    /// Get total unrealized PnL across all positions
+    #[allow(dead_code)]
+    pub async fn get_total_unrealized_pnl(&self) -> Price {
+        let positions = self.open_positions.lock().await;
+        let mut total_pnl = 0.0;
+
+        for position in positions.values() {
+            if let Some(pnl) = position.unrealized_pnl() {
+                total_pnl += pnl.value();
+            }
+        }
+
+        Price::new(total_pnl).unwrap_or_else(|_| Price::new(0.0).unwrap())
+    }
+
+    /// Calculate position size based on portfolio percentage and current price
+    #[allow(dead_code)]
+    pub async fn calculate_position_size(&self, symbol: &str, current_price: Price) -> Result<f64, MpcError> {
+        // For now, we'll use a simple calculation based on portfolio percentage
+        // In a real implementation, this would consider the actual portfolio value
+        // For demo purposes, we'll assume a portfolio value of $100,000 USD
+
+        let portfolio_value = 100000.0; // This should come from a portfolio service
+        let position_value = portfolio_value * self.config.portfolio_percentage_per_position;
+
+        // Calculate quantity: position_value / current_price
+        let quantity = position_value / current_price.value();
+
+        // Ensure quantity is reasonable (not too small)
+        let min_quantity = 0.0001; // Minimum quantity to avoid dust orders
+        let final_quantity = quantity.max(min_quantity);
+
+        Ok(final_quantity)
+    }
+
+    /// Check and execute stop-loss and take-profit orders
+    #[allow(dead_code)]
+    pub async fn check_and_execute_stops(&self) -> Vec<Result<String, MpcError>> {
+        let mut results = Vec::new();
+        let mut positions_to_close = Vec::new();
+        
+        {
+            let positions = self.open_positions.lock().await;
+            for (position_id, position) in positions.iter() {
+                if position.should_stop_loss() {
+                    positions_to_close.push((position_id.clone(), "stop-loss"));
+                } else if position.should_take_profit() {
+                    positions_to_close.push((position_id.clone(), "take-profit"));
+                }
+            }
+        }
+
+        for (position_id, reason) in positions_to_close {
+            match self.close_position(&position_id).await {
+                Ok(()) => {
+                    results.push(Ok(format!("Position {} closed due to {}", position_id, reason)));
+                },
+                Err(e) => {
+                    results.push(Err(e));
+                }
+            }
+        }
+
+        results
     }
 
     /// Execute order based on signal
     #[allow(dead_code)]
-    pub async fn execute_order_from_signal(&self, symbol: &str, signal: &TradingSignal) -> Result<String, String> {
+    pub async fn execute_order_from_signal(&self, symbol: &str, signal: &TradingSignal) -> Result<String, MpcError> {
         use crate::domain::entities::order::{Order, OrderType, OrderSide};
-        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Check if automated trading is enabled
+        if !self.config.enable_automated_trading {
+            return Ok("Automated trading is disabled".to_string());
+        }
+
+        // Check trading limits before proceeding
+        self.check_trading_limits().await?;
 
         // Get current price (for logging purposes)
-        let _current_price = self.get_aggregated_price(symbol).await?;
+        let current_price = self.get_aggregated_price(symbol).await?;
         
-        // Determine order side and quantity based on signal
-        let (order_side, quantity) = match signal.signal {
+        // Determine order side and calculate position size based on signal
+        let (order_side, position_side) = match signal.signal {
             crate::domain::services::strategies::Signal::Buy => {
-                (OrderSide::Buy, 0.001) // Small test quantity
+                (OrderSide::Buy, PositionSide::Long)
             },
             crate::domain::services::strategies::Signal::Sell => {
-                (OrderSide::Sell, 0.001) // Small test quantity
+                (OrderSide::Sell, PositionSide::Short)
             },
             crate::domain::services::strategies::Signal::Hold => {
                 return Ok("No order executed - signal is HOLD".to_string());
             }
         };
 
+        // Calculate position size based on portfolio percentage
+        let quantity = self.calculate_position_size(symbol, current_price).await?;
+        let quantity = Quantity::new(quantity)
+            .map_err(|e| MpcError::InvalidConfiguration(format!("Invalid quantity calculation: {}", e)))?;
+
+        // Check position limits
+        let positions = self.open_positions.lock().await;
+        let symbol_positions: Vec<_> = positions.values()
+            .filter(|p| p.symbol == symbol)
+            .collect();
+        
+        if symbol_positions.len() >= self.config.max_positions_per_symbol {
+            return Ok(format!("Maximum positions per symbol ({}) reached for {}", 
+                            self.config.max_positions_per_symbol, symbol));
+        }
+        
+        if positions.len() >= self.config.max_total_positions {
+            return Ok(format!("Maximum total positions ({}) reached", 
+                            self.config.max_total_positions));
+        }
+        drop(positions); // Release the lock
+
         // Only execute if confidence is high enough
-        if signal.confidence < 0.7 {
-            return Ok(format!("Signal confidence {:.2} too low for execution (minimum 0.7)", signal.confidence));
+        if signal.confidence < self.config.min_confidence_threshold {
+            return Ok(format!("Signal confidence {:.2} too low for execution (minimum {:.2})", 
+                            signal.confidence, self.config.min_confidence_threshold));
         }
 
         // Generate unique order ID
-        let order_id = format!("order_{}_{}", 
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-            symbol
-        );
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| MpcError::InvalidConfiguration("System time error".to_string()))?
+            .as_millis();
+        let order_id = format!("order_{}_{}", timestamp, symbol);
 
         // Create the order
         let order = Order::new(
-            order_id,
+            order_id.clone(),
             symbol.to_string(),
             order_side.clone(),
             OrderType::Market,
             None, // Market order has no price
-            quantity,
-        ).map_err(|e| format!("Failed to create order: {}", e))?;
+            quantity.value(),
+        ).map_err(|e| MpcError::InvalidConfiguration(format!("Failed to create order: {}", e)))?;
 
         // Place order on dYdX (for now, only dYdX is implemented)
         let order_result = self.place_order(&Exchange::Dydx, order).await;
 
         match order_result {
             Ok(order_id) => {
-                info!("🚀 ORDER EXECUTED on dYdX: {:?} {} {} (confidence: {:.2}) - Order ID: {}",
-                      order_side, quantity, symbol, signal.confidence, order_id);
-                Ok(format!("Order executed on dYdX: {:?} {} {} - Order ID: {}", 
-                          order_side, quantity, symbol, order_id))
+                // Record the trade in history
+                {
+                    let mut trade_history = self.trade_history.lock().await;
+                    trade_history.push((SystemTime::now(), symbol.to_string()));
+                    
+                    // Clean up old trades (keep only last 24 hours)
+                    let one_day_ago = SystemTime::now().checked_sub(Duration::from_secs(86400)).unwrap_or(SystemTime::now());
+                    trade_history.retain(|(timestamp, _)| *timestamp >= one_day_ago);
+                }
+
+                // Open position after successful order execution
+                let position_result = self.open_position(symbol, position_side, quantity, current_price).await;
+
+                match position_result {
+                    Ok(position_id) => {
+                        info!("ORDER EXECUTED & POSITION OPENED on dYdX: {:?} {} {} (confidence: {:.2}) - Order ID: {}, Position ID: {}",
+                              order_side, quantity, symbol, signal.confidence, order_id, position_id);
+                        Ok(format!("Order executed and position opened on dYdX: {:?} {} {} - Order ID: {}, Position ID: {}", 
+                                  order_side, quantity, symbol, order_id, position_id))
+                    },
+                    Err(e) => {
+                        warn!("Order executed but failed to open position: {}", e);
+                        Ok(format!("Order executed on dYdX: {:?} {} {} - Order ID: {} (position tracking failed: {})", 
+                                  order_side, quantity, symbol, order_id, e))
+                    }
+                }
             },
             Err(e) => {
                 error!("Failed to execute order on dYdX: {}", e);
-                Err(format!("Failed to execute order: {}", e))
+                Err(e)
             }
         }
     }
 
     /// Check and execute orders for all symbols with signals
     #[allow(dead_code)]
-    pub async fn check_and_execute_orders(&self) -> Vec<Result<String, String>> {
+    pub async fn check_and_execute_orders(&self) -> Vec<Result<String, MpcError>> {
         let mut results = Vec::new();
         let last_signals = self.get_all_last_signals().await;
 
@@ -415,12 +637,47 @@ impl MpcService {
                 },
                 Err(e) => {
                     warn!("Failed to execute order for {}: {}", symbol, e);
-                    results.push(Err(format!("{}: {}", symbol, e)));
+                    results.push(Err(e));
                 }
             }
         }
 
         results
+    }
+
+    /// Check if trading limits are respected
+    #[allow(dead_code)]
+    pub async fn check_trading_limits(&self) -> Result<(), MpcError> {
+        let trade_history = self.trade_history.lock().await;
+        let now = SystemTime::now();
+
+        // Count trades in the last hour
+        let one_hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap_or(now);
+        let trades_last_hour = trade_history.iter()
+            .filter(|(timestamp, _)| *timestamp >= one_hour_ago)
+            .count();
+
+        if trades_last_hour >= self.config.max_trades_per_hour {
+            return Err(MpcError::InvalidConfiguration(
+                format!("Hourly trade limit exceeded: {} trades in last hour (max: {})",
+                       trades_last_hour, self.config.max_trades_per_hour)
+            ));
+        }
+
+        // Count trades in the last 24 hours
+        let one_day_ago = now.checked_sub(Duration::from_secs(86400)).unwrap_or(now);
+        let trades_last_day = trade_history.iter()
+            .filter(|(timestamp, _)| *timestamp >= one_day_ago)
+            .count();
+
+        if trades_last_day >= self.config.max_trades_per_day {
+            return Err(MpcError::InvalidConfiguration(
+                format!("Daily trade limit exceeded: {} trades in last 24 hours (max: {})",
+                       trades_last_day, self.config.max_trades_per_day)
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -431,23 +688,25 @@ mod tests {
 
     #[test]
     fn test_mpc_service_new() {
-        let service = MpcService::new();
+        let config = TradingConfig::default();
+        let service = MpcService::new(config);
         assert!(service.senders.is_empty());
     }
 
     #[test]
     fn test_aggregate_prices_single() {
         let prices = vec![Price::new(100.0).unwrap()];
-        let avg = MpcService::aggregate_prices(prices).unwrap();
+        let avg = MpcService::aggregate_prices(&prices).unwrap();
         assert_eq!(avg.value(), 100.0);
     }
 
-    #[test]
-    fn test_generate_trading_signal() {
+    #[tokio::test]
+    async fn test_generate_trading_signal() {
         use crate::domain::services::strategies::{FastScalping, MomentumScalping};
         use crate::domain::services::indicators::Candle;
 
-        let mut service = MpcService::new();
+        let config = TradingConfig::default();
+        let service = MpcService::new(config);
         let strategies: Vec<Box<dyn Strategy + Send + Sync>> = vec![
             Box::new(FastScalping::new()),
             Box::new(MomentumScalping::new()),
@@ -455,7 +714,7 @@ mod tests {
         let weights = vec![0.5, 0.5];
         let combiner = SignalCombiner::new(strategies, weights)
             .expect("Failed to create signal combiner");
-        service.set_signal_combiner(combiner);
+        service.set_signal_combiner(combiner).await;
 
         let candles = vec![
             Candle::new(100.0, 105.0, 95.0, 102.0, 1000.0).unwrap(),
@@ -490,15 +749,16 @@ mod tests {
             Candle::new(163.0, 168.0, 158.0, 165.0, 3900.0).unwrap(),
         ];
 
-        let signal = service.generate_trading_signal(&candles);
-        assert!(signal.is_some());
+        let signal = service.generate_trading_signal(&candles).await;
+        assert!(signal.is_ok());
         let s = signal.unwrap();
         assert!(s.confidence >= 0.0 && s.confidence <= 1.0);
     }
 
     #[tokio::test]
     async fn test_mpc_service_with_mock_actor() {
-        let mut service = MpcService::new();
+        let config = TradingConfig::default();
+        let mut service = MpcService::new(config);
 
         // Use mock actor for predictable testing
         let mock_price = crate::domain::value_objects::price::Price::new(55000.0).unwrap();
@@ -516,7 +776,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe_unsubscribe() {
-        let mut service = MpcService::new();
+        let config = TradingConfig::default();
+        let mut service = MpcService::new(config);
 
         let mock_price = crate::domain::value_objects::price::Price::new(50000.0).unwrap();
         let sender = crate::infrastructure::adapters::exchange_actor::MockExchangeActor::spawn(
@@ -536,7 +797,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_subscriptions() {
-        let mut service = MpcService::new();
+        let config = TradingConfig::default();
+        let mut service = MpcService::new(config);
 
         let mock_price = crate::domain::value_objects::price::Price::new(50000.0).unwrap();
         let sender = crate::infrastructure::adapters::exchange_actor::MockExchangeActor::spawn(
