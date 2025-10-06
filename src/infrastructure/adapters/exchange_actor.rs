@@ -1,8 +1,10 @@
 use crate::domain::entities::exchange::Exchange;
+use crate::domain::services::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 use crate::domain::value_objects::price::Price;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -41,6 +43,9 @@ pub enum ExchangeMessage {
     HealthCheck {
         reply: mpsc::Sender<bool>,
     },
+    GetCircuitState {
+        reply: mpsc::Sender<CircuitState>,
+    },
     PlaceOrder {
         order: Order,
         reply: mpsc::Sender<Result<String, String>>,
@@ -63,6 +68,7 @@ pub struct ExchangeActor {
     pub shutdown_tx: broadcast::Sender<()>,
     pub subscription_tx: mpsc::Sender<SubscriptionCommand>,
     activity_tracker: ActivityTracker,
+    circuit_breaker: Arc<CircuitBreaker>,
     dydx_client: Option<DydxClient>,
     coinbase_client: Option<CoinbaseClient>,
 }
@@ -99,6 +105,15 @@ impl ExchangeActor {
         let (subscription_tx, subscription_rx) = mpsc::channel(100);
         let exchange_clone = exchange.clone();
         let activity_tracker = ActivityTracker::new();
+
+        // Initialize circuit breaker with configuration
+        let circuit_breaker_config = CircuitBreakerConfig {
+            failure_threshold: 5,      // Open after 5 failures
+            success_threshold: 3,      // Close after 3 successes in half-open
+            timeout: Duration::from_secs(60), // Wait 60s before trying again
+            window_duration: Duration::from_secs(60), // Failure window
+        };
+        let circuit_breaker = Arc::new(CircuitBreaker::new(circuit_breaker_config));
 
         // Initialize dYdX client if this is a dYdX exchange
         let dydx_client = if matches!(exchange, Exchange::Dydx) {
@@ -157,6 +172,7 @@ impl ExchangeActor {
             shutdown_tx: shutdown_tx.clone(),
             subscription_tx: subscription_tx.clone(),
             activity_tracker: activity_tracker.clone(),
+            circuit_breaker: circuit_breaker.clone(),
             dydx_client,
             coinbase_client,
         };
@@ -290,11 +306,12 @@ impl ExchangeActor {
                     if let Err(e) = reply.send(is_healthy).await {
                         warn!("Failed to send health check reply: {:?}", e);
                     }
-                    debug!(
-                        "Health check for {}: {}",
-                        Self::get_exchange_name(&self.exchange),
-                        is_healthy
-                    );
+                }
+                ExchangeMessage::GetCircuitState { reply } => {
+                    let circuit_state = self.circuit_breaker.state().await;
+                    if let Err(e) = reply.send(circuit_state).await {
+                        warn!("Failed to send circuit state reply: {:?}", e);
+                    }
                 }
                 ExchangeMessage::PlaceOrder { order, reply } => {
                     info!(
@@ -834,6 +851,9 @@ impl MockExchangeActor {
                 }
                 ExchangeMessage::HealthCheck { reply } => {
                     let _ = reply.send(true).await;
+                }
+                ExchangeMessage::GetCircuitState { reply } => {
+                    let _ = reply.send(CircuitState::Closed).await;
                 }
                 ExchangeMessage::PlaceOrder { order: _, reply } => {
                     let _ = reply.send(Ok("mock_order_id".to_string())).await;

@@ -16,6 +16,8 @@ pub struct CandleBuilder {
     pub window_duration: Duration,
     /// Maximum number of candles to keep in history
     pub max_history: usize,
+    /// Maximum number of price updates to buffer per symbol
+    max_price_updates: usize,
     /// Price updates buffer per symbol
     price_updates: HashMap<String, VecDeque<PriceUpdate>>,
     /// Completed candles per symbol
@@ -24,9 +26,14 @@ pub struct CandleBuilder {
 
 impl CandleBuilder {
     pub fn new(window_duration: Duration, max_history: usize) -> Self {
+        // Price updates buffer should be large enough to build multiple candles
+        // but not unbounded. Default to 10x the window (e.g., 10 minutes of data for 1min candles)
+        let max_price_updates = max_history * 60; // Reasonable upper bound
+
         Self {
             window_duration,
             max_history,
+            max_price_updates,
             price_updates: HashMap::new(),
             candles: HashMap::new(),
         }
@@ -39,10 +46,16 @@ impl CandleBuilder {
             timestamp: SystemTime::now(),
         };
 
-        self.price_updates
+        let updates = self.price_updates
             .entry(symbol.clone())
-            .or_insert_with(VecDeque::new)
-            .push_back(update);
+            .or_insert_with(VecDeque::new);
+
+        updates.push_back(update);
+
+        // Trim price updates buffer to prevent unbounded growth
+        while updates.len() > self.max_price_updates {
+            updates.pop_front();
+        }
 
         // Try to build a candle if we have enough data
         self.try_build_candle(&symbol);
@@ -145,6 +158,40 @@ impl CandleBuilder {
     pub fn get_symbols(&self) -> Vec<String> {
         self.candles.keys().cloned().collect()
     }
+
+    /// Clean up old price updates that are beyond the retention period
+    ///
+    /// Call this periodically to free memory from stale price updates
+    pub fn cleanup_old_updates(&mut self, max_age: Duration) {
+        let now = SystemTime::now();
+
+        self.price_updates.retain(|_, updates| {
+            // Remove updates older than max_age
+            updates.retain(|update| {
+                now.duration_since(update.timestamp)
+                    .map(|age| age <= max_age)
+                    .unwrap_or(false)
+            });
+
+            // Keep the symbol if it still has updates
+            !updates.is_empty()
+        });
+    }
+
+    /// Remove inactive symbols (no candles and no updates)
+    ///
+    /// Useful for freeing memory when symbols are no longer being tracked
+    pub fn remove_inactive_symbols(&mut self) {
+        let active_symbols: std::collections::HashSet<String> = self
+            .price_updates
+            .keys()
+            .chain(self.candles.keys())
+            .cloned()
+            .collect();
+
+        self.price_updates.retain(|symbol, _| active_symbols.contains(symbol));
+        self.candles.retain(|symbol, candles| !candles.is_empty() && active_symbols.contains(symbol));
+    }
 }
 
 #[cfg(test)]
@@ -202,5 +249,63 @@ mod tests {
         let builder = CandleBuilder::new(Duration::from_secs(60), 100);
         let candles = builder.get_candles("BTC-USD");
         assert!(candles.is_empty());
+    }
+
+    #[test]
+    fn test_price_updates_bounded() {
+        let mut builder = CandleBuilder::new(Duration::from_secs(60), 10);
+        // max_price_updates should be 10 * 60 = 600
+
+        // Add more updates than the limit
+        for i in 0..1000 {
+            let price = Price::new(50000.0 + i as f64).unwrap();
+            builder.add_price("BTC-USD".to_string(), price);
+        }
+
+        // Should not exceed max_price_updates
+        let updates = builder.price_updates.get("BTC-USD").unwrap();
+        assert!(updates.len() <= 600);
+    }
+
+    #[test]
+    fn test_cleanup_old_updates() {
+        use std::thread::sleep;
+        use std::time::Duration as StdDuration;
+
+        let mut builder = CandleBuilder::new(Duration::from_secs(60), 100);
+
+        // Add some updates
+        for i in 0..5 {
+            let price = Price::new(50000.0 + i as f64).unwrap();
+            builder.add_price("BTC-USD".to_string(), price);
+        }
+
+        // Wait a bit
+        sleep(StdDuration::from_millis(100));
+
+        // Cleanup updates older than 50ms (should remove all)
+        builder.cleanup_old_updates(Duration::from_millis(50));
+
+        // All old updates should be removed
+        assert!(builder.price_updates.get("BTC-USD").map(|u| u.is_empty()).unwrap_or(true));
+    }
+
+    #[test]
+    fn test_remove_inactive_symbols() {
+        let mut builder = CandleBuilder::new(Duration::from_secs(60), 100);
+
+        // Add data for multiple symbols
+        builder.add_price("BTC-USD".to_string(), Price::new(50000.0).unwrap());
+        builder.add_price("ETH-USD".to_string(), Price::new(3000.0).unwrap());
+
+        // Clear one symbol
+        builder.clear_symbol("BTC-USD");
+
+        // Remove inactive symbols
+        builder.remove_inactive_symbols();
+
+        // BTC-USD should be removed, ETH-USD should remain
+        assert!(builder.price_updates.contains_key("ETH-USD"));
+        assert!(!builder.price_updates.contains_key("BTC-USD"));
     }
 }
