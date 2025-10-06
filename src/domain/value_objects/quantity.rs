@@ -1,6 +1,8 @@
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Quantity(pub f64);
 
+#[allow(dead_code)]
 impl Quantity {
     pub fn new(value: f64) -> Result<Self, String> {
         if value >= 0.0 {

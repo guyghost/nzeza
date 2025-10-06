@@ -1,17 +1,20 @@
 use crate::domain::value_objects::{price::Price, quantity::Quantity};
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum OrderSide {
     Buy,
     Sell,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum OrderType {
     Market,
     Limit,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Order {
     pub id: String,
@@ -22,6 +25,7 @@ pub struct Order {
     pub quantity: Quantity,
 }
 
+#[allow(dead_code)]
 impl Order {
     pub fn new(
         id: String,

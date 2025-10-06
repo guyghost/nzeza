@@ -3,6 +3,20 @@
 ## Vue d'ensemble du projet
 Ce projet implémente un serveur MPC (Multi-Party Computation) connecté à plusieurs échanges de crypto-monnaies : dydx (v4), hyperliquid, coinbase, binance, et kraken. L'architecture suit les principes DDD (Domain-Driven Design) avec des acteurs asynchrones utilisant des WebSockets pour des mises à jour de prix en temps réel.
 
+## Fonctionnalités MPC supportées
+Le serveur supporte diverses computations multi-parties :
+
+- **Price Aggregation** : Agrège les prix à travers les échanges pour obtenir une moyenne fiable.
+- **Order Matching** : Fait correspondre les ordres à travers les participants de manière sécurisée.
+- **Portfolio Optimization** : Optimise les portefeuilles en utilisant des computations MPC pour la confidentialité.
+
+## Fonctionnalités de Trading
+Le serveur inclut des outils avancés pour le trading algorithmique :
+
+- **Available Indicators** : EMA, RSI, Bollinger Bands, MACD, Stochastic Oscillator, Volume (VWAP)
+- **Strategies** : Fast Scalping, Momentum Scalping, Conservative Scalping
+- **Signal Combination** : Weighted combination with confidence scoring
+
 ## Approche de développement : Test-Driven Development (TDD)
 
 ### Principe fondamental
@@ -87,3 +101,165 @@ cargo test --test integration_tests
 
 ### Rappel
 Le TDD n'est pas optionnel ; c'est la méthode imposée pour garantir la robustesse du serveur MPC. Toute violation sera rejetée lors des reviews.
+
+## Workflow Git : Trunk-Based Development
+
+### Principe fondamental
+Ce projet utilise le **Trunk-Based Development**, une approche de gestion de version centrée sur une branche principale (`main`) toujours déployable.
+
+### Règles du Trunk-Based Development
+
+#### 1. Branche principale (`main`)
+- **Toujours stable** : La branche `main` doit toujours compiler et passer tous les tests.
+- **Source unique de vérité** : Toutes les fonctionnalités partent de `main` et y retournent rapidement.
+- **Déployable à tout moment** : Chaque commit sur `main` devrait être potentiellement déployable en production.
+
+#### 2. Branches de fonctionnalités (Feature Branches)
+- **Courte durée de vie** : Maximum 1-2 jours avant merge.
+- **Petites et focalisées** : Une branche = une fonctionnalité ou un fix spécifique.
+- **Naming convention** :
+  - `feat/description` : Nouvelles fonctionnalités
+  - `fix/description` : Corrections de bugs
+  - `refactor/description` : Refactoring sans changement de comportement
+  - `docs/description` : Documentation uniquement
+  - `test/description` : Ajout ou modification de tests
+
+#### 3. Commits fréquents
+- **Commit souvent** : Au moins plusieurs fois par jour.
+- **Conventional Commits** : Utiliser le format standard pour les messages de commit.
+- **Atomicité** : Chaque commit doit représenter une unité logique de changement.
+
+#### 4. Intégration continue
+- **Pull/Push réguliers** : Synchroniser avec `main` plusieurs fois par jour.
+- **Rebase** : Préférer `git rebase` à `git merge` pour garder un historique linéaire.
+- **CI/CD** : Tous les tests doivent passer avant le merge.
+
+### Format des commits : Conventional Commits
+
+Tous les commits doivent suivre le format **Conventional Commits** :
+
+```
+<type>(<scope>): <description>
+
+[corps optionnel]
+
+[footer optionnel]
+```
+
+#### Types de commits
+- `feat` : Nouvelle fonctionnalité
+- `fix` : Correction de bug
+- `refactor` : Refactoring sans changement de comportement
+- `test` : Ajout ou modification de tests
+- `docs` : Documentation uniquement
+- `style` : Formatage, points-virgules manquants, etc.
+- `perf` : Amélioration de performance
+- `chore` : Tâches de maintenance (dépendances, config, etc.)
+
+#### Exemples
+```bash
+feat(mpc): add price aggregation across exchanges
+fix(websocket): handle reconnection on connection loss
+refactor(indicators): simplify RSI calculation logic
+test(strategies): add tests for momentum scalping
+docs(readme): update installation instructions
+```
+
+### Workflow quotidien
+
+#### 1. Démarrer une nouvelle tâche
+```bash
+# Synchroniser avec main
+git checkout main
+git pull origin main
+
+# Créer une branche de fonctionnalité
+git checkout -b feat/add-new-indicator
+```
+
+#### 2. Développer avec TDD
+```bash
+# Cycle TDD : Red -> Green -> Refactor
+# Faire des commits atomiques fréquents
+git add .
+git commit -m "test(indicators): add failing test for MACD"
+git commit -m "feat(indicators): implement MACD calculation"
+git commit -m "refactor(indicators): extract common EMA logic"
+```
+
+#### 3. Synchroniser régulièrement
+```bash
+# Plusieurs fois par jour
+git fetch origin
+git rebase origin/main
+```
+
+#### 4. Merger vers main
+```bash
+# S'assurer que tout est à jour
+git checkout main
+git pull origin main
+git checkout feat/add-new-indicator
+git rebase main
+
+# Tous les tests doivent passer
+cargo test
+
+# Merger (fast-forward si possible)
+git checkout main
+git merge feat/add-new-indicator
+git push origin main
+
+# Supprimer la branche locale
+git branch -d feat/add-new-indicator
+```
+
+### Bonnes pratiques
+
+#### DO ✅
+- Commiter au moins 3-5 fois par jour sur votre branche
+- Synchroniser avec `main` au moins 2 fois par jour
+- Garder les branches de fonctionnalités < 2 jours
+- Utiliser des messages de commit descriptifs et conventionnels
+- Faire tourner tous les tests avant de pusher
+- Merger rapidement pour éviter les divergences
+
+#### DON'T ❌
+- Ne jamais commiter directement sur `main` sans tests
+- Ne pas garder une branche de fonctionnalité > 3 jours
+- Ne pas merger avec des tests qui échouent
+- Ne pas utiliser `git merge` (préférer `rebase` pour garder un historique linéaire)
+- Ne pas accumuler trop de commits non pushés
+- Ne pas ignorer les conflits de merge
+
+### Gestion des conflits
+```bash
+# En cas de conflit lors du rebase
+git rebase origin/main
+
+# Résoudre les conflits dans les fichiers
+# Puis continuer le rebase
+git add .
+git rebase --continue
+```
+
+### Vérification avant merge
+```bash
+# Checklist avant de merger vers main
+cargo test                    # Tous les tests passent
+cargo clippy                  # Pas d'avertissements Clippy
+cargo fmt -- --check          # Code correctement formaté
+git log --oneline            # Vérifier l'historique des commits
+```
+
+### Intégration avec CI/CD
+- **GitHub Actions** : Automatiser les tests sur chaque push
+- **Pre-commit hooks** : Vérifier le formatage et les tests avant chaque commit
+- **Branch protection** : Protéger `main` contre les pushs directs non vérifiés
+
+### Résumé
+Le Trunk-Based Development favorise :
+- **Intégration rapide** : Réduire les risques de conflits
+- **Feedback continu** : Détecter les problèmes tôt
+- **Simplicité** : Moins de branches, historique plus clair
+- **Qualité** : Tests continus, code toujours déployable
