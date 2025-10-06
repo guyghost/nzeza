@@ -302,7 +302,6 @@ impl DydxClient {
 mod tests {
     use super::*;
     use crate::domain::entities::order::{Order, OrderSide, OrderType};
-    use crate::domain::value_objects::quantity::Quantity;
 
     #[test]
     fn test_dydx_config_default() {
@@ -315,7 +314,7 @@ mod tests {
     #[test]
     fn test_normalize_market() {
         let config = DydxConfig::default();
-        let client = DydxClient::new("test mnemonic", config).unwrap();
+        let client = DydxClient::new("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", config).unwrap();
 
         assert_eq!(client.normalize_market("BTC-USD").unwrap(), "BTC-USD");
         assert_eq!(client.normalize_market("ETH-USD").unwrap(), "ETH-USD");
@@ -325,7 +324,7 @@ mod tests {
     #[test]
     fn test_create_order_hash() {
         let config = DydxConfig::default();
-        let client = DydxClient::new("test mnemonic", config).unwrap();
+        let client = DydxClient::new("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", config).unwrap();
 
         let hash = client.create_order_hash("BTC-USD", "BUY", "0.01", "50000", "client_123").unwrap();
         assert!(!hash.is_zero());
