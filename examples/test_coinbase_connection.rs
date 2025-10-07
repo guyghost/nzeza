@@ -10,6 +10,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt::init();
 
+    // Load .env file
+    if let Err(e) = dotenvy::dotenv() {
+        println!("⚠️  Could not load .env file: {}", e);
+        println!("   Continuing with environment variables from system\n");
+    }
+
     println!("🔍 Testing Coinbase API Connection...\n");
 
     // Load credentials from environment

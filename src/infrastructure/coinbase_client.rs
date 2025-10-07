@@ -141,6 +141,8 @@ impl CoinbaseClient {
         let headers = self.generate_auth_headers("GET", path, "")?;
 
         let mut request = self.client.get(&url);
+        // Add required User-Agent header
+        request = request.header("User-Agent", "NZEZA-Trading-Bot/0.1.0");
         for (key, value) in headers {
             request = request.header(&key, value);
         }

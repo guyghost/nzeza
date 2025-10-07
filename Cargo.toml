@@ -35,3 +35,4 @@ sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite", "chr
 dydx = { path = "dydx-clients/v4-client-rs/client" }
 dydx-proto = "0.4.0"
 bigdecimal = "0.4"
+rustls = { version = "0.23", features = ["ring"] }

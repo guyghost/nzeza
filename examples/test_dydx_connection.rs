@@ -7,8 +7,19 @@ use std::env;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize rustls crypto provider (required for TLS)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Initialize logging
     tracing_subscriber::fmt::init();
+
+    // Load .env file
+    if let Err(e) = dotenvy::dotenv() {
+        println!("⚠️  Could not load .env file: {}", e);
+        println!("   Continuing with environment variables from system\n");
+    }
 
     println!("🔍 Testing dYdX v4 API Connection...\n");
 
