@@ -1,3 +1,4 @@
+use crate::application::actors::trader_actor::TraderMessage;
 use crate::config::TradingConfig;
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::entities::order::Order;
@@ -22,7 +23,8 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 pub struct MpcService {
-    pub senders: Arc<HashMap<Exchange, mpsc::Sender<ExchangeMessage>>>, // Immutable after init
+    pub senders: Arc<HashMap<Exchange, mpsc::Sender<ExchangeMessage>>>, // Exchange actors for market data
+    pub traders: Arc<Mutex<HashMap<String, mpsc::Sender<TraderMessage>>>>, // Trader actors for execution
     pub signal_combiner: Arc<RwLock<Option<SignalCombiner>>>, // RwLock for better concurrency
     pub candle_builder: Arc<Mutex<CandleBuilder>>,
     pub last_signals: Arc<Mutex<LruCache<String, TradingSignal>>>, // LRU cache to prevent unbounded growth
@@ -48,6 +50,7 @@ impl MpcService {
 
         Self {
             senders: Arc::new(HashMap::new()),
+            traders: Arc::new(Mutex::new(HashMap::new())),
             signal_combiner: Arc::new(RwLock::new(None)),
             candle_builder,
             last_signals: Arc::new(Mutex::new(LruCache::new(cache_capacity))),
@@ -62,6 +65,19 @@ impl MpcService {
             active_alerts: Arc::new(Mutex::new(Vec::new())),
             performance_profiler: Arc::new(Mutex::new(PerformanceProfiler::new())),
         }
+    }
+
+    /// Add a trader actor
+    pub async fn add_trader(&self, trader_id: String, sender: mpsc::Sender<TraderMessage>) {
+        let mut traders = self.traders.lock().await;
+        traders.insert(trader_id.clone(), sender);
+        info!("Added trader: {}", trader_id);
+    }
+
+    /// Get a trader by ID
+    pub async fn get_trader(&self, trader_id: &str) -> Option<mpsc::Sender<TraderMessage>> {
+        let traders = self.traders.lock().await;
+        traders.get(trader_id).cloned()
     }
 
     fn get_exchange_name(exchange: &Exchange) -> &'static str {
