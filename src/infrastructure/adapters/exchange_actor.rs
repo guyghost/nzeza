@@ -21,7 +21,8 @@ pub enum SubscriptionCommand {
 
 use crate::domain::entities::order::Order;
 use crate::infrastructure::coinbase_client::CoinbaseClient;
-use crate::infrastructure::dydx_client::{DydxClient, DydxConfig};
+use crate::infrastructure::coinbase_advanced_client::CoinbaseAdvancedClient;
+use crate::infrastructure::dydx_v4_client::DydxV4Client;
 
 #[derive(Debug)]
 pub enum ExchangeMessage {
@@ -69,8 +70,9 @@ pub struct ExchangeActor {
     pub subscription_tx: mpsc::Sender<SubscriptionCommand>,
     activity_tracker: ActivityTracker,
     circuit_breaker: Arc<CircuitBreaker>,
-    dydx_client: Option<DydxClient>,
+    dydx_client: Option<DydxV4Client>,
     coinbase_client: Option<CoinbaseClient>,
+    coinbase_advanced_client: Option<CoinbaseAdvancedClient>,
 }
 
 #[derive(Clone)]
@@ -115,17 +117,30 @@ impl ExchangeActor {
         };
         let circuit_breaker = Arc::new(CircuitBreaker::new(circuit_breaker_config));
 
-        // Initialize dYdX client if this is a dYdX exchange
+        // Initialize dYdX v4 client if this is a dYdX exchange
         let dydx_client = if matches!(exchange, Exchange::Dydx) {
             match std::env::var("DYDX_MNEMONIC") {
                 Ok(mnemonic) => {
-                    match DydxClient::new(&mnemonic, DydxConfig::default()) {
+                    // Initialize rustls crypto provider (required for TLS)
+                    if rustls::crypto::CryptoProvider::get_default().is_none() {
+                        let _ = rustls::crypto::ring::default_provider()
+                            .install_default()
+                            .map_err(|_| warn!("Rustls crypto provider already installed"));
+                    }
+
+                    // Use dydx_mainnet.toml for mainnet configuration
+                    let config_path = "dydx_mainnet.toml";
+
+                    match tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current()
+                            .block_on(DydxV4Client::new(&mnemonic, config_path))
+                    }) {
                         Ok(client) => {
-                            info!("dYdX client initialized successfully");
+                            info!("dYdX v4 client initialized successfully");
                             Some(client)
                         }
                         Err(e) => {
-                            error!("Failed to initialize dYdX client: {}", e);
+                            error!("Failed to initialize dYdX v4 client: {}", e);
                             None
                         }
                     }
@@ -139,32 +154,66 @@ impl ExchangeActor {
             None
         };
 
-        // Initialize Coinbase client if this is a Coinbase exchange
-        let coinbase_client = if matches!(exchange, Exchange::Coinbase) {
-            match (std::env::var("COINBASE_API_KEY"),
-                   std::env::var("COINBASE_API_SECRET")) {
-                (Ok(api_key), Ok(api_secret)) => {
-                    // Passphrase is optional
-                    let passphrase = std::env::var("COINBASE_PASSPHRASE").ok();
-                    
-                    match CoinbaseClient::new(&api_key, &api_secret, passphrase.as_deref()) {
+        // Initialize Coinbase clients if this is a Coinbase exchange
+        // Try Coinbase Advanced Trade API first (new), fallback to Pro API (old)
+        let (coinbase_client, coinbase_advanced_client) = if matches!(exchange, Exchange::Coinbase) {
+            // Try Advanced Trade API first (Cloud API)
+            let advanced_client = match (
+                std::env::var("COINBASE_CLOUD_API_KEY").or_else(|_| std::env::var("COINBASE_API_KEY")),
+                std::env::var("COINBASE_CLOUD_API_SECRET").or_else(|_| std::env::var("COINBASE_API_SECRET"))
+            ) {
+                (Ok(api_key), Ok(api_secret)) if api_key.starts_with("organizations/") => {
+                    // This looks like a Cloud API key
+                    match CoinbaseAdvancedClient::new(&api_key, &api_secret) {
                         Ok(client) => {
-                            info!("Coinbase client initialized successfully");
+                            info!("✅ Coinbase Advanced Trade client initialized successfully");
                             Some(client)
                         }
                         Err(e) => {
-                            error!("Failed to initialize Coinbase client: {}", e);
+                            warn!("Failed to initialize Coinbase Advanced Trade client: {}", e);
                             None
                         }
                     }
                 }
-                _ => {
-                    warn!("Coinbase API credentials not set (COINBASE_API_KEY, COINBASE_API_SECRET), Coinbase trading will be disabled");
-                    None
+                _ => None,
+            };
+
+            // Try Pro API (old) as fallback
+            let pro_client = if advanced_client.is_none() {
+                match (
+                    std::env::var("COINBASE_API_KEY"),
+                    std::env::var("COINBASE_API_SECRET")
+                ) {
+                    (Ok(api_key), Ok(api_secret)) if !api_key.starts_with("organizations/") => {
+                        // This looks like a Pro API key
+                        let passphrase = std::env::var("COINBASE_PASSPHRASE").ok();
+
+                        match CoinbaseClient::new(&api_key, &api_secret, passphrase.as_deref()) {
+                            Ok(client) => {
+                                info!("⚠️  Coinbase Pro client initialized (deprecated API)");
+                                warn!("Consider migrating to Coinbase Advanced Trade API");
+                                Some(client)
+                            }
+                            Err(e) => {
+                                error!("Failed to initialize Coinbase Pro client: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    _ => {
+                        warn!("Coinbase API credentials not set, Coinbase trading will be disabled");
+                        warn!("For Advanced Trade: Set COINBASE_CLOUD_API_KEY and COINBASE_CLOUD_API_SECRET");
+                        warn!("For Pro API (deprecated): Set COINBASE_API_KEY, COINBASE_API_SECRET, and COINBASE_PASSPHRASE");
+                        None
+                    }
                 }
-            }
+            } else {
+                None
+            };
+
+            (pro_client, advanced_client)
         } else {
-            None
+            (None, None)
         };
 
         let actor = Self {
@@ -177,6 +226,7 @@ impl ExchangeActor {
             circuit_breaker: circuit_breaker.clone(),
             dydx_client,
             coinbase_client,
+            coinbase_advanced_client,
         };
 
         tokio::spawn(async move {
@@ -331,10 +381,13 @@ impl ExchangeActor {
                             }
                         }
                         Exchange::Coinbase => {
-                            if let Some(client) = &self.coinbase_client {
+                            // Try Advanced Trade client first, fallback to Pro client
+                            if let Some(client) = &self.coinbase_advanced_client {
+                                Self::place_order_coinbase_advanced(&order, client).await
+                            } else if let Some(client) = &self.coinbase_client {
                                 Self::place_order_coinbase(&order, client).await
                             } else {
-                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET".to_string())
+                                Err("Coinbase client not initialized - check COINBASE_CLOUD_API_KEY/COINBASE_API_KEY".to_string())
                             }
                         }
                         _ => Err(format!(
@@ -363,10 +416,13 @@ impl ExchangeActor {
                             }
                         }
                         Exchange::Coinbase => {
-                            if let Some(client) = &self.coinbase_client {
+                            // Try Advanced Trade client first, fallback to Pro client
+                            if let Some(client) = &self.coinbase_advanced_client {
+                                Self::cancel_order_coinbase_advanced(&order_id, client).await
+                            } else if let Some(client) = &self.coinbase_client {
                                 Self::cancel_order_coinbase(&order_id, client).await
                             } else {
-                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET".to_string())
+                                Err("Coinbase client not initialized - check COINBASE_CLOUD_API_KEY/COINBASE_API_KEY".to_string())
                             }
                         }
                         _ => Err(format!(
@@ -395,10 +451,13 @@ impl ExchangeActor {
                             }
                         }
                         Exchange::Coinbase => {
-                            if let Some(client) = &self.coinbase_client {
+                            // Try Advanced Trade client first, fallback to Pro client
+                            if let Some(client) = &self.coinbase_advanced_client {
+                                Self::get_order_status_coinbase_advanced(&order_id, client).await
+                            } else if let Some(client) = &self.coinbase_client {
                                 Self::get_order_status_coinbase(&order_id, client).await
                             } else {
-                                Err("Coinbase client not initialized - check COINBASE_API_KEY, COINBASE_API_SECRET".to_string())
+                                Err("Coinbase client not initialized - check COINBASE_CLOUD_API_KEY/COINBASE_API_KEY".to_string())
                             }
                         }
                         _ => Err(format!("Order status not implemented for {:?}", self.exchange)),
@@ -751,36 +810,28 @@ impl ExchangeActor {
 
 
 
-    /// Place order on dYdX v4 using the dYdX client
-    async fn place_order_dydx(order: &Order, client: &DydxClient) -> Result<String, String> {
-        // Update sequence number before placing order
-        if let Err(e) = client.update_sequence_number().await {
-            warn!("Failed to update sequence number: {}", e);
-        }
-
-        // Convert our order to dYdX format
-        let dydx_order = client.convert_order(order).await?;
-
+    /// Place order on dYdX v4 using the dYdX v4 client
+    async fn place_order_dydx(order: &Order, client: &DydxV4Client) -> Result<String, String> {
         info!(
-            "dYdX order placement requested: {:?} {} {} (converted to dYdX format)",
+            "dYdX v4 order placement requested: {:?} {} {}",
             order.side,
             order.quantity.value(),
             order.symbol
         );
 
-        // Place the order
-        client.place_order(dydx_order).await
+        // Place the order (conversion happens inside the client)
+        client.place_order(order).await
     }
 
-    /// Cancel order on dYdX v4 using the dYdX client
-    async fn cancel_order_dydx(order_id: &str, client: &DydxClient) -> Result<(), String> {
-        info!("dYdX order cancellation requested: {}", order_id);
+    /// Cancel order on dYdX v4 using the dYdX v4 client
+    async fn cancel_order_dydx(order_id: &str, client: &DydxV4Client) -> Result<(), String> {
+        info!("dYdX v4 order cancellation requested: {}", order_id);
         client.cancel_order(order_id).await
     }
 
-    /// Get order status from dYdX v4 using the dYdX client
-    async fn get_order_status_dydx(order_id: &str, client: &DydxClient) -> Result<String, String> {
-        info!("dYdX order status requested: {}", order_id);
+    /// Get order status from dYdX v4 using the dYdX v4 client
+    async fn get_order_status_dydx(order_id: &str, client: &DydxV4Client) -> Result<String, String> {
+        info!("dYdX v4 order status requested: {}", order_id);
         client.get_order_status(order_id).await
     }
 
@@ -809,6 +860,34 @@ impl ExchangeActor {
     /// Get order status from Coinbase using the Coinbase client
     async fn get_order_status_coinbase(order_id: &str, client: &CoinbaseClient) -> Result<String, String> {
         info!("Coinbase order status requested: {}", order_id);
+        client.get_order_status(order_id).await
+    }
+
+    /// Place order on Coinbase using the Coinbase Advanced Trade client
+    async fn place_order_coinbase_advanced(order: &Order, client: &CoinbaseAdvancedClient) -> Result<String, String> {
+        // Convert our order to Coinbase Advanced format
+        let coinbase_order = client.convert_order(order)?;
+
+        info!(
+            "Coinbase Advanced Trade order placement requested: {:?} {} {}",
+            order.side,
+            order.quantity.value(),
+            order.symbol
+        );
+
+        // Place the order
+        client.place_order(coinbase_order).await
+    }
+
+    /// Cancel order on Coinbase using the Coinbase Advanced Trade client
+    async fn cancel_order_coinbase_advanced(order_id: &str, client: &CoinbaseAdvancedClient) -> Result<(), String> {
+        info!("Coinbase Advanced Trade order cancellation requested: {}", order_id);
+        client.cancel_order(order_id).await
+    }
+
+    /// Get order status from Coinbase using the Coinbase Advanced Trade client
+    async fn get_order_status_coinbase_advanced(order_id: &str, client: &CoinbaseAdvancedClient) -> Result<String, String> {
+        info!("Coinbase Advanced Trade order status requested: {}", order_id);
         client.get_order_status(order_id).await
     }
 }

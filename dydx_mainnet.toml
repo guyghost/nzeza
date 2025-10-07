@@ -1,7 +1,9 @@
 # dYdX v4 Mainnet Configuration
+# Updated with working endpoints from https://docs.dydx.xyz/nodes/resources
 
 [node]
-endpoint = "https://dydx-ops-rpc.kingnodes.com:443"
+# Polkachu gRPC endpoint (300 req/m rate limit)
+endpoint = "https://dydx-dao-archive-grpc-1.polkachu.com:443"
 chain_id = "dydx-mainnet-1"
 fee_denom = "adydx"
 

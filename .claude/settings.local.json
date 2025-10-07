@@ -16,7 +16,9 @@
       "Bash(cargo audit:*)",
       "Bash(cargo tree:*)",
       "Bash(cargo check:*)",
-      "Bash(/bin/ls -la /Users/guy/Developer/guyghost/nzeza/dydx-clients/v4-client-rs/client/examples/)"
+      "Bash(/bin/ls -la /Users/guy/Developer/guyghost/nzeza/dydx-clients/v4-client-rs/client/examples/)",
+      "WebFetch(domain:docs.cdp.coinbase.com)",
+      "WebFetch(domain:docs.cloud.coinbase.com)"
     ],
     "deny": [],
     "ask": []

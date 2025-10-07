@@ -36,3 +36,8 @@ dydx = { path = "dydx-clients/v4-client-rs/client" }
 dydx-proto = "0.4.0"
 bigdecimal = "0.4"
 rustls = { version = "0.23", features = ["ring"] }
+
+# JWT and ECDSA for Coinbase Advanced Trade API
+jsonwebtoken = { version = "10.0", default-features = false, features = ["rust_crypto"] }
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+rand = "0.8"
