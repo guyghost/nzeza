@@ -1,4 +1,8 @@
 use crate::domain::entities::order::{Order, OrderSide, OrderType};
+use crate::domain::repositories::exchange_client::{
+    Balance, ExchangeClient, ExchangeError, ExchangeResult, OrderStatus,
+};
+use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -304,6 +308,73 @@ impl CoinbaseClient {
 
         Ok(order_response.status)
     }
+
+    /// Helper to convert Coinbase order status to our OrderStatus enum
+    fn parse_order_status(status_str: &str) -> OrderStatus {
+        match status_str.to_lowercase().as_str() {
+            "pending" | "open" | "active" => OrderStatus::Pending,
+            "filled" | "done" => OrderStatus::Filled,
+            "cancelled" => OrderStatus::Cancelled,
+            "rejected" => OrderStatus::Rejected,
+            _ => OrderStatus::Unknown,
+        }
+    }
+}
+
+/// Implementation of ExchangeClient trait for Coinbase Pro
+#[async_trait]
+impl ExchangeClient for CoinbaseClient {
+    fn name(&self) -> &str {
+        "Coinbase Pro"
+    }
+
+    async fn place_order(&self, order: &Order) -> ExchangeResult<String> {
+        let coinbase_order = self
+            .convert_order(order)
+            .map_err(|e| ExchangeError::InvalidOrder(e))?;
+
+        CoinbaseClient::place_order(self, coinbase_order)
+            .await
+            .map_err(|e| ExchangeError::OrderPlacementFailed(e))
+    }
+
+    async fn cancel_order(&self, order_id: &str) -> ExchangeResult<()> {
+        CoinbaseClient::cancel_order(self, order_id)
+            .await
+            .map_err(|e| ExchangeError::OrderCancellationFailed(e))
+    }
+
+    async fn get_order_status(&self, order_id: &str) -> ExchangeResult<OrderStatus> {
+        let status_str = CoinbaseClient::get_order_status(self, order_id)
+            .await
+            .map_err(|e| ExchangeError::OrderStatusFailed(e))?;
+
+        Ok(Self::parse_order_status(&status_str))
+    }
+
+    async fn get_balance(&self, currency: Option<&str>) -> ExchangeResult<Vec<Balance>> {
+        let accounts = self
+            .get_accounts()
+            .await
+            .map_err(|e| ExchangeError::BalanceQueryFailed(e))?;
+
+        let balances: Vec<Balance> = accounts
+            .iter()
+            .filter(|acc| currency.is_none() || currency == Some(&acc.currency))
+            .map(|acc| Balance {
+                currency: acc.currency.clone(),
+                available: acc.available.parse::<f64>().unwrap_or(0.0),
+                total: acc.balance.parse::<f64>().unwrap_or(0.0),
+            })
+            .collect();
+
+        Ok(balances)
+    }
+
+    async fn is_healthy(&self) -> bool {
+        // Try to get accounts as health check
+        self.get_accounts().await.is_ok()
+    }
 }
 
 #[cfg(test)]
@@ -600,8 +671,20 @@ mod tests {
     #[tokio::test]
     async fn test_get_order_status_with_invalid_credentials() {
         let client = CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase")).unwrap();
-        
+
         let result = client.get_order_status("invalid-order-id").await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_order_status() {
+        assert_eq!(CoinbaseClient::parse_order_status("pending"), OrderStatus::Pending);
+        assert_eq!(CoinbaseClient::parse_order_status("OPEN"), OrderStatus::Pending);
+        assert_eq!(CoinbaseClient::parse_order_status("active"), OrderStatus::Pending);
+        assert_eq!(CoinbaseClient::parse_order_status("filled"), OrderStatus::Filled);
+        assert_eq!(CoinbaseClient::parse_order_status("DONE"), OrderStatus::Filled);
+        assert_eq!(CoinbaseClient::parse_order_status("cancelled"), OrderStatus::Cancelled);
+        assert_eq!(CoinbaseClient::parse_order_status("rejected"), OrderStatus::Rejected);
+        assert_eq!(CoinbaseClient::parse_order_status("unknown_status"), OrderStatus::Unknown);
     }
 }

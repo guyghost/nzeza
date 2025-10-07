@@ -12,6 +12,10 @@
 //! - Account and subaccount management
 
 use crate::domain::entities::order::{Order, OrderSide, OrderType};
+use crate::domain::repositories::exchange_client::{
+    Balance, ExchangeClient, ExchangeError, ExchangeResult, OrderStatus,
+};
+use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use dydx::config::ClientConfig;
 use dydx::indexer::{IndexerClient, Ticker};
@@ -266,6 +270,18 @@ impl DydxV4Client {
             sequence: account.sequence_number(),
         })
     }
+
+    /// Helper to convert dYdX order status string to our OrderStatus enum
+    fn parse_order_status(status_str: &str) -> OrderStatus {
+        match status_str.to_uppercase().as_str() {
+            "OPEN" | "PENDING" | "BEST_EFFORT_OPENED" => OrderStatus::Pending,
+            "FILLED" | "BEST_EFFORT_FILLED" => OrderStatus::Filled,
+            "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled,
+            "CANCELLED" | "BEST_EFFORT_CANCELLED" => OrderStatus::Cancelled,
+            "NOT_FOUND" => OrderStatus::Unknown,
+            _ => OrderStatus::Unknown,
+        }
+    }
 }
 
 /// Account information structure
@@ -274,6 +290,77 @@ pub struct AccountInfo {
     pub address: String,
     pub account_number: u64,
     pub sequence: u64,
+}
+
+/// Implementation of ExchangeClient trait for dYdX v4
+#[async_trait]
+impl ExchangeClient for DydxV4Client {
+    fn name(&self) -> &str {
+        "dYdX v4"
+    }
+
+    async fn place_order(&self, order: &Order) -> ExchangeResult<String> {
+        // Use the existing place_order implementation
+        DydxV4Client::place_order(self, order)
+            .await
+            .map_err(|e| ExchangeError::OrderPlacementFailed(e))
+    }
+
+    async fn cancel_order(&self, order_id: &str) -> ExchangeResult<()> {
+        // Use the existing cancel_order implementation
+        DydxV4Client::cancel_order(self, order_id)
+            .await
+            .map_err(|e| ExchangeError::OrderCancellationFailed(e))
+    }
+
+    async fn get_order_status(&self, order_id: &str) -> ExchangeResult<OrderStatus> {
+        // Use the existing get_order_status implementation
+        let status_str = DydxV4Client::get_order_status(self, order_id)
+            .await
+            .map_err(|e| ExchangeError::OrderStatusFailed(e))?;
+
+        Ok(Self::parse_order_status(&status_str))
+    }
+
+    async fn get_balance(&self, currency: Option<&str>) -> ExchangeResult<Vec<Balance>> {
+        // Get subaccount to access balance info
+        let subaccount = self
+            .get_subaccount()
+            .await
+            .map_err(|e| ExchangeError::BalanceQueryFailed(e))?;
+
+        // Query balances from indexer
+        let subaccount_data = self
+            .indexer_client
+            .accounts()
+            .get_subaccount(&subaccount)
+            .await
+            .map_err(|e| ExchangeError::BalanceQueryFailed(format!("Failed to get subaccount data: {:?}", e)))?;
+
+        let mut balances = Vec::new();
+
+        // dYdX uses USDC as main collateral
+        let equity = &subaccount_data.equity;
+        let currency_str = currency.unwrap_or("USDC");
+        if currency.is_none() || currency == Some("USDC") {
+            // Convert BigDecimal to f64
+            let equity_f64 = equity.to_string().parse::<f64>()
+                .unwrap_or(0.0);
+
+            balances.push(Balance {
+                currency: currency_str.to_string(),
+                available: equity_f64,
+                total: equity_f64,
+            });
+        }
+
+        Ok(balances)
+    }
+
+    async fn is_healthy(&self) -> bool {
+        // Try to get account info as health check
+        self.get_account_info().await.is_ok()
+    }
 }
 
 #[cfg(test)]
@@ -291,5 +378,15 @@ mod tests {
         assert_eq!(info.address, "dydx1abc...");
         assert_eq!(info.account_number, 123);
         assert_eq!(info.sequence, 456);
+    }
+
+    #[test]
+    fn test_parse_order_status() {
+        assert_eq!(DydxV4Client::parse_order_status("OPEN"), OrderStatus::Pending);
+        assert_eq!(DydxV4Client::parse_order_status("FILLED"), OrderStatus::Filled);
+        assert_eq!(DydxV4Client::parse_order_status("CANCELLED"), OrderStatus::Cancelled);
+        assert_eq!(DydxV4Client::parse_order_status("PARTIALLY_FILLED"), OrderStatus::PartiallyFilled);
+        assert_eq!(DydxV4Client::parse_order_status("NOT_FOUND"), OrderStatus::Unknown);
+        assert_eq!(DydxV4Client::parse_order_status("INVALID"), OrderStatus::Unknown);
     }
 }

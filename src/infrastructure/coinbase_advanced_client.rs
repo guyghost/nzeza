@@ -16,6 +16,10 @@
 //! - Authentication: https://docs.cloud.coinbase.com/advanced-trade/docs/rest-api-auth
 
 use crate::domain::entities::order::{Order, OrderSide, OrderType};
+use crate::domain::repositories::exchange_client::{
+    Balance, ExchangeClient, ExchangeError, ExchangeResult, OrderStatus,
+};
+use async_trait::async_trait;
 use chrono::Utc;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
@@ -472,6 +476,74 @@ impl CoinbaseAdvancedClient {
             }
         }
     }
+
+    /// Helper to convert Coinbase order status to our OrderStatus enum
+    fn parse_order_status(status_str: &str) -> OrderStatus {
+        match status_str.to_uppercase().as_str() {
+            "PENDING" | "OPEN" => OrderStatus::Pending,
+            "FILLED" | "DONE" => OrderStatus::Filled,
+            "CANCELLED" => OrderStatus::Cancelled,
+            "REJECTED" => OrderStatus::Rejected,
+            "EXPIRED" => OrderStatus::Expired,
+            _ => OrderStatus::Unknown,
+        }
+    }
+}
+
+/// Implementation of ExchangeClient trait for Coinbase Advanced Trade
+#[async_trait]
+impl ExchangeClient for CoinbaseAdvancedClient {
+    fn name(&self) -> &str {
+        "Coinbase Advanced Trade"
+    }
+
+    async fn place_order(&self, order: &Order) -> ExchangeResult<String> {
+        let coinbase_order = self
+            .convert_order(order)
+            .map_err(|e| ExchangeError::InvalidOrder(e))?;
+
+        CoinbaseAdvancedClient::place_order(self, coinbase_order)
+            .await
+            .map_err(|e| ExchangeError::OrderPlacementFailed(e))
+    }
+
+    async fn cancel_order(&self, order_id: &str) -> ExchangeResult<()> {
+        CoinbaseAdvancedClient::cancel_order(self, order_id)
+            .await
+            .map_err(|e| ExchangeError::OrderCancellationFailed(e))
+    }
+
+    async fn get_order_status(&self, order_id: &str) -> ExchangeResult<OrderStatus> {
+        let status_str = CoinbaseAdvancedClient::get_order_status(self, order_id)
+            .await
+            .map_err(|e| ExchangeError::OrderStatusFailed(e))?;
+
+        Ok(Self::parse_order_status(&status_str))
+    }
+
+    async fn get_balance(&self, currency: Option<&str>) -> ExchangeResult<Vec<Balance>> {
+        let accounts = self
+            .get_accounts()
+            .await
+            .map_err(|e| ExchangeError::BalanceQueryFailed(e))?;
+
+        let balances: Vec<Balance> = accounts
+            .iter()
+            .filter(|acc| currency.is_none() || currency == Some(&acc.currency))
+            .map(|acc| Balance {
+                currency: acc.currency.clone(),
+                available: acc.available_balance.value.parse::<f64>().unwrap_or(0.0),
+                total: acc.available_balance.value.parse::<f64>().unwrap_or(0.0),
+            })
+            .collect();
+
+        Ok(balances)
+    }
+
+    async fn is_healthy(&self) -> bool {
+        // Try to get accounts as health check
+        self.get_accounts().await.is_ok()
+    }
 }
 
 #[cfg(test)]
@@ -522,5 +594,17 @@ mod tests {
         assert!(result
             .unwrap_err()
             .contains("Invalid API secret format"));
+    }
+
+    #[test]
+    fn test_parse_order_status() {
+        assert_eq!(CoinbaseAdvancedClient::parse_order_status("PENDING"), OrderStatus::Pending);
+        assert_eq!(CoinbaseAdvancedClient::parse_order_status("OPEN"), OrderStatus::Pending);
+        assert_eq!(CoinbaseAdvancedClient::parse_order_status("FILLED"), OrderStatus::Filled);
+        assert_eq!(CoinbaseAdvancedClient::parse_order_status("DONE"), OrderStatus::Filled);
+        assert_eq!(CoinbaseAdvancedClient::parse_order_status("CANCELLED"), OrderStatus::Cancelled);
+        assert_eq!(CoinbaseAdvancedClient::parse_order_status("REJECTED"), OrderStatus::Rejected);
+        assert_eq!(CoinbaseAdvancedClient::parse_order_status("EXPIRED"), OrderStatus::Expired);
+        assert_eq!(CoinbaseAdvancedClient::parse_order_status("UNKNOWN"), OrderStatus::Unknown);
     }
 }
