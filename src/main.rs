@@ -7,12 +7,15 @@ mod infrastructure;
 mod persistence;
 mod rate_limit;
 mod secrets;
+use crate::application::actors::trader_actor::TraderActor;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
+use crate::domain::entities::trader::Trader;
 use crate::domain::services::strategies::{
     ConservativeScalping, FastScalping, MomentumScalping, SignalCombiner, Strategy,
 };
 use crate::infrastructure::adapters::exchange_actor::ExchangeActor;
+use crate::infrastructure::exchange_client_factory::ExchangeClientFactory;
 use axum::extract::ws::{Message, WebSocket};
 use axum::response::Response;
 use axum::{
@@ -126,13 +129,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  Max trades per hour: {}", config.max_trades_per_hour);
     info!("  Max trades per day: {}", config.max_trades_per_day);
 
-    // Create MPC service and add senders
+    // Create MPC service and add exchange actors (for market data)
     let mut mpc_service = MpcService::new(config.clone());
     mpc_service.add_actor(Exchange::Binance, binance_sender);
     mpc_service.add_actor(Exchange::Dydx, dydx_sender);
     mpc_service.add_actor(Exchange::Hyperliquid, hyperliquid_sender);
     mpc_service.add_actor(Exchange::Coinbase, coinbase_sender);
     mpc_service.add_actor(Exchange::Kraken, kraken_sender);
+
+    // Create exchange clients for traders (order execution)
+    info!("Initializing exchange clients for traders...");
+    let exchange_clients = ExchangeClientFactory::create_all().await;
+
+    if exchange_clients.is_empty() {
+        warn!("⚠️  No exchange clients available - check your credentials");
+        warn!("⚠️  Trading will be disabled");
+    } else {
+        info!("✓ Created {} exchange client(s)", exchange_clients.len());
+    }
 
     // Initialize signal combiner with strategies
     let strategies = vec![
@@ -153,6 +167,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let combiner =
         SignalCombiner::new(strategies, weights).expect("Failed to create signal combiner");
     mpc_service.set_signal_combiner(combiner).await;
+
+    // Create and spawn traders with exchange clients
+    if !exchange_clients.is_empty() {
+        info!("Creating traders with available exchange clients...");
+
+        // Create one trader per strategy for now
+        let trader_strategies = vec![
+            ("FastScalping", Box::new(FastScalping::new()) as Box<dyn Strategy + Send + Sync>),
+            ("MomentumScalping", Box::new(MomentumScalping::new()) as Box<dyn Strategy + Send + Sync>),
+            ("ConservativeScalping", Box::new(ConservativeScalping::new()) as Box<dyn Strategy + Send + Sync>),
+        ];
+
+        for (strategy_name, strategy) in trader_strategies {
+            let trader_id = format!("trader_{}", strategy_name.to_lowercase());
+
+            match Trader::new(
+                trader_id.clone(),
+                strategy,
+                config.default_position_size,
+                config.min_confidence_threshold,
+            ) {
+                Ok(mut trader) => {
+                    // Add all available exchange clients to this trader
+                    for (exchange, client) in &exchange_clients {
+                        trader.add_exchange(exchange.clone(), client.clone());
+                        info!(
+                            "  ✓ Trader '{}' configured with {}",
+                            trader_id,
+                            get_exchange_name(exchange)
+                        );
+                    }
+
+                    // Spawn trader actor
+                    let trader_sender = TraderActor::spawn(trader);
+                    mpc_service.add_trader(trader_id.clone(), trader_sender).await;
+
+                    info!("✓ Trader '{}' spawned and ready", trader_id);
+                }
+                Err(e) => {
+                    error!("Failed to create trader '{}': {}", trader_id, e);
+                }
+            }
+        }
+
+        info!("All traders initialized successfully");
+    }
 
     for (exchange, symbols) in &config.symbols {
         info!(
