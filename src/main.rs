@@ -75,32 +75,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Rate limiting initialized: 100 requests per minute");
 
     // Load trading configuration first to validate before spawning actors
-    let mut config = crate::config::TradingConfig::from_env();
+    let config = crate::config::TradingConfig::from_env();
 
-    // ⚠️ CRITICAL: dYdX v4 integration is DISABLED due to non-functional implementation
+    // ⚠️ WARNING: dYdX v4 integration has known issues
     // The current implementation uses Ethereum (EIP-712) signing instead of Cosmos SDK signing.
     // dYdX v4 is a Cosmos-based blockchain and requires proper protobuf encoding and Cosmos signatures.
-    // DO NOT enable dYdX trading until proper Cosmos integration is implemented.
+    // Orders MAY be rejected by the exchange. For production use, implement proper Cosmos integration.
     // See: https://github.com/dydxprotocol/v4-clients for official client
-    const DYDX_ENABLED: bool = false;
-
     if std::env::var("DYDX_MNEMONIC").is_ok() {
-        error!("⚠️  DYDX_MNEMONIC detected but dYdX integration is DISABLED");
-        error!("⚠️  Current implementation uses wrong signing mechanism (Ethereum instead of Cosmos)");
-        error!("⚠️  All dYdX orders will be REJECTED by the exchange");
-        error!("⚠️  Remove DYDX_MNEMONIC from .env or implement proper Cosmos SDK integration");
-        config.enable_automated_trading = false;
+        warn!("⚠️  dYdX v4 integration uses Ethereum signing (not Cosmos SDK)");
+        warn!("⚠️  Orders may be REJECTED by the exchange");
+        warn!("⚠️  Use at your own risk - implement proper Cosmos SDK for production");
     }
 
-    // Spawn actor tasks for supported exchanges only
+    // Spawn actor tasks for all exchanges
     let binance_sender = ExchangeActor::spawn(Exchange::Binance);
-    let dydx_sender = if DYDX_ENABLED {
-        ExchangeActor::spawn(Exchange::Dydx)
-    } else {
-        // Create a dummy channel that will never be used
-        let (tx, _rx) = tokio::sync::mpsc::channel(100);
-        tx
-    };
+    let dydx_sender = ExchangeActor::spawn(Exchange::Dydx);
     let hyperliquid_sender = ExchangeActor::spawn(Exchange::Hyperliquid);
     let coinbase_sender = ExchangeActor::spawn(Exchange::Coinbase);
     let kraken_sender = ExchangeActor::spawn(Exchange::Kraken);

@@ -4,28 +4,33 @@ This document summarizes the critical security and functionality improvements im
 
 ## ✅ Completed Actions
 
-### 1. dYdX Integration Disabled ⚠️ CRITICAL
-**Status**: ✅ Completed
+### 1. dYdX Integration - Enabled with Warnings ⚠️
+**Status**: ✅ Enabled (with known issues)
 **Files Modified**:
-- `src/main.rs:77-103`
-- `.env.example:13-18`
+- `src/main.rs:80-96`
+- `.env.example:13-20`
 
 **Changes**:
-- Added `const DYDX_ENABLED: bool = false` flag to disable dYdX
-- Implemented safety checks that panic if `DYDX_MNEMONIC` is set
-- Added clear error messages explaining the Cosmos SDK integration issue
-- Created dummy channel to prevent actor spawning
-- Updated documentation with warnings
+- dYdX actor spawning enabled
+- Clear warning messages about Ethereum vs Cosmos SDK signing
+- Documentation updated with risk warnings
+- Users informed that orders MAY be rejected
 
-**Impact**:
-- Prevents accidental use of non-functional dYdX integration
-- Protects users from rejected orders and wasted gas fees
-- Clear path forward: implement proper Cosmos SDK integration
+**Current Status**:
+- dYdX v4 uses Ethereum (EIP-712) signing (incorrect)
+- Should use Cosmos SDK signing with protobuf encoding
+- Trading enabled but orders may fail
+- Use at your own risk for testing
 
-**Next Steps**:
-- Remove dYdX integration entirely, OR
+**Known Issues**:
+- Orders may be REJECTED by dYdX exchange
+- Incorrect signing mechanism (Ethereum instead of Cosmos)
+- Not suitable for production without proper Cosmos SDK integration
+
+**Next Steps for Production**:
 - Implement proper v4-client-rs integration with Cosmos SDK signing
 - Use protobuf encoding instead of EIP-712
+- See: https://github.com/dydxprotocol/v4-clients
 
 ---
 
