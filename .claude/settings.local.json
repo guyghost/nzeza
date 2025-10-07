@@ -15,7 +15,8 @@
       "Bash(cargo info:*)",
       "Bash(cargo audit:*)",
       "Bash(cargo tree:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(/bin/ls -la /Users/guy/Developer/guyghost/nzeza/dydx-clients/v4-client-rs/client/examples/)"
     ],
     "deny": [],
     "ask": []

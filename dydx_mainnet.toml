@@ -1,0 +1,9 @@
+# dYdX v4 Mainnet Configuration
+
+[node]
+grpc_endpoint = "https://dydx-grpc.publicnode.com:443"
+chain_id = "dydx-mainnet-1"
+
+[indexer]
+rest_endpoint = "https://indexer.dydx.trade"
+websocket_endpoint = "wss://indexer.dydx.trade/v4/ws"

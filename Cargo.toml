@@ -30,3 +30,8 @@ tower = { version = "0.4", features = ["limit", "buffer"] }
 governor = "0.6"
 zeroize = { version = "1.8", features = ["derive", "alloc"] }
 sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite", "chrono"] }
+
+# dYdX v4 official client
+dydx = { path = "dydx-clients/v4-client-rs/client" }
+dydx-proto = "0.4.0"
+bigdecimal = "0.4"
