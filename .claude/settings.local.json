@@ -12,7 +12,10 @@
       "WebFetch(domain:docs.dydx.exchange)",
       "WebFetch(domain:docs.dydx.xyz)",
       "Bash(cargo search:*)",
-      "Bash(cargo info:*)"
+      "Bash(cargo info:*)",
+      "Bash(cargo audit:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo check:*)"
     ],
     "deny": [],
     "ask": []

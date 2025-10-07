@@ -2,8 +2,11 @@ mod application;
 mod auth;
 mod config;
 mod domain;
+mod hardware_wallet;
 mod infrastructure;
+mod persistence;
 mod rate_limit;
+mod secrets;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::services::strategies::{
@@ -71,21 +74,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rate_limiter = rate_limit::create_rate_limiter(rate_limit::RateLimiterConfig::default());
     info!("Rate limiting initialized: 100 requests per minute");
 
-    // Spawn actor tasks for all exchanges
+    // Load trading configuration first to validate before spawning actors
+    let mut config = crate::config::TradingConfig::from_env();
+
+    // ⚠️ CRITICAL: dYdX v4 integration is DISABLED due to non-functional implementation
+    // The current implementation uses Ethereum (EIP-712) signing instead of Cosmos SDK signing.
+    // dYdX v4 is a Cosmos-based blockchain and requires proper protobuf encoding and Cosmos signatures.
+    // DO NOT enable dYdX trading until proper Cosmos integration is implemented.
+    // See: https://github.com/dydxprotocol/v4-clients for official client
+    const DYDX_ENABLED: bool = false;
+
+    if std::env::var("DYDX_MNEMONIC").is_ok() {
+        error!("⚠️  DYDX_MNEMONIC detected but dYdX integration is DISABLED");
+        error!("⚠️  Current implementation uses wrong signing mechanism (Ethereum instead of Cosmos)");
+        error!("⚠️  All dYdX orders will be REJECTED by the exchange");
+        error!("⚠️  Remove DYDX_MNEMONIC from .env or implement proper Cosmos SDK integration");
+        config.enable_automated_trading = false;
+    }
+
+    // Spawn actor tasks for supported exchanges only
     let binance_sender = ExchangeActor::spawn(Exchange::Binance);
-    let dydx_sender = ExchangeActor::spawn(Exchange::Dydx);
+    let dydx_sender = if DYDX_ENABLED {
+        ExchangeActor::spawn(Exchange::Dydx)
+    } else {
+        // Create a dummy channel that will never be used
+        let (tx, _rx) = tokio::sync::mpsc::channel(100);
+        tx
+    };
     let hyperliquid_sender = ExchangeActor::spawn(Exchange::Hyperliquid);
     let coinbase_sender = ExchangeActor::spawn(Exchange::Coinbase);
     let kraken_sender = ExchangeActor::spawn(Exchange::Kraken);
-
-    // Load trading configuration and subscribe to symbols
-    let mut config = crate::config::TradingConfig::from_env();
-
-    // Disable automated trading if DYDX_MNEMONIC is not set
-    if std::env::var("DYDX_MNEMONIC").is_err() {
-        config.enable_automated_trading = false;
-        warn!("DYDX_MNEMONIC not set - automated trading disabled");
-    }
 
     info!("Configuration chargée depuis l'environnement:");
     info!(

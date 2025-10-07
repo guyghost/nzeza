@@ -1,10 +1,65 @@
-# Security Guide for Nzeza Trading Bot
+# Security Guide for NZEZA Trading System
 
-This document outlines security best practices and requirements for deploying the Nzeza trading bot.
+This document describes security best practices for managing sensitive data in the NZEZA trading system, including API keys, secrets, and mnemonic phrases.
 
-## 🔴 Critical Security Requirements
+## ⚠️ CRITICAL Security Requirements
 
-### 1. API Authentication
+### 1. API Key Strength
+
+**All API keys MUST be at least 32 characters long** (256 bits of entropy).
+
+The system will **PANIC** on startup if any API key is shorter than 32 characters.
+
+Generate secure API keys:
+```bash
+# Generate a secure 32-character API key
+openssl rand -base64 32
+
+# Example output: 4f8jK2mN9pL3qR5tU7vW8xY0zA1bC3dE4fG6hI8jK==
+```
+
+### 2. Secret Management Options
+
+#### Option 1: 1Password CLI (Recommended for Production)
+
+Install 1Password CLI:
+```bash
+# macOS
+brew install --cask 1password-cli
+
+# Linux
+# Download from https://developer.1password.com/docs/cli/get-started/
+```
+
+Store secrets in 1Password and reference them in your code:
+```rust
+use nzeza::secrets::{load_api_key, SecretConfig};
+
+let config = SecretConfig {
+    allow_env_vars: false,  // Disable env vars in production
+    require_op_cli: true,   // Require 1Password CLI
+};
+
+let api_key = load_api_key(
+    "op://Private/Coinbase/api_key",  // 1Password reference
+    "COINBASE_API_KEY",                // Fallback env var name
+    &config
+)?;
+```
+
+#### Option 2: Environment Variables (Development Only)
+
+**⚠️ WARNING: Environment variables are INSECURE for production use**
+
+Environment variables:
+- Are visible in process listings (`ps aux | grep nzeza`)
+- Can be leaked in core dumps
+- May be logged by system monitoring tools
+- Persist in shell history
+
+Only use environment variables in development.
+
+### 3. API Authentication
 
 **The bot will NOT start without proper API key configuration.**
 

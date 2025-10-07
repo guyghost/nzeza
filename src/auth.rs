@@ -29,13 +29,27 @@ pub fn init_api_keys() {
                  Set API_KEYS to a comma-separated list of secure API keys. \
                  Example: API_KEYS=your_secure_key_here,another_key");
 
+    // Minimum required key length for security (256 bits = 32 bytes)
+    const MIN_KEY_LENGTH: usize = 32;
+
     for key in keys_env.split(',') {
         let key = key.trim();
         if !key.is_empty() {
-            // Validate minimum key length for security
-            if key.len() < 32 {
-                tracing::warn!("API key is shorter than recommended 32 characters: {}",
-                    &key[..key.len().min(8)]);
+            // ENFORCE minimum key length for security
+            if key.len() < MIN_KEY_LENGTH {
+                tracing::error!(
+                    "SECURITY ERROR: API key is too weak (length: {}, minimum: {}). First 8 chars: {}",
+                    key.len(),
+                    MIN_KEY_LENGTH,
+                    &key[..key.len().min(8)]
+                );
+                panic!(
+                    "SECURITY ERROR: API key must be at least {} characters long. \
+                     Found key with length {}. \
+                     Generate a secure key with: openssl rand -base64 32",
+                    MIN_KEY_LENGTH,
+                    key.len()
+                );
             }
             keys.insert(key.to_string());
         }
@@ -44,7 +58,9 @@ pub fn init_api_keys() {
     // Fail if no valid keys were loaded
     if keys.is_empty() {
         panic!("SECURITY ERROR: No valid API keys found in API_KEYS environment variable. \
-                At least one API key with length >= 1 character is required.");
+                At least one API key with length >= {} characters is required. \
+                Generate a secure key with: openssl rand -base64 32",
+                MIN_KEY_LENGTH);
     }
 
     VALID_API_KEYS.set(keys).expect("API keys already initialized");
