@@ -425,9 +425,23 @@ mod tests {
     #[tokio::test]
     async fn test_trade_crud() {
         let pool = init_database("sqlite::memory:").await.unwrap();
-        let repo = TradeRepository::new(pool);
 
-        // Create trade
+        // Create a position first (required for foreign key)
+        let position_repo = PositionRepository::new(pool.clone());
+        let position = CreatePosition {
+            id: "test-pos-1".to_string(),
+            symbol: "BTC-USD".to_string(),
+            exchange: "binance".to_string(),
+            side: "long".to_string(),
+            entry_price: 50000.0,
+            quantity: 0.1,
+            stop_loss: None,
+            take_profit: None,
+        };
+        position_repo.create(position).await.unwrap();
+
+        // Now create trade
+        let repo = TradeRepository::new(pool);
         let trade = CreateTrade {
             id: "test-trade-1".to_string(),
             position_id: Some("test-pos-1".to_string()),

@@ -109,14 +109,14 @@ impl CoinbaseClient {
         // Create HMAC-SHA256 signature
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
-        use base64::{encode as base64_encode};
+        use base64::{Engine as _, engine::general_purpose};
 
         type HmacSha256 = Hmac<Sha256>;
         let mut mac = HmacSha256::new_from_slice(self.config.api_secret.as_bytes())
             .map_err(|e| format!("HMAC error: {}", e))?;
 
         mac.update(message.as_bytes());
-        let signature = base64_encode(mac.finalize().into_bytes());
+        let signature = general_purpose::STANDARD.encode(mac.finalize().into_bytes());
 
         let mut headers = HashMap::new();
         headers.insert("CB-ACCESS-KEY".to_string(), self.config.api_key.clone());

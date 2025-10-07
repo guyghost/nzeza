@@ -77,6 +77,7 @@ pub enum HardwareWalletError {
 /// This struct provides a unified interface for interacting with different
 /// hardware wallet types. It handles device connection, address derivation,
 /// and transaction signing.
+#[derive(Debug)]
 pub struct HardwareWallet {
     wallet_type: HardwareWalletType,
     // TODO: Add device-specific fields when implementing actual hardware support

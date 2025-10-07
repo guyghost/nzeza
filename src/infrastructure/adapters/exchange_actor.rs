@@ -20,7 +20,7 @@ pub enum SubscriptionCommand {
 }
 
 use crate::domain::entities::order::Order;
-use crate::infrastructure::coinbase_client::{CoinbaseClient, CoinbaseConfig};
+use crate::infrastructure::coinbase_client::CoinbaseClient;
 use crate::infrastructure::dydx_client::{DydxClient, DydxConfig};
 
 #[derive(Debug)]
