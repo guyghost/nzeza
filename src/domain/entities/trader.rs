@@ -14,9 +14,8 @@
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::entities::order::{Order, OrderSide, OrderType};
 use crate::domain::repositories::exchange_client::ExchangeClient;
-use crate::domain::services::strategies::{Strategy, TradingSignal, Signal};
+use crate::domain::services::strategies::{Signal, Strategy, TradingSignal};
 use crate::domain::value_objects::price::Price;
-use crate::domain::value_objects::quantity::Quantity;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -41,26 +40,56 @@ impl Trader {
     /// Create a new trader
     ///
     /// # Arguments
-    /// * `id` - Unique identifier for the trader
+    /// * `id` - Unique identifier for the trader (alphanumeric, underscore, hyphen only)
     /// * `strategy` - Trading strategy to use
     /// * `max_position_size` - Maximum position size allowed
     /// * `min_confidence` - Minimum confidence threshold (0.0 to 1.0)
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - ID is empty or longer than 100 characters
+    /// - ID contains invalid characters (only alphanumeric, _, - allowed)
+    /// - max_position_size is not positive
+    /// - min_confidence is not in range [0.0, 1.0]
     pub fn new(
         id: String,
         strategy: Box<dyn Strategy + Send + Sync>,
         max_position_size: f64,
         min_confidence: f64,
     ) -> Result<Self, String> {
+        // Validate ID
+        let trimmed_id = id.trim();
+        if trimmed_id.is_empty() {
+            return Err("Trader ID cannot be empty".to_string());
+        }
+
+        if trimmed_id.len() > 100 {
+            return Err("Trader ID too long (max 100 characters)".to_string());
+        }
+
+        if !trimmed_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            return Err(
+                "Trader ID must contain only alphanumeric characters, underscores, or hyphens"
+                    .to_string(),
+            );
+        }
+
+        // Validate position size
         if max_position_size <= 0.0 {
             return Err("Max position size must be positive".to_string());
         }
 
+        if !max_position_size.is_finite() {
+            return Err("Max position size must be finite".to_string());
+        }
+
+        // Validate confidence
         if !(0.0..=1.0).contains(&min_confidence) {
             return Err("Min confidence must be between 0.0 and 1.0".to_string());
         }
 
         Ok(Self {
-            id,
+            id: trimmed_id.to_string(),
             strategy,
             exchange_clients: HashMap::new(),
             active_exchange: None,
@@ -128,8 +157,8 @@ impl Trader {
         &self,
         signal: &TradingSignal,
         symbol: &str,
-        price: Price,
-    ) -> Result<String, String> {
+        _price: Price,
+    ) -> Result<Option<String>, String> {
         // Check confidence threshold
         if signal.confidence < self.min_confidence {
             return Err(format!(
@@ -150,12 +179,20 @@ impl Trader {
             Signal::Buy => (OrderSide::Buy, self.max_position_size),
             Signal::Sell => (OrderSide::Sell, self.max_position_size),
             Signal::Hold => {
-                return Err("Cannot execute HOLD signal".to_string());
+                info!(
+                    "Trader {} skipping HOLD signal for {} (confidence {:.2})",
+                    self.id, symbol, signal.confidence
+                );
+                return Ok(None);
             }
         };
 
-        // Create order
-        let order_id = format!("trader_{}_{}", self.id, chrono::Utc::now().timestamp_millis());
+        // Create order with safe timestamp generation
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("System time error: {}", e))?
+            .as_millis();
+        let order_id = format!("trader_{}_{}", self.id, timestamp);
         let order = Order::new(
             order_id,
             symbol.to_string(),
@@ -171,7 +208,7 @@ impl Trader {
         );
 
         // Execute order through exchange client
-        client.place_order(&order).await.map_err(|e| {
+        client.place_order(&order).await.map(|id| Some(id)).map_err(|e| {
             warn!(
                 "Trader {} failed to place order on {}: {}",
                 self.id, exchange.name(), e
@@ -343,7 +380,7 @@ mod tests {
         let result = trader.execute_signal(&signal, "BTC-USD", price).await;
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "mock_order_id");
+        assert_eq!(result.unwrap(), Some("mock_order_id".to_string()));
     }
 
     #[tokio::test]
@@ -368,6 +405,30 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("confidence"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_signal_hold() {
+        let strategy = Box::new(FastScalping::new());
+        let mut trader = Trader::new("trader1".to_string(), strategy, 0.01, 0.7).unwrap();
+
+        let mock_client = Arc::new(MockExchangeClient {
+            name: "MockExchange".to_string(),
+            should_fail: false,
+        });
+
+        trader.add_exchange(Exchange::Binance, mock_client);
+
+        let signal = TradingSignal {
+            signal: Signal::Hold,
+            confidence: 0.9,
+        };
+
+        let price = Price::new(50000.0).unwrap();
+        let result = trader.execute_signal(&signal, "BTC-USD", price).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
     }
 
     #[tokio::test]

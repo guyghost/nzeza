@@ -10,13 +10,14 @@
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::entities::order::Order;
 use crate::domain::entities::trader::Trader;
-use crate::domain::repositories::exchange_client::ExchangeClient;
 use crate::domain::services::strategies::TradingSignal;
 use crate::domain::value_objects::price::Price;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+/// Channel capacity for trader actor messages
+const TRADER_CHANNEL_CAPACITY: usize = 100;
 
 /// Messages that can be sent to the trader actor
 #[derive(Debug)]
@@ -26,7 +27,7 @@ pub enum TraderMessage {
         signal: TradingSignal,
         symbol: String,
         price: Price,
-        reply: mpsc::Sender<Result<String, String>>,
+        reply: mpsc::Sender<Result<Option<String>, String>>,
     },
     /// Place a specific order
     PlaceOrder {
@@ -85,7 +86,7 @@ impl TraderActor {
     /// # Returns
     /// Message sender to communicate with the actor
     pub fn spawn(trader: Trader) -> mpsc::Sender<TraderMessage> {
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel(TRADER_CHANNEL_CAPACITY);
 
         let trader_id = trader.id.clone();
         let stats = TraderStats {
@@ -94,7 +95,7 @@ impl TraderActor {
             total_orders: 0,
             successful_orders: 0,
             failed_orders: 0,
-            available_exchanges: trader.get_available_exchanges().iter().map(|e| (*e).clone()).collect(),
+            available_exchanges: trader.get_available_exchanges().into_iter().cloned().collect(),
         };
 
         let actor = Self {
@@ -127,28 +128,42 @@ impl TraderActor {
                         self.stats.id, symbol, signal.confidence
                     );
 
-                    self.stats.total_orders += 1;
-                    let result = self.trader.execute_signal(&signal, &symbol, price).await;
-
-                    match &result {
-                        Ok(order_id) => {
+                    match self.trader.execute_signal(&signal, &symbol, price).await {
+                        Ok(Some(order_id)) => {
+                            self.stats.total_orders += 1;
                             self.stats.successful_orders += 1;
                             info!(
                                 "Trader {} successfully executed signal for {}: order_id={}",
                                 self.stats.id, symbol, order_id
                             );
+
+                            if let Err(e) = reply.send(Ok(Some(order_id))).await {
+                                error!("Failed to send ExecuteSignal reply: {:?}", e);
+                            }
+                        }
+                        Ok(None) => {
+                            // Signal Hold - no order placed, don't count as order
+                            info!(
+                                "Trader {} skipped signal for {} (no order placed)",
+                                self.stats.id, symbol
+                            );
+
+                            if let Err(e) = reply.send(Ok(None)).await {
+                                error!("Failed to send ExecuteSignal reply: {:?}", e);
+                            }
                         }
                         Err(e) => {
+                            self.stats.total_orders += 1;
                             self.stats.failed_orders += 1;
                             warn!(
                                 "Trader {} failed to execute signal for {}: {}",
                                 self.stats.id, symbol, e
                             );
-                        }
-                    }
 
-                    if let Err(e) = reply.send(result).await {
-                        error!("Failed to send ExecuteSignal reply: {:?}", e);
+                            if let Err(send_err) = reply.send(Err(e.clone())).await {
+                                error!("Failed to send ExecuteSignal reply: {:?}", send_err);
+                            }
+                        }
                     }
                 }
 
@@ -249,10 +264,12 @@ impl TraderActor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::order::{OrderSide, OrderType};
-    use crate::domain::repositories::exchange_client::{Balance, ExchangeError, ExchangeResult, OrderStatus};
+    use crate::domain::repositories::exchange_client::{
+        Balance, ExchangeClient, ExchangeResult, OrderStatus,
+    };
     use crate::domain::services::strategies::{FastScalping, Signal};
     use async_trait::async_trait;
+    use std::sync::Arc;
 
     // Mock ExchangeClient for testing
     struct MockExchangeClient {
@@ -346,7 +363,7 @@ mod tests {
 
         let response = reply_rx.recv().await.unwrap();
         assert!(response.is_ok());
-        assert_eq!(response.unwrap(), "test_order_id");
+        assert_eq!(response.unwrap(), Some("test_order_id".to_string()));
 
         // Shutdown
         sender.send(TraderMessage::Shutdown).await.unwrap();
@@ -397,6 +414,53 @@ mod tests {
         assert_eq!(stats.failed_orders, 0);
 
         // Shutdown
+        sender.send(TraderMessage::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_trader_actor_execute_hold_signal() {
+        let strategy = Box::new(FastScalping::new());
+        let mut trader = Trader::new("test_trader".to_string(), strategy, 0.01, 0.7).unwrap();
+
+        let mock_client = Arc::new(MockExchangeClient {
+            name: "MockExchange".to_string(),
+        });
+        trader.add_exchange(Exchange::Binance, mock_client);
+
+        let sender = TraderActor::spawn(trader);
+
+        let signal = TradingSignal {
+            signal: Signal::Hold,
+            confidence: 0.9,
+        };
+
+        let (reply_tx, mut reply_rx) = mpsc::channel(1);
+        sender
+            .send(TraderMessage::ExecuteSignal {
+                signal,
+                symbol: "BTC-USD".to_string(),
+                price: Price::new(50000.0).unwrap(),
+                reply: reply_tx,
+            })
+            .await
+            .unwrap();
+
+        let response = reply_rx.recv().await.unwrap();
+        assert!(response.is_ok());
+        assert!(response.unwrap().is_none());
+
+        // Stats should remain unchanged (no order placed)
+        let (stats_tx, mut stats_rx) = mpsc::channel(1);
+        sender
+            .send(TraderMessage::GetStats { reply: stats_tx })
+            .await
+            .unwrap();
+
+        let stats = stats_rx.recv().await.unwrap();
+        assert_eq!(stats.total_orders, 0);
+        assert_eq!(stats.successful_orders, 0);
+        assert_eq!(stats.failed_orders, 0);
+
         sender.send(TraderMessage::Shutdown).await.unwrap();
     }
 
