@@ -1031,6 +1031,7 @@ async fn get_portfolio(State(app_state): State<AppState>) -> Json<serde_json::Va
         "total_value": portfolio_state.total_value,
         "available_cash": portfolio_state.available_cash,
         "position_value": portfolio_state.position_value,
+        "exchange_balances": portfolio_state.exchange_balances,
         "last_updated": portfolio_state.last_updated
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(Duration::from_secs(0))
@@ -1041,13 +1042,13 @@ async fn get_portfolio(State(app_state): State<AppState>) -> Json<serde_json::Va
     }))
 }
 
-/// Manually trigger portfolio refresh from Coinbase
+/// Manually trigger portfolio refresh from all exchanges
 async fn refresh_portfolio(State(app_state): State<AppState>) -> Json<serde_json::Value> {
-    match app_state.mpc_service.fetch_and_update_portfolio_from_coinbase().await {
+    match app_state.mpc_service.fetch_and_update_portfolio_from_exchanges().await {
         Ok(portfolio_value) => Json(serde_json::json!({
             "success": true,
             "portfolio_value": portfolio_value,
-            "message": "Portfolio refreshed successfully from Coinbase",
+            "message": "Portfolio refreshed successfully from all exchanges",
             "currency": "USD"
         })),
         Err(e) => Json(serde_json::json!({
@@ -1301,15 +1302,15 @@ async fn alerting_task(app_state: AppState) {
     }
 }
 
-/// Background task for refreshing portfolio value from Coinbase
+/// Background task for refreshing portfolio value from all exchanges
 async fn portfolio_refresh_task(app_state: AppState, interval_duration: Duration) {
     let mut interval = tokio::time::interval(interval_duration);
 
     loop {
         interval.tick().await;
 
-        info!("💰 Refreshing portfolio value from Coinbase...");
-        match app_state.mpc_service.fetch_and_update_portfolio_from_coinbase().await {
+        info!("💰 Refreshing portfolio value from all exchanges...");
+        match app_state.mpc_service.fetch_and_update_portfolio_from_exchanges().await {
             Ok(portfolio_value) => {
                 info!("✓ Portfolio updated: ${:.2}", portfolio_value);
             }

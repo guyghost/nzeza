@@ -89,6 +89,8 @@ pub struct PortfolioState {
     pub available_cash: f64,
     /// Value locked in open positions
     pub position_value: f64,
+    /// Balance per exchange (trader_id -> balance_usd)
+    pub exchange_balances: HashMap<String, f64>,
     /// Last update timestamp
     pub last_updated: SystemTime,
 }
@@ -99,6 +101,7 @@ impl Default for PortfolioState {
             total_value: 10000.0, // Default fallback
             available_cash: 10000.0,
             position_value: 0.0,
+            exchange_balances: HashMap::new(),
             last_updated: SystemTime::now(),
         }
     }
@@ -782,57 +785,103 @@ impl MpcService {
         }
     }
 
-    /// Fetch portfolio value from Coinbase and update internal state
+    /// Fetch portfolio value from all exchanges and update internal state
     ///
-    /// This fetches the real-time balance from Coinbase Advanced Trade API
-    /// and updates the portfolio state. It converts all crypto balances to USD equivalent.
+    /// This fetches the real-time balance from all available exchanges (Coinbase, dYdX, etc.)
+    /// and aggregates them into a total portfolio value in USD.
     ///
     /// # Returns
-    /// Updated portfolio value in USD
-    pub async fn fetch_and_update_portfolio_from_coinbase(&self) -> Result<f64, MpcError> {
+    /// Updated total portfolio value in USD
+    pub async fn fetch_and_update_portfolio_from_exchanges(&self) -> Result<f64, MpcError> {
         use crate::application::actors::trader_actor::TraderMessage;
 
-        // Get the first trader that has Coinbase as active exchange
+        // Get all traders to query all exchanges
         let traders = self.traders.lock().await;
-        let trader_sender = traders.values().next()
-            .ok_or_else(|| MpcError::InvalidConfiguration("No traders available".to_string()))?
-            .clone();
+
+        if traders.is_empty() {
+            return Err(MpcError::InvalidConfiguration("No traders available".to_string()));
+        }
+
+        let trader_info: Vec<(String, mpsc::Sender<TraderMessage>)> = traders
+            .iter()
+            .map(|(id, sender)| (id.clone(), sender.clone()))
+            .collect();
         drop(traders); // Release lock early
 
-        // Get balances from Coinbase
-        let (reply_tx, mut reply_rx) = mpsc::channel(1);
-        trader_sender
-            .send(TraderMessage::GetBalance {
-                currency: None, // Get all balances
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|e| MpcError::ChannelSendError(format!("Failed to send GetBalance: {}", e)))?;
+        let mut total_usd = 0.0;
+        let mut successful_fetches = 0;
+        let mut exchange_balances = HashMap::new();
 
-        let balance_result = timeout(CHANNEL_REPLY_TIMEOUT, reply_rx.recv())
-            .await
-            .map_err(|_| MpcError::Timeout)?
-            .ok_or_else(|| MpcError::ChannelSendError("GetBalance reply channel closed".to_string()))?;
+        // Query balance from each trader (each may have different exchanges)
+        for (trader_id, trader_sender) in trader_info.iter() {
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
 
-        let total_usd = match balance_result {
-            Ok(balance_usd) => balance_usd,
-            Err(e) => {
-                warn!("Failed to get balance from Coinbase: {}", e);
-                // Fallback to cached value
-                let state = self.portfolio_state.lock().await;
-                return Ok(state.total_value);
+            // Send balance request
+            if let Err(e) = trader_sender
+                .send(TraderMessage::GetBalance {
+                    currency: None, // Get all balances
+                    reply: reply_tx,
+                })
+                .await
+            {
+                warn!("Failed to send GetBalance to trader '{}': {}", trader_id, e);
+                continue;
             }
-        };
+
+            // Wait for response with timeout
+            match timeout(CHANNEL_REPLY_TIMEOUT, reply_rx.recv()).await {
+                Ok(Some(Ok(balance_usd))) => {
+                    info!("✓ Trader '{}' balance: ${:.2}", trader_id, balance_usd);
+                    total_usd += balance_usd;
+                    successful_fetches += 1;
+                    exchange_balances.insert(trader_id.clone(), balance_usd);
+                }
+                Ok(Some(Err(e))) => {
+                    warn!("✗ Trader '{}' failed to get balance: {}", trader_id, e);
+                }
+                Ok(None) => {
+                    warn!("✗ Trader '{}' reply channel closed", trader_id);
+                }
+                Err(_) => {
+                    warn!("✗ Timeout waiting for balance from trader '{}'", trader_id);
+                }
+            }
+        }
+
+        // If all fetches failed, return cached value
+        if successful_fetches == 0 {
+            warn!("Failed to fetch balance from all exchanges, using cached value");
+            let state = self.portfolio_state.lock().await;
+            return Ok(state.total_value);
+        }
 
         // Update portfolio state
         let mut portfolio_state = self.portfolio_state.lock().await;
         portfolio_state.total_value = total_usd;
         portfolio_state.available_cash = total_usd;
+        portfolio_state.exchange_balances = exchange_balances.clone();
         portfolio_state.last_updated = SystemTime::now();
+        drop(portfolio_state);
 
-        info!("Updated portfolio value from Coinbase: ${:.2}", total_usd);
+        info!(
+            "✓ Updated portfolio value from {} exchange(s): ${:.2}",
+            successful_fetches, total_usd
+        );
+
+        // Log detailed breakdown
+        for (trader_id, balance) in exchange_balances {
+            debug!("  - {}: ${:.2}", trader_id, balance);
+        }
 
         Ok(total_usd)
+    }
+
+    /// Fetch portfolio value from Coinbase only (deprecated, use fetch_and_update_portfolio_from_exchanges)
+    ///
+    /// This method is kept for backward compatibility but delegates to the multi-exchange version.
+    #[deprecated(since = "0.2.0", note = "Use fetch_and_update_portfolio_from_exchanges instead")]
+    pub async fn fetch_and_update_portfolio_from_coinbase(&self) -> Result<f64, MpcError> {
+        self.fetch_and_update_portfolio_from_exchanges().await
     }
 
     /// Get current portfolio value
