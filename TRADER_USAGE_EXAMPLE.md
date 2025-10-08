@@ -104,8 +104,11 @@ trader.send(TraderMessage::ExecuteSignal {
 }).await?;
 
 // Recevoir la réponse
-let order_id = reply_rx.recv().await??;
-println!("Order placed: {}", order_id);
+if let Some(order_id) = reply_rx.recv().await?? {
+    println!("Order placed: {}", order_id);
+} else {
+    println!("Signal skipped - no order placed");
+}
 ```
 
 ### Placer un Ordre Manuel

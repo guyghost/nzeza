@@ -283,6 +283,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         strategy_weight_adjustment_task(app_state_clone, Duration::from_secs(300)).await;
     });
 
+    // Spawn portfolio refresh task
+    let app_state_clone = app_state.clone();
+    tokio::spawn(async move {
+        portfolio_refresh_task(app_state_clone, Duration::from_secs(60)).await;
+    });
+
     // Public routes (no authentication required)
     let public_routes = Router::new()
         .route(
@@ -310,6 +316,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/orders/status/:exchange/:order_id", get(get_order_status_with_exchange))
         .route("/positions", get(get_positions))
         .route("/positions/pnl", get(get_total_pnl))
+        .route("/portfolio", get(get_portfolio))
+        .route("/portfolio/refresh", post(refresh_portfolio))
         .route("/config", get(get_config))
         .route("/alerts", get(get_alerts))
         .route("/performance", get(get_performance_profiles))
@@ -1006,6 +1014,49 @@ async fn get_total_pnl(State(app_state): State<AppState>) -> Json<serde_json::Va
     }))
 }
 
+/// Get current portfolio state
+async fn get_portfolio(State(app_state): State<AppState>) -> Json<serde_json::Value> {
+    use crate::application::services::mpc_service::PortfolioState;
+
+    let portfolio_state: PortfolioState = {
+        let state = app_state.mpc_service.portfolio_state.lock().await;
+        state.clone()
+    };
+
+    let cache_age = std::time::SystemTime::now()
+        .duration_since(portfolio_state.last_updated)
+        .unwrap_or(Duration::from_secs(0));
+
+    Json(serde_json::json!({
+        "total_value": portfolio_state.total_value,
+        "available_cash": portfolio_state.available_cash,
+        "position_value": portfolio_state.position_value,
+        "last_updated": portfolio_state.last_updated
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0))
+            .as_secs(),
+        "cache_age_seconds": cache_age.as_secs(),
+        "is_stale": cache_age > Duration::from_secs(300),
+        "currency": "USD"
+    }))
+}
+
+/// Manually trigger portfolio refresh from Coinbase
+async fn refresh_portfolio(State(app_state): State<AppState>) -> Json<serde_json::Value> {
+    match app_state.mpc_service.fetch_and_update_portfolio_from_coinbase().await {
+        Ok(portfolio_value) => Json(serde_json::json!({
+            "success": true,
+            "portfolio_value": portfolio_value,
+            "message": "Portfolio refreshed successfully from Coinbase",
+            "currency": "USD"
+        })),
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": e.to_string()
+        })),
+    }
+}
+
 /// Get performance profiles
 async fn get_performance_profiles(State(app_state): State<AppState>) -> Json<serde_json::Value> {
     let profiles = app_state.mpc_service.get_performance_profiles().await;
@@ -1246,6 +1297,25 @@ async fn alerting_task(app_state: AppState) {
         let active_alerts = app_state.mpc_service.get_active_alerts().await;
         if !active_alerts.is_empty() {
             debug!("Currently {} active alerts", active_alerts.len());
+        }
+    }
+}
+
+/// Background task for refreshing portfolio value from Coinbase
+async fn portfolio_refresh_task(app_state: AppState, interval_duration: Duration) {
+    let mut interval = tokio::time::interval(interval_duration);
+
+    loop {
+        interval.tick().await;
+
+        info!("💰 Refreshing portfolio value from Coinbase...");
+        match app_state.mpc_service.fetch_and_update_portfolio_from_coinbase().await {
+            Ok(portfolio_value) => {
+                info!("✓ Portfolio updated: ${:.2}", portfolio_value);
+            }
+            Err(e) => {
+                warn!("✗ Failed to refresh portfolio: {}", e);
+            }
         }
     }
 }

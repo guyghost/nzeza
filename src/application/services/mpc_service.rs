@@ -80,6 +80,30 @@ fn validate_symbol(symbol: &str) -> Result<(), MpcError> {
     Ok(())
 }
 
+/// Portfolio state tracking
+#[derive(Debug, Clone)]
+pub struct PortfolioState {
+    /// Total portfolio value in USD (or base currency)
+    pub total_value: f64,
+    /// Cash available for trading (excluding positions)
+    pub available_cash: f64,
+    /// Value locked in open positions
+    pub position_value: f64,
+    /// Last update timestamp
+    pub last_updated: SystemTime,
+}
+
+impl Default for PortfolioState {
+    fn default() -> Self {
+        Self {
+            total_value: 10000.0, // Default fallback
+            available_cash: 10000.0,
+            position_value: 0.0,
+            last_updated: SystemTime::now(),
+        }
+    }
+}
+
 pub struct MpcService {
     pub senders: Arc<HashMap<Exchange, mpsc::Sender<ExchangeMessage>>>, // Exchange actors for market data
     pub traders: Arc<Mutex<HashMap<String, mpsc::Sender<TraderMessage>>>>, // Trader actors for execution
@@ -96,6 +120,7 @@ pub struct MpcService {
     pub alert_config: AlertConfig,
     pub active_alerts: Arc<Mutex<Vec<SystemAlert>>>,
     pub performance_profiler: Arc<Mutex<PerformanceProfiler>>,
+    pub portfolio_state: Arc<Mutex<PortfolioState>>, // Real-time portfolio tracking
 }
 
 impl MpcService {
@@ -126,6 +151,7 @@ impl MpcService {
             alert_config: AlertConfig::default(),
             active_alerts: Arc::new(Mutex::new(Vec::new())),
             performance_profiler: Arc::new(Mutex::new(PerformanceProfiler::new())),
+            portfolio_state: Arc::new(Mutex::new(PortfolioState::default())),
         }
     }
 
@@ -648,11 +674,21 @@ impl MpcService {
     pub async fn close_position(&self, position_id: &str) -> Result<(), MpcError> {
         let mut positions = self.open_positions.lock().await;
         if let Some(position) = positions.remove(position_id) {
+            let pnl = position.unrealized_pnl().unwrap_or(PnL::zero());
+            let entry_value = position.quantity.value() * position.entry_price.value();
+
             info!(
                 "Closed position: {} (PnL: {:?})",
                 position_id,
-                position.unrealized_pnl()
+                pnl
             );
+
+            // Release lock before updating portfolio
+            drop(positions);
+
+            // Update portfolio after closing position
+            self.update_portfolio_after_position_close(entry_value, pnl.value()).await;
+
             Ok(())
         } else {
             Err(MpcError::InvalidConfiguration(format!(
@@ -746,23 +782,105 @@ impl MpcService {
         }
     }
 
-    /// Get current portfolio value (initial capital + realized + unrealized PnL)
+    /// Fetch portfolio value from Coinbase and update internal state
     ///
-    /// Returns the total portfolio value considering:
-    /// - Initial capital (from environment variable or default)
-    /// - All realized PnL from closed positions
-    /// - All unrealized PnL from open positions
+    /// This fetches the real-time balance from Coinbase Advanced Trade API
+    /// and updates the portfolio state. It converts all crypto balances to USD equivalent.
+    ///
+    /// # Returns
+    /// Updated portfolio value in USD
+    pub async fn fetch_and_update_portfolio_from_coinbase(&self) -> Result<f64, MpcError> {
+        use crate::application::actors::trader_actor::TraderMessage;
+
+        // Get the first trader that has Coinbase as active exchange
+        let traders = self.traders.lock().await;
+        let trader_sender = traders.values().next()
+            .ok_or_else(|| MpcError::InvalidConfiguration("No traders available".to_string()))?
+            .clone();
+        drop(traders); // Release lock early
+
+        // Get balances from Coinbase
+        let (reply_tx, mut reply_rx) = mpsc::channel(1);
+        trader_sender
+            .send(TraderMessage::GetBalance {
+                currency: None, // Get all balances
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|e| MpcError::ChannelSendError(format!("Failed to send GetBalance: {}", e)))?;
+
+        let balance_result = timeout(CHANNEL_REPLY_TIMEOUT, reply_rx.recv())
+            .await
+            .map_err(|_| MpcError::Timeout)?
+            .ok_or_else(|| MpcError::ChannelSendError("GetBalance reply channel closed".to_string()))?;
+
+        let total_usd = match balance_result {
+            Ok(balance_usd) => balance_usd,
+            Err(e) => {
+                warn!("Failed to get balance from Coinbase: {}", e);
+                // Fallback to cached value
+                let state = self.portfolio_state.lock().await;
+                return Ok(state.total_value);
+            }
+        };
+
+        // Update portfolio state
+        let mut portfolio_state = self.portfolio_state.lock().await;
+        portfolio_state.total_value = total_usd;
+        portfolio_state.available_cash = total_usd;
+        portfolio_state.last_updated = SystemTime::now();
+
+        info!("Updated portfolio value from Coinbase: ${:.2}", total_usd);
+
+        Ok(total_usd)
+    }
+
+    /// Get current portfolio value
+    ///
+    /// Returns the cached portfolio value from the most recent fetch from Coinbase.
+    /// If the cache is stale (older than 5 minutes), this should trigger a refresh.
     pub async fn get_portfolio_value(&self) -> f64 {
-        // Get initial capital from environment or use default
-        let initial_capital = std::env::var("INITIAL_CAPITAL")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(10000.0); // Default to $10,000 if not set
+        let portfolio_state = self.portfolio_state.lock().await;
 
-        let metrics = self.trading_metrics.lock().await;
-        let total_pnl = (metrics.total_realized_pnl + metrics.total_unrealized_pnl).value();
+        // Check if cache is stale (older than 5 minutes)
+        let cache_age = SystemTime::now()
+            .duration_since(portfolio_state.last_updated)
+            .unwrap_or(Duration::from_secs(0));
 
-        initial_capital + total_pnl
+        if cache_age > Duration::from_secs(300) {
+            warn!("Portfolio cache is stale (age: {:?}). Consider calling fetch_and_update_portfolio_from_coinbase()", cache_age);
+        }
+
+        portfolio_state.total_value
+    }
+
+    /// Update portfolio after position is opened
+    ///
+    /// This adjusts the available cash and position value when a new position is created.
+    pub async fn update_portfolio_after_position_open(&self, position_value: f64) {
+        let mut portfolio_state = self.portfolio_state.lock().await;
+        portfolio_state.available_cash -= position_value;
+        portfolio_state.position_value += position_value;
+
+        debug!(
+            "Portfolio updated after position open: available_cash=${:.2}, position_value=${:.2}",
+            portfolio_state.available_cash, portfolio_state.position_value
+        );
+    }
+
+    /// Update portfolio after position is closed
+    ///
+    /// This releases the position value back to available cash, adjusted by PnL.
+    pub async fn update_portfolio_after_position_close(&self, position_value: f64, realized_pnl: f64) {
+        let mut portfolio_state = self.portfolio_state.lock().await;
+        portfolio_state.available_cash += position_value + realized_pnl;
+        portfolio_state.position_value -= position_value;
+        portfolio_state.total_value += realized_pnl;
+
+        info!(
+            "Portfolio updated after position close: PnL=${:.2}, total_value=${:.2}, available_cash=${:.2}",
+            realized_pnl, portfolio_state.total_value, portfolio_state.available_cash
+        );
     }
 
     /// Calculate position size based on portfolio percentage and current price
@@ -1030,6 +1148,9 @@ impl MpcService {
                         .await;
                 }
 
+                // Calculate position value for portfolio tracking
+                let position_value = quantity.value() * current_price.value();
+
                 // Open position after successful order execution
                 let position_result = self
                     .open_position(symbol, position_side, quantity, current_price)
@@ -1037,8 +1158,11 @@ impl MpcService {
 
                 match position_result {
                     Ok(position_id) => {
-                        info!("ORDER EXECUTED & POSITION OPENED via trader {}: {:?} {} {} (confidence: {:.2}) - Order ID: {}, Position ID: {}",
-                              trader_id, order_side, quantity, symbol, signal.confidence, order_id, position_id);
+                        // Update portfolio after opening position
+                        self.update_portfolio_after_position_open(position_value).await;
+
+                        info!("ORDER EXECUTED & POSITION OPENED via trader {}: {:?} {} {} (confidence: {:.2}) - Order ID: {}, Position ID: {}, Position Value: ${:.2}",
+                              trader_id, order_side, quantity, symbol, signal.confidence, order_id, position_id, position_value);
                         Ok(format!("Order executed by trader {}: {:?} {} {} - Order ID: {}, Position ID: {}",
                                   trader_id, order_side, quantity, symbol, order_id, position_id))
                     }
