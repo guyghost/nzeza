@@ -258,9 +258,20 @@ impl CoinbaseAdvancedClient {
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(self.api_key.clone());
 
-        // Parse the EC private key from PEM and convert to DER
-        let secret_key = SecretKey::from_pkcs8_pem(self.api_secret.as_str())
-            .map_err(|e| format!("Failed to parse EC private key from PEM: {}. Make sure the key is in PKCS#8 PEM format.", e))?;
+        // Parse the EC private key from PEM (supports both PKCS#8 and SEC1 formats)
+        // Try PKCS#8 first (-----BEGIN PRIVATE KEY-----)
+        let secret_key = match SecretKey::from_pkcs8_pem(self.api_secret.as_str()) {
+            Ok(key) => key,
+            Err(_) => {
+                // Try SEC1 format (-----BEGIN EC PRIVATE KEY-----)
+                use p256::pkcs8::EncodePrivateKey as _;
+                SecretKey::from_sec1_pem(self.api_secret.as_str())
+                    .map_err(|e| format!(
+                        "Failed to parse EC private key from PEM: {}. Key must be in PKCS#8 (BEGIN PRIVATE KEY) or SEC1 (BEGIN EC PRIVATE KEY) format.",
+                        e
+                    ))?
+            }
+        };
 
         let der_bytes = secret_key.to_pkcs8_der()
             .map_err(|e| format!("Failed to convert EC key to DER: {}", e))?;

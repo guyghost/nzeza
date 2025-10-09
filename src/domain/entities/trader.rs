@@ -18,7 +18,7 @@ use crate::domain::services::strategies::{Signal, Strategy, TradingSignal};
 use crate::domain::value_objects::price::Price;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// Trader entity responsible for trading decisions and execution
 pub struct Trader {
@@ -109,9 +109,11 @@ impl Trader {
         // Set as active if this is the first exchange
         if self.active_exchange.is_none() {
             self.active_exchange = Some(exchange.clone());
+            info!("✓ Trader '{}' set active_exchange to {}", self.id, exchange.name());
         }
 
         self.exchange_clients.insert(exchange, client);
+        info!("✓ Trader '{}' now has {} exchange client(s)", self.id, self.exchange_clients.len());
     }
 
     /// Remove an exchange client from this trader
@@ -222,19 +224,48 @@ impl Trader {
     /// This is a placeholder for future smart order routing logic
     /// Currently just uses the active exchange
     pub async fn route_order(&self, order: &Order) -> Result<String, String> {
+        // Debug: Log trader state
+        info!(
+            "Trader {} attempting to route order for {} (qty: {})",
+            self.id, order.symbol, order.quantity
+        );
+        info!(
+            "Trader {} has {} exchange clients available",
+            self.id, self.exchange_clients.len()
+        );
+
         let exchange = self.active_exchange.as_ref()
-            .ok_or("No active exchange set for trader")?;
+            .ok_or_else(|| {
+                let error_msg = format!(
+                    "No active exchange set for trader '{}'. Available exchanges: {:?}",
+                    self.id,
+                    self.exchange_clients.keys().collect::<Vec<_>>()
+                );
+                error!("{}", error_msg);
+                error_msg
+            })?;
+
+        info!("Trader {} active exchange: {}", self.id, exchange.name());
 
         let client = self.exchange_clients.get(exchange)
-            .ok_or_else(|| format!("Exchange client not found for {:?}", exchange))?;
+            .ok_or_else(|| {
+                let error_msg = format!(
+                    "Exchange client not found for {:?} in trader '{}'",
+                    exchange, self.id
+                );
+                error!("{}", error_msg);
+                error_msg
+            })?;
 
         info!(
-            "Trader {} routing order to {}",
-            self.id, exchange.name()
+            "Trader {} routing order to {} - Order details: {:?} {} @ {:?}",
+            self.id, exchange.name(), order.side, order.symbol, order.order_type
         );
 
         client.place_order(order).await.map_err(|e| {
-            format!("Failed to route order: {}", e)
+            let error_msg = format!("Failed to route order to {}: {}", exchange.name(), e);
+            error!("{}", error_msg);
+            error_msg
         })
     }
 

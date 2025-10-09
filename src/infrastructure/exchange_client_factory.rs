@@ -21,20 +21,20 @@ impl ExchangeClientFactory {
     ///
     /// # Returns
     /// HashMap of Exchange to ExchangeClient instances
+    ///
+    /// # Priority Order
+    /// Exchanges are created in priority order (first = highest priority for active_exchange):
+    /// 1. Coinbase Advanced/Pro (most reliable, production-ready)
+    /// 2. dYdX v4 (experimental, Cosmos SDK integration issues)
     pub async fn create_all() -> HashMap<Exchange, Arc<dyn ExchangeClient>> {
         let mut clients: HashMap<Exchange, Arc<dyn ExchangeClient>> = HashMap::new();
 
-        // Try to create dYdX v4 client
-        if let Some(client) = Self::create_dydx_client().await {
-            clients.insert(Exchange::Dydx, client);
-        }
-
-        // Try to create Coinbase Advanced client
+        // PRIORITY 1: Try to create Coinbase Advanced client (most reliable)
         if let Some(client) = Self::create_coinbase_advanced_client().await {
             clients.insert(Exchange::Coinbase, client);
         }
 
-        // Try to create Coinbase Pro (legacy) client
+        // PRIORITY 2: Try to create Coinbase Pro (legacy) client
         // Note: Typically you'd use either Advanced OR Pro, not both
         // This is here for backwards compatibility
         if let Some(client) = Self::create_coinbase_pro_client().await {
@@ -42,6 +42,13 @@ impl ExchangeClientFactory {
             if !clients.contains_key(&Exchange::Coinbase) {
                 clients.insert(Exchange::Coinbase, client);
             }
+        }
+
+        // PRIORITY 3: Try to create dYdX v4 client (experimental)
+        // WARNING: dYdX v4 uses Ethereum signing instead of Cosmos SDK
+        // Orders may be rejected by the exchange
+        if let Some(client) = Self::create_dydx_client().await {
+            clients.insert(Exchange::Dydx, client);
         }
 
         info!(

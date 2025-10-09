@@ -2,11 +2,9 @@ mod application;
 mod auth;
 mod config;
 mod domain;
-mod hardware_wallet;
 mod infrastructure;
 mod persistence;
 mod rate_limit;
-mod secrets;
 use crate::application::actors::trader_actor::TraderActor;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
@@ -197,6 +195,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             trader_id,
                             get_exchange_name(exchange)
                         );
+                    }
+
+                    // EXPLICITLY set Coinbase as active exchange if available (most reliable)
+                    // dYdX v4 has known issues with order execution (Ethereum signing vs Cosmos SDK)
+                    if exchange_clients.contains_key(&Exchange::Coinbase) {
+                        if let Err(e) = trader.set_active_exchange(Exchange::Coinbase) {
+                            warn!("Failed to set Coinbase as active exchange for {}: {}", trader_id, e);
+                        } else {
+                            info!("  ✓ Trader '{}' using Coinbase as primary exchange", trader_id);
+                        }
                     }
 
                     // Spawn trader actor
@@ -530,7 +538,17 @@ async fn order_execution_task(app_state: AppState) {
         info!("🔍 Checking for orders to execute...");
         let results = app_state.mpc_service.check_and_execute_orders().await;
 
-        let successful_orders = results.iter().filter(|r| r.is_ok()).count();
+        // Count only ACTUAL orders executed (not Hold signals or low confidence rejections)
+        let successful_orders = results
+            .iter()
+            .filter(|r| {
+                r.as_ref()
+                    .ok()
+                    .map(|msg| msg.contains("Order executed") && msg.contains("Order ID"))
+                    .unwrap_or(false)
+            })
+            .count();
+
         let failed_orders = results.iter().filter(|r| r.is_err()).count();
 
         if successful_orders > 0 {
