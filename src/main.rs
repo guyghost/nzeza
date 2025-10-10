@@ -144,6 +144,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warn!("⚠️  Trading will be disabled");
     } else {
         info!("✓ Created {} exchange client(s)", exchange_clients.len());
+
+        // Retrieve and log account balances
+        info!("🔍 Retrieving account balances from exchanges...");
+        for (exchange, client) in &exchange_clients {
+            match client.get_balance(None).await {
+                Ok(balances) => {
+                    for balance in balances {
+                        if balance.total > 0.0 {
+                            info!(
+                                "💰 {} Balance - {}: {:.4} (available: {:.4})",
+                                get_exchange_name(exchange),
+                                balance.currency,
+                                balance.total,
+                                balance.available
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "⚠️  Failed to retrieve balance from {}: {}",
+                        get_exchange_name(exchange),
+                        e
+                    );
+                }
+            }
+        }
+
+        // Check if we have sufficient balances to start trading
+        let mut has_sufficient_balance = false;
+        for (exchange, client) in &exchange_clients {
+            if let Ok(balances) = client.get_balance(None).await {
+                for balance in balances {
+                    if balance.available > 10.0 { // Minimum threshold for trading
+                        has_sufficient_balance = true;
+                        break;
+                    }
+                }
+            }
+            if has_sufficient_balance {
+                break;
+            }
+        }
+
+        if has_sufficient_balance {
+            info!("✅ Sufficient balances detected - starting automated trading");
+        } else {
+            warn!("⚠️  Insufficient balances for trading - automated trading disabled");
+            warn!("⚠️  Please fund your accounts and restart the server");
+        }
     }
 
     // Initialize signal combiner with strategies
