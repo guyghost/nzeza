@@ -1,349 +1,228 @@
-# Security Guide for NZEZA Trading System
+# Security Guidelines
 
-This document describes security best practices for managing sensitive data in the NZEZA trading system, including API keys, secrets, and mnemonic phrases.
+This document provides comprehensive security guidelines for deploying and operating the NZEZA trading system in production.
 
-## ⚠️ CRITICAL Security Requirements
+## Critical Security Requirements
 
-### 1. API Key Strength
+### ⚠️ NEVER Deploy Without These
 
-**All API keys MUST be at least 32 characters long** (256 bits of entropy).
+The NZEZA trading bot **MUST NOT** be exposed to the public internet without:
 
-The system will **PANIC** on startup if any API key is shorter than 32 characters.
+1. **TLS/HTTPS encryption** via reverse proxy
+2. **Strong API authentication** (32+ character keys)
+3. **Rate limiting** (default: 100 req/min)
+4. **Network isolation** (firewall rules, VPN, or private network)
 
-Generate secure API keys:
-```bash
-# Generate a secure 32-character API key
-openssl rand -base64 32
+**Failure to implement these safeguards exposes:**
+- API keys in plaintext over the network
+- Trading orders and strategies to eavesdroppers  
+- Portfolio balances and positions
+- Exchange account credentials
 
-# Example output: 4f8jK2mN9pL3qR5tU7vW8xY0zA1bC3dE4fG6hI8jK==
-```
+## TLS/HTTPS Configuration
 
-### 2. Secret Management Options
+The application listens on `127.0.0.1:3000` (HTTP only). **You MUST use a reverse proxy for TLS termination.**
 
-#### Option 1: 1Password CLI (Recommended for Production)
+### Option 1: Nginx with Let's Encrypt (Recommended)
 
-Install 1Password CLI:
-```bash
-# macOS
-brew install --cask 1password-cli
+Complete Nginx configuration with automatic HTTPS:
 
-# Linux
-# Download from https://developer.1password.com/docs/cli/get-started/
-```
-
-Store secrets in 1Password and reference them in your code:
-```rust
-use nzeza::secrets::{load_api_key, SecretConfig};
-
-let config = SecretConfig {
-    allow_env_vars: false,  // Disable env vars in production
-    require_op_cli: true,   // Require 1Password CLI
-};
-
-let api_key = load_api_key(
-    "op://Private/Coinbase/api_key",  // 1Password reference
-    "COINBASE_API_KEY",                // Fallback env var name
-    &config
-)?;
-```
-
-#### Option 2: Environment Variables (Development Only)
-
-**⚠️ WARNING: Environment variables are INSECURE for production use**
-
-Environment variables:
-- Are visible in process listings (`ps aux | grep nzeza`)
-- Can be leaked in core dumps
-- May be logged by system monitoring tools
-- Persist in shell history
-
-Only use environment variables in development.
-
-### 3. API Authentication
-
-**The bot will NOT start without proper API key configuration.**
-
-```bash
-# Generate a secure API key (minimum 32 characters recommended)
-export API_KEYS=$(openssl rand -hex 32)
-
-# For multiple keys, use comma-separated values
-export API_KEYS=$(openssl rand -hex 32),$(openssl rand -hex 32)
-```
-
-**Never use default or weak API keys in production!**
-
-### 2. TLS/HTTPS Encryption
-
-⚠️ **WARNING**: The bot currently runs on HTTP only (port 3000), which transmits API keys and trading data in plaintext.
-
-#### Production Deployment Options
-
-**Option A: Reverse Proxy with TLS (Recommended)**
-
-Use a reverse proxy like Nginx or Caddy to handle TLS termination:
-
-**Nginx Configuration Example:**
-```nginx
-# /etc/nginx/sites-available/nzeza-bot
-
+\`\`\`nginx
+# /etc/nginx/sites-available/nzeza-trading
 server {
     listen 443 ssl http2;
-    server_name your-domain.com;
+    server_name trading.yourdomain.com;
 
-    # TLS certificates (use Let's Encrypt for free certificates)
-    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+    # Let's Encrypt certificates
+    ssl_certificate /etc/letsencrypt/live/trading.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/trading.yourdomain.com/privkey.pem;
 
     # Modern TLS configuration
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256';
+    ssl_prefer_server_ciphers off;
 
     # Security headers
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header X-Frame-Options "DENY" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
 
-    # Proxy to nzeza bot
+    # Proxy to trading application
     location / {
         proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 90s;
+    }
+
+    # WebSocket support
+    location /ws/ {
+        proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
     }
 }
 
 # Redirect HTTP to HTTPS
 server {
     listen 80;
-    server_name your-domain.com;
-    return 301 https://$server_name$request_uri;
+    server_name trading.yourdomain.com;
+    return 301 https://\$server_name\$request_uri;
 }
-```
+\`\`\`
 
-**Caddy Configuration Example (Simpler):**
-```caddyfile
-# Caddyfile
+**Setup commands:**
+\`\`\`bash
+# Install and configure
+sudo apt-get install certbot python3-certbot-nginx
+sudo certbot --nginx -d trading.yourdomain.com
+sudo nginx -t && sudo systemctl reload nginx
+\`\`\`
 
-your-domain.com {
+### Option 2: Caddy (Automatic HTTPS)
+
+Caddy handles TLS certificates automatically:
+
+\`\`\`caddyfile
+trading.yourdomain.com {
     reverse_proxy localhost:3000
-
-    # Caddy automatically obtains and renews TLS certificates!
 }
-```
+\`\`\`
 
-Start Caddy:
-```bash
-sudo caddy run --config Caddyfile
-```
+### Option 3: Private Network + VPN
 
-**Option B: VPN/Private Network**
+- Deploy on private VPC/subnet
+- Access via VPN (WireGuard, OpenVPN, Tailscale)
+- **Never expose port 3000 to public internet**
 
-If the bot is only accessed internally:
-- Deploy on a private network (VPC)
-- Use VPN for access (WireGuard, OpenVPN)
-- Restrict access with firewall rules
+## API Key Management
 
-**Option C: SSH Tunnel (Development/Testing)**
+### Generating Secure Keys
 
-For temporary secure access:
-```bash
-# On your local machine
-ssh -L 3000:localhost:3000 user@server-ip
+\`\`\`bash
+# Generate 32+ character cryptographically secure key
+openssl rand -base64 32
 
-# Then access https://localhost:3000 locally
-```
+# Multiple keys (comma-separated for key rotation)
+export API_KEYS=\$(openssl rand -base64 32),\$(openssl rand -base64 32)
+\`\`\`
 
-### 3. Secrets Management
+### Key Rotation (Every 90 Days)
 
-**Never hardcode sensitive values in code or commit them to version control.**
+\`\`\`bash
+# 1. Generate new key
+NEW_KEY=\$(openssl rand -base64 32)
 
-#### Production Secrets Storage
+# 2. Add to existing (transition period)
+export API_KEYS="\$NEW_KEY,\$OLD_KEYS"
+systemctl restart nzeza-trading
 
-**Option A: HashiCorp Vault**
-```bash
-# Store secrets in Vault
-vault kv put secret/nzeza \
-    api_keys="your-secure-key" \
-    dydx_mnemonic="your mnemonic phrase" \
-    initial_capital="50000"
+# 3. After clients migrate, remove old keys
+export API_KEYS="\$NEW_KEY"
+systemctl restart nzeza-trading
+\`\`\`
 
-# Retrieve in application startup script
-export API_KEYS=$(vault kv get -field=api_keys secret/nzeza)
-export DYDX_MNEMONIC=$(vault kv get -field=dydx_mnemonic secret/nzeza)
-export INITIAL_CAPITAL=$(vault kv get -field=initial_capital secret/nzeza)
-```
+## Secrets Management
 
-**Option B: AWS Secrets Manager**
-```bash
-# Store secret
-aws secretsmanager create-secret \
-    --name nzeza/api_keys \
-    --secret-string "your-secure-key"
+### ❌ DO NOT Use .env Files in Production
 
-# Retrieve in startup script
-export API_KEYS=$(aws secretsmanager get-secret-value \
-    --secret-id nzeza/api_keys \
-    --query SecretString \
-    --output text)
-```
+Use a proper secrets manager:
 
-**Option C: Environment Files (Minimum Security)**
+**Option 1: HashiCorp Vault**
+\`\`\`bash
+vault kv put secret/nzeza-trading \\
+    api_keys="\$(openssl rand -base64 32)" \\
+    dydx_mnemonic="word1 word2..."
+\`\`\`
 
-If using .env files:
-```bash
-# .env (NEVER commit this file!)
-API_KEYS=your_secure_random_key_here_min_32_chars
-DYDX_MNEMONIC="your mnemonic phrase"
-INITIAL_CAPITAL=50000
-```
+**Option 2: AWS Secrets Manager**
+\`\`\`bash
+aws secretsmanager create-secret \\
+    --name nzeza-trading/api-keys \\
+    --secret-string "\$(openssl rand -base64 32)"
+\`\`\`
 
-Add to `.gitignore`:
-```
-.env
-.env.*
-!.env.example
-```
+**Option 3: Kubernetes Secrets**
+\`\`\`yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nzeza-trading-secrets
+stringData:
+  api-keys: "your-secure-key-here"
+\`\`\`
 
-### 4. Mnemonic Security
+## Network Security
 
-The bot uses `zeroize` to clear mnemonics from memory after wallet creation, but:
+### Firewall Configuration
 
-⚠️ **Best Practices:**
-- Use a dedicated wallet for the bot (not your main wallet)
-- Fund only what you're willing to risk
-- Consider using hardware wallets for production
-- Rotate mnemonics periodically
-- Monitor wallet activity for unauthorized transactions
-
-### 5. Network Security
-
-#### Firewall Configuration
-
-Only expose necessary ports:
-```bash
-# UFW (Ubuntu/Debian)
+\`\`\`bash
+# Block direct access to application port
 sudo ufw default deny incoming
-sudo ufw default allow outgoing
 sudo ufw allow 22/tcp    # SSH
-sudo ufw allow 443/tcp   # HTTPS (if using reverse proxy)
+sudo ufw allow 443/tcp   # HTTPS via reverse proxy
+# DO NOT: sudo ufw allow 3000/tcp  # ❌ Never expose directly
 sudo ufw enable
+\`\`\`
 
-# Do NOT expose port 3000 directly!
-```
+## Security Fixes Included
 
-#### IP Whitelisting
+✅ **Implemented in this version:**
+- **API key logging removed** - Prevents credential leakage in logs
+- **Slippage protection** - Converts market orders to limit orders with price bounds
+- **Race condition fixes** - Atomic position limit checks prevent concurrent limit bypass
+- **Circuit breakers** - Background tasks auto-recover from failures (no silent degradation)
+- **Rate limiting** - 100 requests/minute default
+- **Strong authentication** - Enforces 32+ character API keys
 
-Restrict API access to known IPs (if using reverse proxy):
-```nginx
-# In Nginx location block
-location / {
-    allow 203.0.113.0/24;  # Your office network
-    allow 198.51.100.42;   # Your home IP
-    deny all;
+## Production Deployment Checklist
 
-    proxy_pass http://127.0.0.1:3000;
-}
-```
+Before going live:
 
-### 6. Rate Limiting
+- [ ] TLS/HTTPS enabled via reverse proxy
+- [ ] API keys are 32+ characters, stored in vault
+- [ ] Firewall blocks direct access to port 3000
+- [ ] Rate limiting configured and tested
+- [ ] Security headers configured (HSTS, CSP)
+- [ ] Logging enabled for auth failures
+- [ ] Monitoring configured for security events
+- [ ] Regular key rotation schedule (90 days)
+- [ ] Non-root user running application
 
-The bot includes built-in rate limiting, but add additional protection:
+## Monitoring Security Events
 
-```nginx
-# Nginx rate limiting
-limit_req_zone $binary_remote_addr zone=nzeza:10m rate=10r/s;
+Watch for these patterns in logs:
 
-location / {
-    limit_req zone=nzeza burst=20 nodelay;
-    proxy_pass http://127.0.0.1:3000;
-}
-```
+\`\`\`bash
+# Failed authentication attempts
+journalctl -u nzeza-trading | grep "Invalid API key"
 
-### 7. Logging and Monitoring
+# Rate limit violations
+journalctl -u nzeza-trading | grep "Rate limit exceeded"
 
-**Enable audit logging for security events:**
+# Circuit breaker trips (critical failures)
+journalctl -u nzeza-trading | grep "exceeded maximum consecutive failures"
+\`\`\`
 
-```bash
-# Set log level
-export RUST_LOG=info
+## Reporting Security Issues
 
-# Log to file with rotation
-cargo run 2>&1 | tee -a /var/log/nzeza/bot.log
-```
+Found a vulnerability? **DO NOT** open a public issue.
 
-**Monitor for:**
-- Failed authentication attempts
-- Unusual trading patterns
-- Unexpected API errors
-- Sudden PnL changes
+Contact: [Configure your security contact]
 
-### 8. Update and Patch Management
+Include:
+- Description and impact
+- Steps to reproduce
+- Suggested fix (optional)
 
-- Regularly update dependencies: `cargo update`
-- Monitor for security advisories: `cargo audit`
-- Subscribe to security notifications for exchanges
+Response time: 48 hours
 
-## 🔒 Production Deployment Checklist
-
-Before deploying to production, ensure:
-
-- [ ] `API_KEYS` environment variable is set to a secure value (32+ chars)
-- [ ] TLS/HTTPS is configured (via reverse proxy or VPN)
-- [ ] Secrets are stored in a secrets manager (not .env files)
-- [ ] Firewall is configured to block direct access to port 3000
-- [ ] IP whitelisting is enabled (if applicable)
-- [ ] Mnemonic is for a dedicated, funded-only-what-you-risk wallet
-- [ ] Logging and monitoring are configured
-- [ ] Regular backups of configuration and state are in place
-- [ ] dYdX integration is updated to use proper Cosmos signing (currently broken!)
-
-## 🚨 Known Security Limitations
-
-### 1. dYdX v4 Implementation is Incomplete
-
-**Current Status**: The dYdX client uses simplified signing that will NOT work with dYdX v4.
-
-See `src/infrastructure/dydx_client.rs` for details. Do NOT attempt real trades with dYdX until this is fixed.
-
-### 2. No Built-in TLS Support
-
-The application does NOT include built-in TLS. You MUST use a reverse proxy or VPN for production.
-
-### 3. In-Memory State
-
-Currently, all state (positions, PnL, etc.) is stored in memory. On restart:
-- Open positions are lost
-- PnL history is reset
-- You must manually reconcile with exchange state
-
-**Recommendation**: Implement database persistence before production use.
-
-## 📞 Incident Response
-
-If you suspect a security breach:
-
-1. **Immediately stop the bot**: `kill $(pgrep nzeza)`
-2. **Rotate API keys**: Generate new keys and update environment
-3. **Check wallet transactions**: Review on-chain activity
-4. **Review logs**: Check for unauthorized access
-5. **Close open positions**: Manually close any remaining positions on exchanges
-6. **Investigate**: Determine the attack vector
-7. **Patch and redeploy**: Fix the vulnerability before restarting
-
-## 🔗 Additional Resources
+## Additional Resources
 
 - [OWASP API Security Top 10](https://owasp.org/www-project-api-security/)
-- [Rust Security Advisory Database](https://rustsec.org/)
-- [Let's Encrypt (Free TLS Certificates)](https://letsencrypt.org/)
-- [dYdX v4 Documentation](https://docs.dydx.xyz/)
-
-## 📝 License
-
-See LICENSE file for details.
+- [Let's Encrypt Documentation](https://letsencrypt.org/docs/)
+- [Nginx Security Best Practices](https://www.nginx.com/blog/mitigating-ddos-attacks-with-nginx-and-nginx-plus/)

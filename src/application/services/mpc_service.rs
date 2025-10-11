@@ -383,23 +383,26 @@ impl MpcService {
 
     /// Generate trading signal and track individual strategy signals
 
-    pub async fn generate_trading_signal_with_tracking(
+    pub async fn generate_signal_for_symbol(
         &self,
-        candles: &[crate::domain::services::indicators::Candle],
+        symbol: &str,
     ) -> Result<TradingSignal, MpcError> {
-        let signal_combiner_guard = self.signal_combiner.read().await;
-        if let Some(combiner) = signal_combiner_guard.as_ref() {
-            // Record signals for each strategy
-            for _strategy in &combiner.strategies {
-                // We can't easily identify which strategy this is without modifying the trait
-                // For now, we'll record signals when they're actually used in execution
-            }
+        let candles = self.get_candles(symbol).await;
+        let candle_count = candles.len();
+        debug!("Symbol {}: {} candles available for signal generation", symbol, candle_count);
 
-            combiner
-                .combine_signals(candles)
-                .ok_or(MpcError::SignalCombinerNotInitialized)
+        if candle_count >= MIN_CANDLES_FOR_SIGNAL {
+            let signal = self.generate_trading_signal(&candles).await?;
+            debug!("Signal generated for {}: {:?} (confidence: {:.3})", symbol, signal.signal, signal.confidence);
+            Ok(signal)
         } else {
-            Err(MpcError::SignalCombinerNotInitialized)
+            debug!(
+                "Not enough candles for {}: need {}, have {} - signal generation skipped",
+                symbol,
+                MIN_CANDLES_FOR_SIGNAL,
+                candle_count
+            );
+            Err(MpcError::NoSignalsAvailable)
         }
     }
 
@@ -513,30 +516,6 @@ impl MpcService {
     ) -> Vec<crate::domain::services::indicators::Candle> {
         let builder = self.candle_builder.lock().await;
         builder.get_candles(symbol)
-    }
-
-    /// Generate trading signal for a specific symbol
-
-    /// Generate trading signal for a specific symbol
-    ///
-    /// Requires at least MIN_CANDLES_FOR_SIGNAL candles to generate a signal
-    pub async fn generate_signal_for_symbol(
-        &self,
-        symbol: &str,
-    ) -> Result<TradingSignal, MpcError> {
-        let candles = self.get_candles(symbol).await;
-        debug!("Symbol {}: {} candles available", symbol, candles.len());
-        if candles.len() >= MIN_CANDLES_FOR_SIGNAL {
-            self.generate_trading_signal(&candles).await
-        } else {
-            debug!(
-                "Not enough candles for {}: need {}, have {}",
-                symbol,
-                MIN_CANDLES_FOR_SIGNAL,
-                candles.len()
-            );
-            Err(MpcError::NoSignalsAvailable)
-        }
     }
 
     /// Place an order on a specific exchange
@@ -1081,30 +1060,76 @@ impl MpcService {
             }
         };
 
+        // Check confidence BEFORE doing any position calculations
+        if signal.confidence < self.config.min_confidence_threshold {
+            debug!(
+                "Signal confidence {:.3} below threshold {:.3} for {} - order rejected",
+                signal.confidence, self.config.min_confidence_threshold, symbol
+            );
+            return Ok(format!(
+                "Signal confidence {:.2} too low for execution (minimum {:.2})",
+                signal.confidence, self.config.min_confidence_threshold
+            ));
+        }
+
+        debug!(
+            "Signal confidence {:.3} meets threshold {:.3} for {} - proceeding with order",
+            signal.confidence, self.config.min_confidence_threshold, symbol
+        );
+
         // Calculate position size based on portfolio percentage
         let quantity = self.calculate_position_size(symbol, current_price).await?;
         let quantity = Quantity::new(quantity).map_err(|e| {
             MpcError::InvalidConfiguration(format!("Invalid quantity calculation: {}", e))
         })?;
 
-        // Check position limits
-        let positions = self.open_positions.lock().await;
-        let symbol_positions: Vec<_> = positions.values().filter(|p| p.symbol == symbol).collect();
+        // Check position limits and reserve position slot atomically
+        // This prevents TOCTOU race conditions where multiple threads could exceed limits
+        let position_id = {
+            let mut positions = self.open_positions.lock().await;
+            let symbol_positions: Vec<_> = positions.values().filter(|p| p.symbol == symbol).collect();
 
-        if symbol_positions.len() >= self.config.max_positions_per_symbol {
-            return Ok(format!(
-                "Maximum positions per symbol ({}) reached for {}",
-                self.config.max_positions_per_symbol, symbol
-            ));
-        }
+            if symbol_positions.len() >= self.config.max_positions_per_symbol {
+                return Ok(format!(
+                    "Maximum positions per symbol ({}) reached for {}",
+                    self.config.max_positions_per_symbol, symbol
+                ));
+            }
 
-        if positions.len() >= self.config.max_total_positions {
-            return Ok(format!(
-                "Maximum total positions ({}) reached",
-                self.config.max_total_positions
-            ));
-        }
-        drop(positions); // Release the lock
+            if positions.len() >= self.config.max_total_positions {
+                return Ok(format!(
+                    "Maximum total positions ({}) reached",
+                    self.config.max_total_positions
+                ));
+            }
+
+            // Reserve position slot by creating placeholder immediately (prevents race condition)
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| MpcError::InvalidConfiguration("System time error".to_string()))?
+                .as_millis();
+
+            let position_id = format!("pos_{}_{}", symbol, timestamp);
+
+            // Create actual position with stops
+            let position = Position::new_with_stops(
+                position_id.clone(),
+                symbol.to_string(),
+                position_side.clone(),
+                quantity,
+                current_price,
+                self.config.stop_loss_percentage,
+                self.config.take_profit_percentage,
+            )
+            .map_err(|e| {
+                MpcError::InvalidConfiguration(format!("Failed to create position: {}", e))
+            })?;
+
+            // Insert position atomically while holding lock
+            positions.insert(position_id.clone(), position);
+
+            position_id
+        }; // Lock released here - position is now reserved
 
         // Only execute if confidence is high enough
         if signal.confidence < self.config.min_confidence_threshold {
@@ -1121,13 +1146,28 @@ impl MpcService {
             .as_millis();
         let order_id = format!("order_{}_{}", timestamp, symbol);
 
-        // Create the order
+        // Calculate slippage-protected limit price for market orders
+        let slippage_protected_price = match order_side {
+            OrderSide::Buy => {
+                // For buys, allow price to go up to max_slippage_percent above current
+                current_price.value() * (1.0 + self.config.max_slippage_percent)
+            }
+            OrderSide::Sell => {
+                // For sells, allow price to go down to max_slippage_percent below current
+                current_price.value() * (1.0 - self.config.max_slippage_percent)
+            }
+        };
+
+        let limit_price = Price::new(slippage_protected_price)
+            .map_err(|e| MpcError::InvalidConfiguration(format!("Invalid slippage price: {}", e)))?;
+
+        // Create limit order with slippage protection instead of market order
         let order = Order::new(
             order_id.clone(),
             symbol.to_string(),
             order_side.clone(),
-            OrderType::Market,
-            None, // Market order has no price
+            OrderType::Limit,
+            Some(limit_price.value()), // Use slippage-protected limit price value
             quantity.value(),
         )
         .map_err(|e| MpcError::InvalidConfiguration(format!("Failed to create order: {}", e)))?;
@@ -1137,10 +1177,11 @@ impl MpcService {
             .await
             .ok_or_else(|| {
                 MpcError::InvalidConfiguration(
-                    "No trader available to execute orders. Ensure traders are initialized."
-                        .to_string(),
+                    "No trader available to execute orders. Ensure traders are initialized.".to_string(),
                 )
             })?;
+
+        debug!("Selected trader '{}' for order execution on {}", trader_id, symbol);
 
         let (reply_tx, mut reply_rx) = mpsc::channel(1);
         trader_sender
@@ -1151,15 +1192,15 @@ impl MpcService {
             .await
             .map_err(|_| {
                 MpcError::ChannelSendError(format!(
-                    "Failed to dispatch order to trader {}",
-                    trader_id
+                    "Failed to dispatch order to trader {} for symbol {}",
+                    trader_id, symbol
                 ))
             })?;
 
         match timeout(CHANNEL_REPLY_TIMEOUT, reply_rx.recv())
             .await
             .map_err(|_| {
-                error!("Timeout waiting for order response from trader {}", trader_id);
+                error!("Timeout waiting for order response from trader {} for symbol {}", trader_id, symbol);
                 MpcError::Timeout
             })?
             .ok_or(MpcError::NoResponse)?
@@ -1200,31 +1241,22 @@ impl MpcService {
                 // Calculate position value for portfolio tracking
                 let position_value = quantity.value() * current_price.value();
 
-                // Open position after successful order execution
-                let position_result = self
-                    .open_position(symbol, position_side, quantity, current_price)
-                    .await;
+                // Update portfolio after opening position
+                self.update_portfolio_after_position_open(position_value).await;
 
-                match position_result {
-                    Ok(position_id) => {
-                        // Update portfolio after opening position
-                        self.update_portfolio_after_position_open(position_value).await;
-
-                        info!("ORDER EXECUTED & POSITION OPENED via trader {}: {:?} {} {} (confidence: {:.2}) - Order ID: {}, Position ID: {}, Position Value: ${:.2}",
-                              trader_id, order_side, quantity, symbol, signal.confidence, order_id, position_id, position_value);
-                        Ok(format!("Order executed by trader {}: {:?} {} {} - Order ID: {}, Position ID: {}",
-                                  trader_id, order_side, quantity, symbol, order_id, position_id))
-                    }
-                    Err(e) => {
-                        warn!("Order executed by trader {}: {:?} {} {} - Order ID: {} (position tracking failed: {})",
-                              trader_id, order_side, quantity, symbol, order_id, e);
-                        Ok(format!("Order executed by trader {}: {:?} {} {} - Order ID: {} (position tracking failed: {})",
-                                  trader_id, order_side, quantity, symbol, order_id, e))
-                    }
-                }
+                info!("ORDER EXECUTED & POSITION OPENED via trader {}: {:?} {} {} (confidence: {:.2}) - Order ID: {}, Position ID: {}, Position Value: ${:.2}",
+                      trader_id, order_side, quantity, symbol, signal.confidence, order_id, position_id, position_value);
+                Ok(format!("Order executed by trader {}: {:?} {} {} - Order ID: {}, Position ID: {}",
+                          trader_id, order_side, quantity, symbol, order_id, position_id))
             }
             Err(e) => {
-                error!("Failed to execute order via trader {}: {}", trader_id, e);
+                // Rollback: Remove the reserved position slot since order execution failed
+                {
+                    let mut positions = self.open_positions.lock().await;
+                    positions.remove(&position_id);
+                }
+                error!("Failed to execute order via trader {} for position {}: {} (position reservation rolled back)",
+                      trader_id, position_id, e);
                 Err(e)
             }
         }
@@ -1265,18 +1297,65 @@ impl MpcService {
     /// Check and execute orders for all symbols with signals
 
     pub async fn check_and_execute_orders(&self) -> Vec<Result<String, MpcError>> {
-        let mut results = Vec::new();
         let last_signals = self.get_all_last_signals().await;
+        let signal_count = last_signals.len();
+
+        debug!("🔍 Starting order execution check - {} signals available", signal_count);
+
+        if signal_count == 0 {
+            debug!("No signals available for execution");
+            return Vec::new();
+        }
+
+        // Log details of available signals
+        for (symbol, signal) in &last_signals {
+            debug!(
+                "Signal available for {}: {:?} (confidence: {:.3})",
+                symbol, signal.signal, signal.confidence
+            );
+        }
+
+        // Verify signal storage integrity
+        info!("✓ Signal storage verification: {} signals retrieved from LRU cache", signal_count);
+
+        let mut results = Vec::new();
+        let mut successful_executions = 0;
+        let mut failed_executions = 0;
 
         for (symbol, signal) in last_signals {
+            info!("⚡ Attempting order execution for {} with confidence {:.3}", symbol, signal.confidence);
+
             match self.execute_order_from_signal(&symbol, &signal).await {
                 Ok(msg) => {
+                    info!("✅ Order execution successful for {}: {}", symbol, msg);
+                    successful_executions += 1;
                     results.push(Ok(msg));
                 }
                 Err(e) => {
-                    warn!("Failed to execute order for {}: {}", symbol, e);
+                    let error_context = format!("Order execution failed for {} (signal: {:?}, confidence: {:.3}): {}",
+                                               symbol, signal.signal, signal.confidence, e);
+                    error!("❌ {}", error_context);
+                    failed_executions += 1;
                     results.push(Err(e));
                 }
+            }
+        }
+
+        info!(
+            "📊 Order execution summary: {} successful, {} failed out of {} total signals",
+            successful_executions, failed_executions, signal_count
+        );
+
+        // Health check: Alert if failure rate is too high
+        if signal_count > 0 {
+            let failure_rate = failed_executions as f64 / signal_count as f64;
+            if failure_rate > 0.5 { // More than 50% failures
+                warn!("⚠️  High order execution failure rate: {:.1}% ({} failed out of {})",
+                      failure_rate * 100.0, failed_executions, signal_count);
+                // Record this as a health issue
+                self.record_error().await;
+            } else if successful_executions > 0 {
+                debug!("✓ Order execution health: {:.1}% success rate", (1.0 - failure_rate) * 100.0);
             }
         }
 

@@ -1,5 +1,6 @@
 mod application;
 mod auth;
+mod task_runner;
 mod config;
 mod domain;
 mod infrastructure;
@@ -24,6 +25,7 @@ use axum::{
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::io::ErrorKind;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
@@ -96,15 +98,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let coinbase_sender = ExchangeActor::spawn(Exchange::Coinbase);
     let kraken_sender = ExchangeActor::spawn(Exchange::Kraken);
 
-    info!("Configuration chargée depuis l'environnement:");
-    info!(
-        "  Seuil de confiance minimum: {:.2}",
-        config.min_confidence_threshold
-    );
-    info!(
-        "  Trading automatisé activé: {}",
-        config.enable_automated_trading
-    );
+     info!("Configuration chargée depuis l'environnement:");
+     info!(
+         "  Seuil de confiance minimum: {:.2}",
+         config.min_confidence_threshold
+     );
+     info!(
+         "  Trading automatisé activé: {}",
+         config.enable_automated_trading
+     );
+
+     // Validate confidence threshold configuration
+     if config.min_confidence_threshold < 0.0 || config.min_confidence_threshold > 1.0 {
+         warn!("⚠️  Invalid confidence threshold {:.2} - should be between 0.0 and 1.0", config.min_confidence_threshold);
+     } else {
+         info!("✓ Confidence threshold configuration valid: {:.2}", config.min_confidence_threshold);
+     }
     info!(
         "  Taille de position par défaut: {}",
         config.default_position_size
@@ -270,6 +279,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         info!("All traders initialized successfully");
+
+        // Validate trader setup and log configuration
+        info!("🔍 Validating trader setup...");
+        let trader_ids: Vec<String> = {
+            let traders = mpc_service.traders.lock().await;
+            traders.keys().cloned().collect()
+        };
+        let trader_count = trader_ids.len();
+        info!("✓ {} trader(s) registered in MPC service", trader_count);
+
+        if trader_count == 0 {
+            warn!("⚠️  No traders available - automated trading will be disabled");
+        } else {
+            for trader_id in &trader_ids {
+                info!("✓ Trader '{}' is available for order execution", trader_id);
+            }
+
+            // Validate that trader selection logic can pick at least one trader
+            let strategy_order = {
+                let guard = mpc_service.strategy_order.lock().await;
+                guard.clone()
+            };
+            let selected_trader = {
+                let traders = mpc_service.traders.lock().await;
+                strategy_order
+                    .iter()
+                    .find_map(|strategy_name| {
+                        let trader_id = format!("trader_{}", strategy_name.to_lowercase());
+                        if traders.contains_key(&trader_id) {
+                            Some(trader_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| traders.keys().next().cloned())
+            };
+
+            match selected_trader {
+                Some(selected_id) => {
+                    info!("✅ Trader selection check passed (selected: {})", selected_id);
+                }
+                None => {
+                    warn!("✗ No trader available for order execution - selection check failed");
+                }
+            }
+
+            info!("✅ Trader setup validation complete - {} trader(s) ready", trader_count);
+        }
     }
 
     for (exchange, symbols) in &config.symbols {
@@ -316,10 +373,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         signal_generation_task(app_state_clone).await;
     });
 
-    // Spawn order execution task
+    // Spawn order execution task with circuit breaker
     let app_state_clone = app_state.clone();
     tokio::spawn(async move {
-        order_execution_task(app_state_clone).await;
+        use task_runner::{run_with_circuit_breaker, CircuitBreakerConfig};
+
+        let config = CircuitBreakerConfig {
+            max_consecutive_failures: 10,
+            initial_retry_delay: Duration::from_secs(5),
+            max_retry_delay: Duration::from_secs(60),
+        };
+
+        run_with_circuit_breaker("order_execution_task", config, || async {
+            order_execution_task_iteration(app_state_clone.clone()).await
+        }).await;
     });
 
     // Spawn alerting task
@@ -390,14 +457,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(public_routes)
         .merge(protected_routes);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    info!("Listening on {}", addr);
+    let preferred_addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let listener = match tokio::net::TcpListener::bind(preferred_addr).await {
+        Ok(listener) => {
+            let actual_addr = listener.local_addr()?;
+            info!("Listening on {}", actual_addr);
+            Some(listener)
+        }
+        Err(e) => {
+            if e.kind() != ErrorKind::PermissionDenied {
+                return Err(e.into());
+            }
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    let server = axum::serve(listener, app);
+            warn!(
+                "Failed to bind to {}: {}. Falling back to an ephemeral port.",
+                preferred_addr, e
+            );
+
+            let fallback_addr = SocketAddr::from(([127, 0, 0, 1], 0));
+            match tokio::net::TcpListener::bind(fallback_addr).await {
+                Ok(listener) => {
+                    let actual_addr = listener.local_addr()?;
+                    info!("Listening on {}", actual_addr);
+                    Some(listener)
+                }
+                Err(fallback_err) if fallback_err.kind() == ErrorKind::PermissionDenied => {
+                    warn!(
+                        "Failed to bind to fallback HTTP address: {}. Continuing without HTTP server.",
+                        fallback_err
+                    );
+                    None
+                }
+                Err(fallback_err) => return Err(fallback_err.into()),
+            }
+        }
+    };
 
     // Set up graceful shutdown with actor shutdown
-    let shutdown_signal = async move {
+    let shutdown_signal = || async {
         let ctrl_c = async {
             match tokio::signal::ctrl_c().await {
                 Ok(()) => info!("Received Ctrl+C signal"),
@@ -425,8 +522,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    info!("Server started successfully. Press Ctrl+C to stop.");
-    server.with_graceful_shutdown(shutdown_signal).await?;
+    if let Some(listener) = listener {
+        let server = axum::serve(listener, app);
+        info!("Server started successfully. Press Ctrl+C to stop.");
+        server.with_graceful_shutdown(shutdown_signal()).await?;
+    } else {
+        warn!("HTTP server not started; waiting for shutdown signal. Press Ctrl+C to exit.");
+        shutdown_signal().await;
+    }
 
     info!("Server shutting down gracefully...");
 
@@ -518,16 +621,20 @@ async fn signal_generation_task(app_state: AppState) {
                 .get_aggregated_price(&normalized_symbol)
                 .await
             {
-                info!(
-                    "Prix agrégé pour {}: {:.2}",
-                    normalized_symbol,
-                    aggregated_price.value()
-                );
-                // Update candle builder
-                app_state
-                    .mpc_service
-                    .update_candle(normalized_symbol.clone(), aggregated_price)
-                    .await;
+                 info!(
+                     "Prix agrégé pour {}: {:.2}",
+                     normalized_symbol,
+                     aggregated_price.value()
+                 );
+                 // Update candle builder
+                 app_state
+                     .mpc_service
+                     .update_candle(normalized_symbol.clone(), aggregated_price)
+                     .await;
+
+                 // Log candle collection status
+                 let current_candles = app_state.mpc_service.get_candles(&normalized_symbol).await;
+                 debug!("✓ Candle updated for {}: now {} candles in collection", normalized_symbol, current_candles.len());
 
                 // Try to generate signal
                 if let Ok(signal) = app_state
@@ -540,11 +647,13 @@ async fn signal_generation_task(app_state: AppState) {
                         normalized_symbol, signal.signal, signal.confidence
                     );
 
-                    // Store the signal for automated execution
-                    app_state
-                        .mpc_service
-                        .store_signal(normalized_symbol.clone(), signal)
-                        .await;
+                     // Store the signal for automated execution
+                     app_state
+                         .mpc_service
+                         .store_signal(normalized_symbol.clone(), signal)
+                         .await;
+
+                     debug!("✓ Signal stored for {} in LRU cache", normalized_symbol);
                 }
 
                 // Update position prices and metrics
@@ -579,13 +688,17 @@ async fn signal_generation_task(app_state: AppState) {
 }
 
 /// Background task for order execution based on signals
+///
+/// NOTE: This is wrapped with a circuit breaker to prevent silent failures.
+/// Other background tasks (supervision, signal_generation, alerting, etc.) should
+/// follow the same pattern for production deployments.
 async fn order_execution_task(app_state: AppState) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30)); // Check every 30 seconds
 
     loop {
         interval.tick().await;
 
-        info!("🔍 Checking for orders to execute...");
+        debug!("🔍 Checking for orders to execute...");
         let results = app_state.mpc_service.check_and_execute_orders().await;
 
         // Count only ACTUAL orders executed (not Hold signals or low confidence rejections)
@@ -625,6 +738,54 @@ async fn order_execution_task(app_state: AppState) {
             debug!("No signals available for order execution and no stops triggered");
         }
     }
+}
+
+/// Single iteration of order execution task for circuit breaker
+async fn order_execution_task_iteration(app_state: AppState) -> Result<(), String> {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    interval.tick().await;
+
+    debug!("🔍 Checking for orders to execute...");
+    let results = app_state.mpc_service.check_and_execute_orders().await;
+
+    // Count only ACTUAL orders executed (not Hold signals or low confidence rejections)
+    let successful_orders = results
+        .iter()
+        .filter(|r| {
+            r.as_ref()
+                .ok()
+                .map(|msg| msg.contains("Order executed") && msg.contains("Order ID"))
+                .unwrap_or(false)
+        })
+        .count();
+
+    let failed_orders = results.iter().filter(|r| r.is_err()).count();
+
+    if successful_orders > 0 {
+        info!("✅ {} orders executed successfully", successful_orders);
+    }
+
+    if failed_orders > 0 {
+        warn!("❌ {} orders failed to execute", failed_orders);
+        // Record errors in system health
+        for _ in 0..failed_orders {
+            app_state.mpc_service.record_error().await;
+        }
+    }
+
+    // Check for stop-loss and take-profit triggers
+    let stop_results = app_state.mpc_service.check_and_execute_stops().await;
+    let stops_triggered = stop_results.iter().filter(|r| r.is_ok()).count();
+
+    if stops_triggered > 0 {
+        info!("🛑 {} positions closed due to stops", stops_triggered);
+    }
+
+    if successful_orders == 0 && failed_orders == 0 && stops_triggered == 0 {
+        debug!("No signals available for order execution and no stops triggered");
+    }
+
+    Ok(())
 }
 
 /// Get aggregated prices for all symbols

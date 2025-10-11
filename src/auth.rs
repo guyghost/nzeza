@@ -38,10 +38,9 @@ pub fn init_api_keys() {
             // ENFORCE minimum key length for security
             if key.len() < MIN_KEY_LENGTH {
                 tracing::error!(
-                    "SECURITY ERROR: API key is too weak (length: {}, minimum: {}). First 8 chars: {}",
+                    "SECURITY ERROR: API key is too weak (length: {}, minimum: {})",
                     key.len(),
-                    MIN_KEY_LENGTH,
-                    &key[..key.len().min(8)]
+                    MIN_KEY_LENGTH
                 );
                 panic!(
                     "SECURITY ERROR: API key must be at least {} characters long. \

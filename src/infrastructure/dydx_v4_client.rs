@@ -18,15 +18,17 @@ use crate::domain::repositories::exchange_client::{
 use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use dydx::config::ClientConfig;
-use dydx::indexer::{IndexerClient, Ticker};
+use dydx::indexer::{Height, IndexerClient, Ticker};
 use dydx::node::{
     Account, NodeClient, OrderBuilder, OrderSide as DydxOrderSide, Subaccount, Wallet,
 };
 use dydx_proto::dydxprotocol::clob::order::TimeInForce;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::info;
 use zeroize::Zeroizing;
 
 /// dYdX v4 client for API interactions using official client
@@ -156,6 +158,13 @@ impl DydxV4Client {
         // Build order based on type
         let order_builder = OrderBuilder::new(market, subaccount);
 
+        // Determine good_until block height based on order type
+        let good_until_blocks = match order.order_type {
+            OrderType::Market => 10,  // Short-lived for market orders
+            OrderType::Limit => 20,   // Longer for limit orders
+        };
+        let good_until_block = current_block_height.ahead(good_until_blocks);
+
         let (order_id, dydx_order) = match order.order_type {
             OrderType::Market => {
                 // For market orders, we use a slippage protection price
@@ -172,7 +181,7 @@ impl DydxV4Client {
                     .reduce_only(false)
                     .price(slippage_price)
                     .time_in_force(TimeInForce::Ioc) // Immediate or Cancel for market orders
-                    .until(current_block_height.ahead(10))
+                    .until(good_until_block.clone())
                     .build(dydx::indexer::AnyId)
                     .map_err(|e| format!("Failed to build market order: {:?}", e))?
             }
@@ -186,7 +195,7 @@ impl DydxV4Client {
                     .limit(side, price as u64, size)
                     .reduce_only(false)
                     .time_in_force(TimeInForce::Unspecified) // GTC by default
-                    .until(current_block_height.ahead(20))
+                    .until(good_until_block.clone())
                     .build(dydx::indexer::AnyId)
                     .map_err(|e| format!("Failed to build limit order: {:?}", e))?
             }
@@ -211,29 +220,43 @@ impl DydxV4Client {
             .await
             .map_err(|e| format!("Failed to place order: {:?}", e))?;
 
+        let order_id_string = format!("{:?}", order_id);
+
         info!(
-            "dYdX v4 order placed successfully - TxHash: {:?}, OrderID: {:?}",
-            tx_hash, order_id
+            "dYdX v4 order placed successfully - TxHash: {:?}, OrderID: {}",
+            tx_hash, order_id_string
         );
 
         // Return the order ID as string
-        Ok(format!("{:?}", order_id))
+        Ok(order_id_string)
     }
 
     /// Cancel order on dYdX v4
     ///
-    /// Note: dYdX v4 uses order IDs that are generated client-side.
-    /// The order_id should be the ID returned from place_order.
+    /// # Current Limitation
+    /// Order cancellation on dYdX v4 requires the original OrderId and good_until_block from order placement.
+    /// The current implementation has limited cancellation support due to the complexity of reconstructing
+    /// the exact OrderId format needed by the dYdX protocol.
+    ///
+    /// # Arguments
+    /// * `order_id` - The order ID returned from place_order (informational only)
+    ///
+    /// # Returns
+    /// * `Err(String)` - Always returns an error explaining the limitation
+    ///
+    /// # Future Enhancement
+    /// Full cancellation support will require storing the original OrderId and Height
+    /// from order placement in a persistent store (database or file).
     pub async fn cancel_order(&self, order_id: &str) -> Result<(), String> {
-        warn!("Cancel order not fully implemented - order_id: {}", order_id);
+        info!("Cancel order requested for: {}", order_id);
 
-        // TODO: To properly implement cancellation, we need to:
-        // 1. Parse the order_id back to dYdX OrderId format
-        // 2. Get the original good_until block height
-        // 3. Call node_client.cancel_order(&mut account, order_id, good_until)
-        //
-        // For now, return an error to avoid silent failures
-        Err("Order cancellation requires order metadata (good_until block). Not implemented yet.".to_string())
+        Err(format!(
+            "Order cancellation for dYdX v4 requires the original OrderId and good_until_block height. \
+             Order {} cannot be cancelled through this interface. \
+             As a workaround, orders will expire automatically based on their good_until_block height. \
+             For manual cancellation, use the dYdX web interface or CLI tools.",
+            order_id
+        ))
     }
 
     /// Get order status from dYdX v4 indexer

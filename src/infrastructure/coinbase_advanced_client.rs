@@ -219,6 +219,7 @@ impl CoinbaseAdvancedClient {
 
         let client = Client::builder()
             .user_agent("NZEZA-Trading-Bot/0.1.0")
+            .no_proxy()
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 

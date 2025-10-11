@@ -122,15 +122,66 @@ cargo run
 
 ## Security
 
-⚠️ **IMPORTANT**: This bot currently runs on HTTP only (no TLS/HTTPS).
+⚠️ **CRITICAL**: This trading bot runs on HTTP (localhost:3000) **without TLS encryption**.
 
-**For production deployment, you MUST:**
-1. Use a reverse proxy (Nginx, Caddy) with TLS certificates
-2. OR deploy on a private network with VPN access
-3. Set strong API keys (32+ characters)
-4. Store secrets securely (not in .env files)
+### Production Deployment Requirements
 
-**See [SECURITY.md](SECURITY.md) for complete security guidelines and deployment best practices.**
+**DO NOT expose this application directly to the internet.** For production use, you **MUST** implement one of the following:
+
+#### Option 1: TLS Reverse Proxy (Recommended)
+Use a reverse proxy with TLS termination:
+
+```nginx
+# Nginx example
+server {
+    listen 443 ssl http2;
+    server_name trading.yourdomain.com;
+
+    ssl_certificate /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Popular reverse proxy options:
+- **Nginx**: Battle-tested, high performance
+- **Caddy**: Automatic HTTPS with Let's Encrypt
+- **Traefik**: Container-native with automatic TLS
+
+#### Option 2: Private Network + VPN
+- Deploy on a private VPC/subnet
+- Access via VPN (WireGuard, OpenVPN, Tailscale)
+- Never expose port 3000 to public internet
+
+### Security Checklist
+
+Before deploying to production:
+
+- [ ] **TLS/HTTPS enabled** via reverse proxy or VPN
+- [ ] **Strong API keys** (32+ characters, cryptographically random)
+- [ ] **Secrets management** (Vault, AWS Secrets Manager, not .env files)
+- [ ] **API key logging removed** ✅ (fixed in this version)
+- [ ] **Firewall rules** limiting access to trading server
+- [ ] **Monitor logs** for unauthorized access attempts
+- [ ] **Rate limiting enabled** (100 req/min default)
+- [ ] **Authentication required** for all protected endpoints
+
+### Why TLS is Required
+
+Without TLS:
+- API keys transmitted in plaintext over the network
+- Trading orders visible to network observers
+- Vulnerable to man-in-the-middle attacks
+- Portfolio data exposed
+
+**See [SECURITY.md](SECURITY.md) for detailed security guidelines and deployment examples.**
 
 ## Development
 

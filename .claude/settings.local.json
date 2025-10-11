@@ -20,7 +20,8 @@
       "WebFetch(domain:docs.cdp.coinbase.com)",
       "WebFetch(domain:docs.cloud.coinbase.com)",
       "Read(//private/tmp/**)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(cargo doc:*)"
     ],
     "deny": [],
     "ask": []

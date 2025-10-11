@@ -15,6 +15,7 @@ pub struct TradingConfig {
     pub portfolio_percentage_per_position: f64, // Pourcentage du portefeuille par position
     pub max_trades_per_hour: usize,             // Limite de trades par heure
     pub max_trades_per_day: usize,              // Limite de trades par jour
+    pub max_slippage_percent: f64,              // Maximum slippage allowed on orders (e.g., 0.002 = 0.2%)
 }
 
 impl TradingConfig {
@@ -29,6 +30,7 @@ impl TradingConfig {
                 "BTCUSDT".to_string(),
                 "ETHUSDT".to_string(),
                 "SOLUSDT".to_string(),
+                "BNBUSDT".to_string(),
             ],
         );
 
@@ -39,6 +41,7 @@ impl TradingConfig {
                 "BTC-USD".to_string(),
                 "ETH-USD".to_string(),
                 "SOL-USD".to_string(),
+                "BN-USD".to_string(),
             ],
         );
 
@@ -49,13 +52,14 @@ impl TradingConfig {
                 "BTC-USD".to_string(),
                 "ETH-USD".to_string(),
                 "SOL-USD".to_string(),
+                "BN-USD".to_string(),
             ],
         );
 
         // Hyperliquid symbols (just the asset name)
         symbols.insert(
             Exchange::Hyperliquid,
-            vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()],
+            vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string(), "BNB".to_string()],
         );
 
         // Kraken symbols (with slash)
@@ -65,6 +69,7 @@ impl TradingConfig {
                 "BTC/USD".to_string(),
                 "ETH/USD".to_string(),
                 "SOL/USD".to_string(),
+                "BNB/USD".to_string(),
             ],
         );
 
@@ -80,6 +85,7 @@ impl TradingConfig {
             portfolio_percentage_per_position: 0.02, // 2% du portefeuille par position
             max_trades_per_hour: 10,                 // 10 trades par heure max
             max_trades_per_day: 50,                  // 50 trades par jour max
+            max_slippage_percent: 0.002,             // 0.2% maximum slippage protection
         }
     }
 
@@ -156,6 +162,15 @@ impl TradingConfig {
             if let Ok(value) = max_daily.parse::<usize>() {
                 if value > 0 && value <= 500 {
                     config.max_trades_per_day = value;
+                }
+            }
+        }
+
+        if let Ok(slippage) = std::env::var("MAX_SLIPPAGE_PERCENT") {
+            if let Ok(value) = slippage.parse::<f64>() {
+                if (0.0001..=0.05).contains(&value) {
+                    // Entre 0.01% et 5%
+                    config.max_slippage_percent = value;
                 }
             }
         }
