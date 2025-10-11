@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Rate limiting initialized: 100 requests per minute");
 
     // Load trading configuration first to validate before spawning actors
-    let config = crate::config::TradingConfig::from_env();
+    let mut config = crate::config::TradingConfig::from_env();
 
     // ⚠️ WARNING: dYdX v4 integration has known issues
     // The current implementation uses Ethereum (EIP-712) signing instead of Cosmos SDK signing.
@@ -136,7 +136,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  Max trades per hour: {}", config.max_trades_per_hour);
     info!("  Max trades per day: {}", config.max_trades_per_day);
 
-    // Create MPC service and add exchange actors (for market data)
+    // Create MPC service with initial config (will be updated later if needed)
+    // Note: Config will be updated after checking balance and trader availability
     let mut mpc_service = MpcService::new(config.clone());
     mpc_service.add_actor(Exchange::Binance, binance_sender);
     mpc_service.add_actor(Exchange::Dydx, dydx_sender);
@@ -202,6 +203,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             warn!("⚠️  Insufficient balances for trading - automated trading disabled");
             warn!("⚠️  Please fund your accounts and restart the server");
+            // SPEC REQUIREMENT: Disable automated trading when insufficient balance
+            config.enable_automated_trading = false;
         }
     }
 
@@ -327,7 +330,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             info!("✅ Trader setup validation complete - {} trader(s) ready", trader_count);
         }
+    } else {
+        // No exchange clients means no traders can be created
+        warn!("⚠️  No exchange clients available - disabling automated trading");
+        config.enable_automated_trading = false;
     }
+
+    // SPEC REQUIREMENT: Validate trader availability and disable trading if none available
+    let final_trader_count = {
+        let traders = mpc_service.traders.lock().await;
+        traders.len()
+    };
+
+    if final_trader_count == 0 {
+        warn!("⚠️  No traders initialized - disabling automated trading");
+        warn!("⚠️  Check your exchange credentials and restart the server");
+        config.enable_automated_trading = false;
+    } else {
+        info!("✓ {} trader(s) available for order execution", final_trader_count);
+    }
+
+    // Log final trading status
+    if config.enable_automated_trading {
+        info!("✅ Automated trading is ENABLED");
+    } else {
+        warn!("⚠️  Automated trading is DISABLED");
+    }
+
+    // Update MpcService with the final configuration
+    mpc_service.config = config.clone();
+    info!("✓ MpcService configuration updated with final trading status");
 
     for (exchange, symbols) in &config.symbols {
         info!(

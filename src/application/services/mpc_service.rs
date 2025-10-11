@@ -162,7 +162,7 @@ impl MpcService {
     pub async fn add_trader(&self, trader_id: String, sender: mpsc::Sender<TraderMessage>) {
         let mut traders = self.traders.lock().await;
         traders.insert(trader_id.clone(), sender);
-        info!("Added trader: {}", trader_id);
+        debug!("Added trader: {}", trader_id);
     }
 
     /// Get a trader by ID
@@ -263,16 +263,16 @@ impl MpcService {
             }
         }
 
-        info!("Health check complete: {:?}", health_status);
+        debug!("Health check complete: {:?}", health_status);
         health_status
     }
 
     /// Shutdown all actors gracefully
     pub async fn shutdown(&self) {
-        info!("Shutting down all exchange actors...");
+        debug!("Shutting down all exchange actors...");
 
         for (exchange, sender) in self.senders.as_ref().iter() {
-            info!("Sending shutdown signal to {:?}", exchange);
+            debug!("Sending shutdown signal to {:?}", exchange);
             if let Err(e) = sender.send(ExchangeMessage::Shutdown).await {
                 error!("Failed to send shutdown to {:?}: {}", exchange, e);
             }
@@ -280,7 +280,7 @@ impl MpcService {
 
         // Give actors time to shutdown gracefully
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        info!("All actors shutdown complete");
+        debug!("All actors shutdown complete");
     }
 
 
@@ -640,7 +640,7 @@ impl MpcService {
             "".to_string()
         };
 
-        info!(
+        debug!(
             "Opened position: {} {} {} @ {}{}",
             position_id,
             side,
@@ -684,7 +684,7 @@ impl MpcService {
     ///
     /// This method minimizes lock contention by:
     /// 1. Collecting symbols without holding the lock
-    /// 2. Fetching prices asynchronously (no lock held)
+    /// 2. Fetching prices CONCURRENTLY using futures::join_all (no lock held)
     /// 3. Updating positions with a short final lock
     pub async fn update_position_prices(&self) -> Result<(), MpcError> {
         // Step 1: Collect symbols that need price updates (short lock)
@@ -698,11 +698,23 @@ impl MpcService {
                 .collect()
         };
 
-        // Step 2: Fetch all prices concurrently (no lock held)
+        // Step 2: Fetch all prices CONCURRENTLY (no lock held)
+        // SPEC REQUIREMENT: Use futures::join_all for parallel price fetching
+        let price_futures: Vec<_> = symbols_to_update
+            .iter()
+            .map(|symbol| async move {
+                let price_result = self.get_aggregated_price(symbol).await;
+                (symbol.clone(), price_result)
+            })
+            .collect();
+
+        let price_results = futures_util::future::join_all(price_futures).await;
+
+        // Collect successful price fetches
         let mut prices = HashMap::new();
-        for symbol in &symbols_to_update {
-            if let Ok(current_price) = self.get_aggregated_price(symbol).await {
-                prices.insert(symbol.clone(), current_price);
+        for (symbol, price_result) in price_results {
+            if let Ok(current_price) = price_result {
+                prices.insert(symbol, current_price);
             }
         }
 
@@ -1036,16 +1048,49 @@ impl MpcService {
         // Validate symbol format
         validate_symbol(symbol)?;
 
+        // SPEC REQUIREMENT: Validate symbol against whitelist
+        // Check if symbol is in the configured whitelist for any exchange
+        let normalized_symbol = crate::config::TradingConfig::normalize_symbol(symbol);
+        let is_whitelisted = self.config.symbols.values().any(|symbols| {
+            symbols.iter().any(|whitelisted_symbol| {
+                crate::config::TradingConfig::normalize_symbol(whitelisted_symbol) == normalized_symbol
+            })
+        });
+
+        if !is_whitelisted {
+            warn!(
+                "Symbol '{}' (normalized: '{}') is not in the configured whitelist - order rejected",
+                symbol, normalized_symbol
+            );
+            return Err(MpcError::InvalidInput(format!(
+                "Symbol '{}' is not in the configured whitelist for trading",
+                symbol
+            )));
+        }
+
+        debug!("✓ Symbol '{}' validated against whitelist", symbol);
+
         // Check if automated trading is enabled
         if !self.config.enable_automated_trading {
-            return Ok("Automated trading is disabled".to_string());
+            return Err(MpcError::InvalidConfiguration("Automated trading is disabled".to_string()));
         }
+
+        // SPEC REQUIREMENT: Check trader availability FIRST (before any calculations)
+        // This prevents wasting CPU time if no traders are available
+        let (trader_id, trader_sender) = self
+            .select_trader_sender()
+            .await
+            .ok_or_else(|| {
+                error!("No trader available to execute orders - trading should be disabled");
+                MpcError::InvalidConfiguration(
+                    "No trader available to execute orders. Ensure traders are initialized.".to_string(),
+                )
+            })?;
+
+        debug!("✓ Trader '{}' is available for order execution", trader_id);
 
         // Check trading limits before proceeding
         self.check_trading_limits().await?;
-
-        // Get current price (for logging purposes)
-        let current_price = self.get_aggregated_price(symbol).await?;
 
         // Determine order side and calculate position size based on signal
         let (order_side, position_side) = match signal.signal {
@@ -1060,7 +1105,7 @@ impl MpcService {
             }
         };
 
-        // Check confidence BEFORE doing any position calculations
+        // Check confidence BEFORE doing any expensive operations
         if signal.confidence < self.config.min_confidence_threshold {
             debug!(
                 "Signal confidence {:.3} below threshold {:.3} for {} - order rejected",
@@ -1076,6 +1121,9 @@ impl MpcService {
             "Signal confidence {:.3} meets threshold {:.3} for {} - proceeding with order",
             signal.confidence, self.config.min_confidence_threshold, symbol
         );
+
+        // Get current price (for logging purposes)
+        let current_price = self.get_aggregated_price(symbol).await?;
 
         // Calculate position size based on portfolio percentage
         let quantity = self.calculate_position_size(symbol, current_price).await?;
@@ -1131,14 +1179,6 @@ impl MpcService {
             position_id
         }; // Lock released here - position is now reserved
 
-        // Only execute if confidence is high enough
-        if signal.confidence < self.config.min_confidence_threshold {
-            return Ok(format!(
-                "Signal confidence {:.2} too low for execution (minimum {:.2})",
-                signal.confidence, self.config.min_confidence_threshold
-            ));
-        }
-
         // Generate unique order ID
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1172,16 +1212,7 @@ impl MpcService {
         )
         .map_err(|e| MpcError::InvalidConfiguration(format!("Failed to create order: {}", e)))?;
 
-        let (trader_id, trader_sender) = self
-            .select_trader_sender()
-            .await
-            .ok_or_else(|| {
-                MpcError::InvalidConfiguration(
-                    "No trader available to execute orders. Ensure traders are initialized.".to_string(),
-                )
-            })?;
-
-        debug!("Selected trader '{}' for order execution on {}", trader_id, symbol);
+        debug!("Dispatching order to trader '{}' for execution on {}", trader_id, symbol);
 
         let (reply_tx, mut reply_rx) = mpsc::channel(1);
         trader_sender
@@ -1316,19 +1347,31 @@ impl MpcService {
         }
 
         // Verify signal storage integrity
-        info!("✓ Signal storage verification: {} signals retrieved from LRU cache", signal_count);
+        debug!("✓ Signal storage verification: {} signals retrieved from LRU cache", signal_count);
 
         let mut results = Vec::new();
         let mut successful_executions = 0;
         let mut failed_executions = 0;
+        let mut symbols_to_clear = Vec::new();
+        let mut retry_later = Vec::new(); // Signals that should be retried later
 
         for (symbol, signal) in last_signals {
-            info!("⚡ Attempting order execution for {} with confidence {:.3}", symbol, signal.confidence);
+            debug!("⚡ Attempting order execution for {} with confidence {:.3}", symbol, signal.confidence);
 
             match self.execute_order_from_signal(&symbol, &signal).await {
                 Ok(msg) => {
-                    info!("✅ Order execution successful for {}: {}", symbol, msg);
-                    successful_executions += 1;
+                    debug!("✅ Order execution successful for {}: {}", symbol, msg);
+
+                    // Mark signal for removal if order was actually executed (not just rejected)
+                    if msg.contains("Order executed") && msg.contains("Order ID") {
+                        symbols_to_clear.push(symbol.clone());
+                        successful_executions += 1;
+                    } else {
+                        // Signal was processed but not executed (e.g., low confidence, limits reached)
+                        // Clear it to prevent infinite loop
+                        symbols_to_clear.push(symbol.clone());
+                        debug!("🧹 Cleared non-executed signal for {}: {}", symbol, msg);
+                    }
                     results.push(Ok(msg));
                 }
                 Err(e) => {
@@ -1336,8 +1379,52 @@ impl MpcService {
                                                symbol, signal.signal, signal.confidence, e);
                     error!("❌ {}", error_context);
                     failed_executions += 1;
+
+                    // Check if this is a temporary failure that should be retried
+                    let should_retry = match &e {
+                        MpcError::ChannelSendError(_) | MpcError::Timeout => {
+                            // Communication errors - retry later
+                            true
+                        }
+                        MpcError::InvalidConfiguration(msg) if msg.contains("trader") => {
+                            // No trader available - don't retry immediately
+                            false
+                        }
+                        _ => {
+                            // Other errors (validation, limits, etc.) - don't retry
+                            false
+                        }
+                    };
+
+                    if should_retry {
+                        retry_later.push((symbol.clone(), signal.clone()));
+                        debug!("⏰ Signal for {} queued for retry", symbol);
+                    } else {
+                        // Clear failed signals to prevent infinite loop
+                        symbols_to_clear.push(symbol.clone());
+                        debug!("🧹 Cleared permanently failed signal for {}", symbol);
+                    }
+
                     results.push(Err(e));
                 }
+            }
+        }
+
+        // Clear consumed/failed signals to prevent re-execution
+        if !symbols_to_clear.is_empty() {
+            let mut last_signals = self.last_signals.lock().await;
+            for symbol in &symbols_to_clear {
+                last_signals.pop(symbol);
+                debug!("🧹 Cleared signal for {}", symbol);
+            }
+        }
+
+        // Re-queue signals that should be retried later
+        if !retry_later.is_empty() {
+            let mut last_signals = self.last_signals.lock().await;
+            for (symbol, signal) in retry_later {
+                last_signals.put(symbol.clone(), signal);
+                debug!("🔄 Re-queued signal for {} for retry", symbol);
             }
         }
 
@@ -1350,8 +1437,25 @@ impl MpcService {
         if signal_count > 0 {
             let failure_rate = failed_executions as f64 / signal_count as f64;
             if failure_rate > 0.5 { // More than 50% failures
-                warn!("⚠️  High order execution failure rate: {:.1}% ({} failed out of {})",
-                      failure_rate * 100.0, failed_executions, signal_count);
+                let alert_message = format!(
+                    "High order execution failure rate: {:.1}% ({} failed out of {})",
+                    failure_rate * 100.0, failed_executions, signal_count
+                );
+                warn!("⚠️  {}", alert_message);
+
+                // SPEC REQUIREMENT: Create SystemAlert for high failure rate
+                let alert = SystemAlert {
+                    alert_type: crate::domain::services::metrics::AlertType::HighErrorRate,
+                    message: alert_message,
+                    severity: crate::domain::services::metrics::AlertSeverity::High,
+                    timestamp: SystemTime::now(),
+                    resolved: false,
+                };
+
+                // Add alert to active alerts
+                let mut active_alerts = self.active_alerts.lock().await;
+                active_alerts.push(alert);
+
                 // Record this as a health issue
                 self.record_error().await;
             } else if successful_executions > 0 {
@@ -1528,7 +1632,7 @@ impl MpcService {
         let mut signal_combiner_guard = self.signal_combiner.write().await;
         if let Some(combiner) = signal_combiner_guard.as_mut() {
             combiner.adjust_weights(&strategy_metrics)?;
-            info!("Strategy weights adjusted based on performance metrics");
+            debug!("Strategy weights adjusted based on performance metrics");
         }
 
         Ok(())

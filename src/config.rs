@@ -94,9 +94,21 @@ impl TradingConfig {
         let mut config = TradingConfig::default();
 
         if let Ok(threshold) = std::env::var("MIN_CONFIDENCE_THRESHOLD") {
-            if let Ok(value) = threshold.parse::<f64>() {
-                if (0.0..=1.0).contains(&value) {
+            match threshold.parse::<f64>() {
+                Ok(value) if (0.0..=1.0).contains(&value) => {
                     config.min_confidence_threshold = value;
+                }
+                Ok(value) => {
+                    tracing::warn!(
+                        "Invalid MIN_CONFIDENCE_THRESHOLD value: {} (must be between 0.0 and 1.0), using default: {}",
+                        value, config.min_confidence_threshold
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse MIN_CONFIDENCE_THRESHOLD '{}': {}, using default: {}",
+                        threshold, e, config.min_confidence_threshold
+                    );
                 }
             }
         }
