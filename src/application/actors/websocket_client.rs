@@ -1853,6 +1853,21 @@ impl WebSocketClient {
         inner.connection_attempt_stream.clone()
     }
 
+    pub fn disconnect_event_stream(&self) -> DisconnectEventStream {
+        let inner = self.inner.blocking_lock();
+        inner.disconnect_event_stream.clone()
+    }
+
+    pub fn state_change_stream(&self) -> StateChangeStream {
+        let inner = self.inner.blocking_lock();
+        inner.state_change_stream.clone()
+    }
+
+    pub fn progress_stream(&self) -> ProgressStream {
+        let inner = self.inner.blocking_lock();
+        inner.progress_stream.clone()
+    }
+
     pub fn circuit_breaker_metrics(&self) -> CircuitBreakerMetrics {
         let inner = self.inner.blocking_lock();
         inner.circuit_breaker_metrics.clone()
