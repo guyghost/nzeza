@@ -185,7 +185,7 @@ Without TLS:
 
 ## Development
 
-This project follows Test-Driven Development (TDD) principles. All changes must include tests. See [AGENTS.md](AGENTS.md) for detailed development guidelines.
+This project follows Test-Driven Development (TDD) principles. All changes must include tests. See [AGENTS.md](../AGENTS.md) for detailed development guidelines.
 
 ## License
 

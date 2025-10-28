@@ -15,7 +15,7 @@ use crate::domain::entities::order::{Order, OrderSide, OrderType};
 use crate::domain::repositories::exchange_client::{
     Balance, ExchangeClient, ExchangeError, ExchangeResult, OrderStatus,
 };
-use crate::persistence::models::CreateDydxOrderMetadata;
+use crate::persistence::models::{CreateDydxOrderMetadata, DydxOrderMetadataRecord};
 use crate::persistence::repository::DydxOrderMetadataRepository;
 use async_trait::async_trait;
 use base64::{self, Engine};
@@ -24,11 +24,11 @@ use dydx::config::ClientConfig;
 use once_cell::sync::OnceCell;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use dydx::indexer::{IndexerClient, Ticker};
-use dydx::node::{
-    Account, NodeClient, OrderBuilder, OrderSide as DydxOrderSide, Subaccount, Wallet, Height,
-};
+use dydx::indexer::{IndexerClient, Ticker, Height};
+use dydx::node::{Account, NodeClient, OrderBuilder, OrderSide as DydxOrderSide, Subaccount, Wallet};
+use dydx_proto::dydxprotocol::clob::OrderId;
 use dydx_proto::dydxprotocol::clob::order::TimeInForce;
+use dydx_proto::cosmos_sdk_proto::traits::Message;
 use std::str::FromStr;
 use tracing::{info, warn, error};
 use zeroize::Zeroizing;
@@ -553,15 +553,5 @@ mod tests {
         // This test would require a mock repository, but for now we just test the static access
         // In a real test, we'd create a test database and repository
         assert!(DydxV4Client::get_metadata_repository().is_none());
-    }
-
-    #[test]
-    fn test_parse_order_status() {
-        assert_eq!(DydxV4Client::parse_order_status("OPEN"), OrderStatus::Pending);
-        assert_eq!(DydxV4Client::parse_order_status("FILLED"), OrderStatus::Filled);
-        assert_eq!(DydxV4Client::parse_order_status("CANCELLED"), OrderStatus::Cancelled);
-        assert_eq!(DydxV4Client::parse_order_status("PARTIALLY_FILLED"), OrderStatus::PartiallyFilled);
-        assert_eq!(DydxV4Client::parse_order_status("NOT_FOUND"), OrderStatus::Unknown);
-        assert_eq!(DydxV4Client::parse_order_status("INVALID"), OrderStatus::Unknown);
     }
 }

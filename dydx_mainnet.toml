@@ -9,4 +9,4 @@ fee_denom = "adydx"
 
 [indexer]
 http.endpoint = "https://indexer.dydx.trade"
-ws.endpoint = "wss://indexer.dydx.trade/vanalyse le code et decrit le comportement du system4/ws"
+ws.endpoint = "wss://indexer.dydx.trade/v4/ws"
