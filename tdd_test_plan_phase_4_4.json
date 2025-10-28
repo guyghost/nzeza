@@ -1,0 +1,434 @@
+{
+  "phase": "4.4 - Lock Validator Implementation",
+  "description": "TDD implementation plan for 25 failing concurrency tests using red-green-refactor approach",
+  "current_state": {
+    "passing_tests": 27,
+    "failing_tests": 25,
+    "skeleton_exists": "src/domain/services/lock_validator.rs",
+    "test_file": "src/domain/concurrency_tests.rs"
+  },
+  "test_groups": [
+    {
+      "group_id": "G1",
+      "name": "Foundation - Lock Validator Core",
+      "priority": 1,
+      "dependencies": [],
+      "tests": [
+        "test_lock_order_documented_and_followed",
+        "test_lock_order_audit"
+      ],
+      "description": "Core lock validation infrastructure - must work first",
+      "implementation_approach": "RED_FIRST",
+      "estimated_effort": "2-3 hours",
+      "mock_infrastructure": [
+        "LockValidatorTestHelper",
+        "MockLockTracker",
+        "TestLockOrderConfig"
+      ],
+      "expected_assertions": [
+        "Lock order is correctly defined and matches documentation",
+        "Audit tool can detect violations in mock code",
+        "Validator correctly initializes with proper configuration"
+      ],
+      "success_criteria": [
+        "LockValidator can be instantiated with test config",
+        "Lock order validation works for simple cases",
+        "Audit tool reports violations accurately"
+      ]
+    },
+    {
+      "group_id": "G2", 
+      "name": "Basic Lock Ordering",
+      "priority": 2,
+      "dependencies": ["G1"],
+      "tests": [
+        "test_lock_ordering_signal_combiner_then_traders",
+        "test_lock_ordering_strategy_order_then_metrics",
+        "test_no_circular_lock_dependencies"
+      ],
+      "description": "Basic lock ordering validation between pairs of locks",
+      "implementation_approach": "RED_FIRST",
+      "estimated_effort": "3-4 hours",
+      "mock_infrastructure": [
+        "MockSignalCombiner",
+        "MockTraders", 
+        "MockStrategyOrder",
+        "MockStrategyMetrics",
+        "ThreadSimulator"
+      ],
+      "expected_assertions": [
+        "Thread following correct order (signal_combiner → traders) succeeds",
+        "Thread following wrong order (traders → signal_combiner) fails",
+        "Multiple threads following same order complete without deadlock",
+        "Strategy locks acquired in correct order (strategy_order → strategy_metrics)",
+        "Circular dependency detection catches loops"
+      ],
+      "success_criteria": [
+        "All basic ordering violations are caught",
+        "Correct ordering patterns succeed",
+        "No false positives in circular dependency detection"
+      ]
+    },
+    {
+      "group_id": "G3",
+      "name": "RwLock Semantics",
+      "priority": 3,
+      "dependencies": ["G2"],
+      "tests": [
+        "test_concurrent_reads_dont_block_rwlock",
+        "test_write_waits_for_reads_rwlock"
+      ],
+      "description": "RwLock behavior validation for signal_combiner",
+      "implementation_approach": "RED_FIRST", 
+      "estimated_effort": "2-3 hours",
+      "mock_infrastructure": [
+        "MockRwLock<T>",
+        "ConcurrentReadTester",
+        "WriteBlockingTester"
+      ],
+      "expected_assertions": [
+        "Multiple concurrent reads execute simultaneously",
+        "Read operations don't block each other",
+        "Write operation waits for all reads to complete", 
+        "Write operation gets exclusive access"
+      ],
+      "success_criteria": [
+        "Concurrent reads complete in <100ms total (not sum)",
+        "Write waits measurably for reads (>10ms)",
+        "No data races detected"
+      ]
+    },
+    {
+      "group_id": "G4",
+      "name": "Lock Release & Timing",
+      "priority": 4,
+      "dependencies": ["G3"],
+      "tests": [
+        "test_locks_released_promptly",
+        "test_early_lock_release_after_clone",
+        "test_minimal_critical_section_in_updates",
+        "test_lock_timeout_prevents_indefinite_blocking"
+      ],
+      "description": "Lock release patterns and timing validation",
+      "implementation_approach": "RED_FIRST",
+      "estimated_effort": "4-5 hours",
+      "mock_infrastructure": [
+        "LockTimingTracker",
+        "CriticalSectionTimer",
+        "MockOperation",
+        "TimeoutTester"
+      ],
+      "expected_assertions": [
+        "Lock released immediately after operation completes",
+        "Lock not held during I/O or computation",
+        "Clone-and-release pattern implemented correctly",
+        "Critical sections are minimal (<10ms)",
+        "Timeout mechanism prevents infinite blocking"
+      ],
+      "success_criteria": [
+        "Lock hold time < 10ms for data operations",
+        "Clone-release pattern shows immediate unlock",
+        "Timeout triggers within specified time",
+        "No locks held during async operations"
+      ]
+    },
+    {
+      "group_id": "G5",
+      "name": "Concurrent Read/Write Safety", 
+      "priority": 5,
+      "dependencies": ["G4"],
+      "tests": [
+        "test_concurrent_position_reads",
+        "test_concurrent_position_writes_serialized",
+        "test_no_dirty_reads_position_updates",
+        "test_no_buffer_overflow_concurrent_updates",
+        "test_no_data_races_shared_state",
+        "test_no_use_after_free_arc_cloning"
+      ],
+      "description": "Memory safety and data consistency under concurrency",
+      "implementation_approach": "RED_FIRST",
+      "estimated_effort": "5-6 hours",
+      "mock_infrastructure": [
+        "MockPosition",
+        "ConcurrentDataTester",
+        "MemorySafetyChecker",
+        "DataRaceDetector"
+      ],
+      "expected_assertions": [
+        "Multiple position reads execute concurrently",
+        "Position writes are properly serialized",
+        "No partially updated states visible to readers",
+        "Collection updates don't overflow",
+        "Arc cloning is memory safe",
+        "No data races in shared state"
+      ],
+      "success_criteria": [
+        "Concurrent reads complete without blocking",
+        "Writes are atomic and consistent",
+        "No dirty reads detected",
+        "Memory safety verified with stress testing"
+      ]
+    },
+    {
+      "group_id": "G6",
+      "name": "Cross-Service Synchronization",
+      "priority": 6,
+      "dependencies": ["G5"],
+      "tests": [
+        "test_signal_combiner_and_traders_synchronized",
+        "test_candle_and_signal_synchronized"
+      ],
+      "description": "Multi-lock operations across services",
+      "implementation_approach": "RED_FIRST",
+      "estimated_effort": "3-4 hours",
+      "mock_infrastructure": [
+        "MockOrderExecution",
+        "MockSignalGeneration",
+        "CrossServiceTester"
+      ],
+      "expected_assertions": [
+        "Order execution acquires locks in correct order",
+        "Signal generation coordinates candle and signal updates",
+        "Cross-service operations complete without deadlock"
+      ],
+      "success_criteria": [
+        "Order execution flow works end-to-end",
+        "Signal generation maintains consistency",
+        "No deadlocks in cross-service operations"
+      ]
+    },
+    {
+      "group_id": "G7",
+      "name": "Fairness & Contention",
+      "priority": 7, 
+      "dependencies": ["G6"],
+      "tests": [
+        "test_lock_fairness",
+        "test_no_starvation_concurrent_operations"
+      ],
+      "description": "Lock fairness and starvation prevention",
+      "implementation_approach": "RED_FIRST",
+      "estimated_effort": "3-4 hours",
+      "mock_infrastructure": [
+        "FairnessTracker",
+        "StarvationDetector",
+        "PriorityTracker"
+      ],
+      "expected_assertions": [
+        "Locks granted in FIFO order to waiting threads",
+        "No thread starved for >1 second",
+        "Fair scheduling under high contention"
+      ],
+      "success_criteria": [
+        "FIFO ordering verified statistically",
+        "All threads complete within bounded time",
+        "No starvation detected in stress tests"
+      ]
+    },
+    {
+      "group_id": "G8",
+      "name": "Error Handling & Recovery",
+      "priority": 8,
+      "dependencies": ["G7"],
+      "tests": [
+        "test_async_cancellation_safe",
+        "test_mutex_poisoning_handled"
+      ],
+      "description": "Error scenarios and recovery mechanisms",
+      "implementation_approach": "RED_FIRST",
+      "estimated_effort": "3-4 hours",
+      "mock_infrastructure": [
+        "CancellationTester",
+        "PoisonDetector",
+        "ErrorRecoveryValidator"
+      ],
+      "expected_assertions": [
+        "Cancelled async tasks release locks properly",
+        "Poisoned mutexes are handled gracefully",
+        "System recovers from error conditions"
+      ],
+      "success_criteria": [
+        "Lock cleanup on cancellation",
+        "Poison recovery mechanisms work",
+        "No resource leaks on errors"
+      ]
+    },
+    {
+      "group_id": "G9",
+      "name": "Stress Testing & Deadlock Detection",
+      "priority": 9,
+      "dependencies": ["G8"],
+      "tests": [
+        "test_deadlock_detection"
+      ],
+      "description": "Advanced deadlock detection and high-load scenarios",
+      "implementation_approach": "RED_FIRST",
+      "estimated_effort": "4-5 hours",
+      "mock_infrastructure": [
+        "DeadlockSimulator",
+        "HighLoadTester",
+        "DeadlockDetector"
+      ],
+      "expected_assertions": [
+        "Deadlock detector identifies actual deadlocks",
+        "System performs under high concurrent load",
+        "Deadlock recovery mechanisms work"
+      ],
+      "success_criteria": [
+        "Deadlock detection accuracy >95%",
+        "High load performance maintained",
+        "Recovery from deadlock scenarios"
+      ]
+    }
+  ],
+  "infrastructure": {
+    "test_utilities": [
+      {
+        "name": "LockValidatorTestHelper", 
+        "purpose": "Helper for setting up lock validator in tests",
+        "methods": ["create_test_validator", "create_test_config", "simulate_lock_sequence"]
+      },
+      {
+        "name": "ThreadSimulator",
+        "purpose": "Simulate multi-threaded lock operations",
+        "methods": ["spawn_lock_sequence", "verify_completion", "detect_deadlock"]
+      },
+      {
+        "name": "MockLockTracker",
+        "purpose": "Track lock acquisitions/releases for testing",
+        "methods": ["record_acquire", "record_release", "get_timeline", "verify_order"]
+      },
+      {
+        "name": "ConcurrentDataTester",
+        "purpose": "Test concurrent data operations safety",
+        "methods": ["stress_test_reads", "stress_test_writes", "verify_consistency"]
+      },
+      {
+        "name": "TimingValidator",
+        "purpose": "Validate lock timing and release patterns",
+        "methods": ["measure_hold_time", "verify_prompt_release", "check_timeouts"]
+      }
+    ],
+    "mock_objects": [
+      {
+        "name": "MockSignalCombiner",
+        "locks": ["RwLock"],
+        "operations": ["read_signals", "update_weights"]
+      },
+      {
+        "name": "MockTraders", 
+        "locks": ["Mutex"],
+        "operations": ["place_order", "cancel_order"]
+      },
+      {
+        "name": "MockPosition",
+        "locks": ["RwLock"],
+        "operations": ["read_position", "update_position"]
+      }
+    ],
+    "configuration": {
+      "lock_order": [
+        "signal_combiner",
+        "strategy_order",
+        "strategy_metrics", 
+        "traders",
+        "active_alerts",
+        "candle_builder",
+        "last_signals",
+        "open_positions",
+        "performance_profiler",
+        "system_health",
+        "trade_history",
+        "trading_metrics"
+      ],
+      "timeout_ms": 5000,
+      "test_threads": 10,
+      "stress_test_operations": 1000
+    }
+  },
+  "implementation_phases": {
+    "phase_1_red": {
+      "description": "Write all failing tests that define the API",
+      "duration": "2-3 days",
+      "deliverables": [
+        "All 25 tests written and failing with panic!",
+        "Test infrastructure and helpers implemented",
+        "Mock objects created",
+        "Clear API contracts defined"
+      ]
+    },
+    "phase_2_green": {
+      "description": "Implement minimal code to make tests pass",
+      "duration": "3-4 days", 
+      "deliverables": [
+        "Core lock validator functionality",
+        "Lock ordering enforcement",
+        "Basic deadlock prevention",
+        "All tests passing"
+      ]
+    },
+    "phase_3_refactor": {
+      "description": "Optimize and improve implementation",
+      "duration": "1-2 days",
+      "deliverables": [
+        "Performance optimizations",
+        "Code quality improvements",
+        "Documentation updates", 
+        "Integration with existing codebase"
+      ]
+    }
+  },
+  "parallelization_strategy": {
+    "can_be_parallelized": [
+      "G1 + G3 (Core + RwLock)",
+      "G2 + G4 (Ordering + Timing)",
+      "G5 + G7 (Safety + Fairness)"
+    ],
+    "must_be_sequential": [
+      "G1 → G2 → G6 → G8 → G9",
+      "Infrastructure must be built before dependent tests"
+    ],
+    "batch_execution": [
+      "Foundation + RwLock tests (G1, G3)",
+      "Core ordering tests (G2, G4)", 
+      "Safety and consistency tests (G5, G7)",
+      "Advanced features (G6, G8, G9)"
+    ]
+  },
+  "success_criteria": {
+    "all_tests_passing": "All 25 concurrency tests pass consistently",
+    "no_flaky_tests": "Tests pass 100 times in a row", 
+    "performance_targets": {
+      "lock_acquisition": "<1ms",
+      "lock_release": "<1ms",
+      "deadlock_detection": "<100ms"
+    },
+    "coverage_targets": {
+      "lock_validator": ">95%",
+      "concurrency_paths": ">80%"
+    },
+    "integration": "Lock validator integrated with existing MPC service"
+  },
+  "risks_and_mitigations": {
+    "flaky_tests": {
+      "risk": "Timing-dependent tests may be flaky",
+      "mitigation": "Use deterministic timing, increase timeouts, retry mechanisms"
+    },
+    "deadlock_in_tests": {
+      "risk": "Test deadlocks could hang CI",
+      "mitigation": "Test timeouts, deadlock detection in test runner"
+    },
+    "performance_impact": {
+      "risk": "Lock validation overhead affects performance", 
+      "mitigation": "Conditional compilation, minimal overhead design"
+    }
+  },
+  "estimated_total_effort": "8-12 days",
+  "critical_path": [
+    "G1: Foundation (3h)",
+    "G2: Basic Ordering (4h)", 
+    "G5: Safety (6h)",
+    "G6: Cross-Service (4h)",
+    "G9: Deadlock Detection (5h)"
+  ]
+}
