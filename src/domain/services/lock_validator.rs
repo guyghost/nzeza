@@ -41,17 +41,19 @@ impl LockValidator {
         // Find current thread's tracker
         let mut trackers = self.trackers.lock().map_err(|e| e.to_string())?;
 
+        // Check if tracker exists, if not create it
+        if !trackers.iter().any(|t| t.thread_id == thread_id) {
+            trackers.push(LockTracker {
+                thread_id: thread_id.clone(),
+                acquired_locks: Vec::new(),
+                lock_times: HashMap::new(),
+            });
+        }
+
         let tracker = trackers
             .iter_mut()
             .find(|t| t.thread_id == thread_id)
-            .unwrap_or_else(|| {
-                trackers.push(LockTracker {
-                    thread_id: thread_id.clone(),
-                    acquired_locks: Vec::new(),
-                    lock_times: HashMap::new(),
-                });
-                trackers.last_mut().unwrap()
-            });
+            .unwrap();
 
         // Check lock ordering
         if let Some(last_lock) = tracker.acquired_locks.last() {
