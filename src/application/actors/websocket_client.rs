@@ -2077,6 +2077,42 @@ impl WebSocketClient {
         // Reset metrics
     }
 
+    pub async fn graceful_disconnect(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.connection_state = ConnectionState::Disconnected;
+        inner.websocket_sender = None;
+        
+        if let Some(handle) = inner.connection_task.take() {
+            handle.abort();
+        }
+        
+        let disconnect_event = DisconnectEvent {
+            reason: "Graceful disconnect initiated".to_string(),
+            clean_shutdown: true,
+            duration: Duration::from_millis(100),
+        };
+        
+        let _ = inner.disconnect_event_stream.sender.send(disconnect_event);
+    }
+
+    pub async fn force_disconnect(&self) {
+        let mut inner = self.inner.lock().await;
+        inner.connection_state = ConnectionState::Failed;
+        inner.websocket_sender = None;
+        
+        if let Some(handle) = inner.connection_task.take() {
+            handle.abort();
+        }
+        
+        let disconnect_event = DisconnectEvent {
+            reason: "Force disconnect".to_string(),
+            clean_shutdown: false,
+            duration: Duration::from_millis(50),
+        };
+        
+        let _ = inner.disconnect_event_stream.sender.send(disconnect_event);
+    }
+
     pub fn circuit_state(&self) -> CircuitState {
         let inner = self.inner.blocking_lock();
         inner.circuit_state.clone()
