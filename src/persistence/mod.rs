@@ -210,24 +210,35 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
     .await
     .map_err(|e| DatabaseError::MigrationError(format!("Failed to create dydx_order_metadata table: {}", e)))?;
 
-    // Add new columns if they don't exist (for existing databases)
-    sqlx::query(
-        r#"
-        ALTER TABLE dydx_order_metadata ADD COLUMN order_flags INTEGER DEFAULT 0
-        "#,
+    // Add order_flags column if it doesn't exist (for databases migrated from older versions)
+    let order_flags_exists: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM pragma_table_info('dydx_order_metadata') WHERE name='order_flags'"
     )
-    .execute(pool)
+    .fetch_one(pool)
     .await
-    .map_err(|e| DatabaseError::MigrationError(format!("Failed to add order_flags column: {}", e)))?;
+    .unwrap_or((0,));
+    
+    if order_flags_exists.0 == 0 {
+        sqlx::query("ALTER TABLE dydx_order_metadata ADD COLUMN order_flags INTEGER DEFAULT 0")
+            .execute(pool)
+            .await
+            .map_err(|e| DatabaseError::MigrationError(format!("Failed to add order_flags column: {}", e)))?;
+    }
 
-    sqlx::query(
-        r#"
-        ALTER TABLE dydx_order_metadata ADD COLUMN clob_pair_id INTEGER DEFAULT 0
-        "#,
+    // Add clob_pair_id column if it doesn't exist (for databases migrated from older versions)
+    let clob_pair_id_exists: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM pragma_table_info('dydx_order_metadata') WHERE name='clob_pair_id'"
     )
-    .execute(pool)
+    .fetch_one(pool)
     .await
-    .map_err(|e| DatabaseError::MigrationError(format!("Failed to add clob_pair_id column: {}", e)))?;
+    .unwrap_or((0,));
+    
+    if clob_pair_id_exists.0 == 0 {
+        sqlx::query("ALTER TABLE dydx_order_metadata ADD COLUMN clob_pair_id INTEGER DEFAULT 0")
+            .execute(pool)
+            .await
+            .map_err(|e| DatabaseError::MigrationError(format!("Failed to add clob_pair_id column: {}", e)))?;
+    }
 
     // Create indexes for better query performance
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)")
