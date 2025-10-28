@@ -1,4 +1,5 @@
 use std::time::{Duration, Instant, SystemTime};
+use std::collections::HashMap;
 use tokio::sync::broadcast;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -360,14 +361,17 @@ pub struct DisconnectEvent {
     pub disconnect_type: DisconnectType,
     pub reason: Option<String>,
     pub timestamp: Instant,
+    pub clean_shutdown: bool,
+    pub duration: Duration,
 }
 
 /// Timeout metrics
 #[derive(Clone, Debug)]
 pub struct TimeoutMetrics {
-    pub timeout_count: u64,
+    pub connection_timeouts: u64,
     pub average_timeout_duration: Duration,
     pub max_timeout_duration: Duration,
+    pub last_timeout_timestamp: Option<SystemTime>,
 }
 
 /// Disconnect metrics
@@ -377,6 +381,7 @@ pub struct DisconnectMetrics {
     pub graceful_disconnects: u64,
     pub forced_disconnects: u64,
     pub error_disconnects: u64,
+    pub average_disconnect_time: Duration,
 }
 
 /// State change event
@@ -384,7 +389,9 @@ pub struct DisconnectMetrics {
 pub struct StateChangeEvent {
     pub from_state: ConnectionState,
     pub to_state: ConnectionState,
-    pub timestamp: Instant,
+    pub timestamp: Option<Instant>,
+    pub duration: Duration,
+    pub trigger_reason: String,
 }
 
 /// State transition metrics
@@ -392,28 +399,50 @@ pub struct StateChangeEvent {
 pub struct StateTransitionMetrics {
     pub total_transitions: u64,
     pub transitions_by_state: Vec<(ConnectionState, u64)>,
+    pub average_transition_duration: Duration,
+    pub current_state: ConnectionState,
+    pub time_in_connected_state: Duration,
+    pub time_in_connecting_state: Duration,
+    pub time_in_disconnected_state: Duration,
+    pub time_in_reconnecting_state: Duration,
+    pub time_in_failed_state: Duration,
 }
 
 /// Connection prevention metrics
 #[derive(Clone, Debug)]
 pub struct ConnectionPreventionMetrics {
-    pub prevention_count: u64,
-    pub reason_counts: Vec<(String, u64)>,
+    pub duplicate_connection_attempts: u64,
+    pub last_prevention_timestamp: Option<SystemTime>,
+    pub current_connections: u32,
+    pub max_concurrent_connections: u32,
+    pub prevention_reasons: Vec<(String, u64)>,
 }
 
 /// Connection error metrics
 #[derive(Clone, Debug)]
 pub struct ConnectionErrorMetrics {
-    pub total_errors: u64,
-    pub error_types: Vec<(String, u64)>,
+    pub total_connection_failures: u64,
+    pub rejection_errors: u64,
+    pub timeout_errors: u64,
+    pub dns_resolution_errors: u64,
+    pub handshake_errors: u64,
+    pub last_error_timestamp: Option<SystemTime>,
+    pub last_error_message: String,
+    pub error_type_distribution: HashMap<String, u64>,
 }
 
 /// Frame buffer metrics
 #[derive(Clone, Debug)]
 pub struct FrameBufferMetrics {
-    pub frames_buffered: u64,
+    pub total_frames_buffered: u64,
     pub frames_flushed: u64,
     pub buffer_capacity: usize,
+    pub messages_reassembled: u64,
+    pub buffer_utilization_max: f64,
+    pub average_buffer_time: Duration,
+    pub buffer_overflows: u32,
+    pub concurrent_buffer_operations: u32,
+    pub buffer_size_limit: usize,
 }
 
 /// Mixed message metrics
@@ -421,30 +450,48 @@ pub struct FrameBufferMetrics {
 pub struct MixedMessageMetrics {
     pub mixed_message_count: u64,
     pub separation_success_rate: f64,
+    pub total_messages_processed: u64,
+    pub valid_messages_processed: u64,
+    pub invalid_messages_processed: u64,
+    pub error_tolerance_activated: bool,
+    pub connection_stability_maintained: bool,
 }
 
 /// Progress event
 #[derive(Clone, Debug)]
 pub struct ProgressEvent {
     pub stage: String,
-    pub progress_percentage: u8,
+    pub percentage: f64,
+    pub completed: bool,
     pub timestamp: Instant,
 }
 
 /// Large message metrics
 #[derive(Clone, Debug)]
 pub struct LargeMessageMetrics {
-    pub large_message_count: u64,
+    pub total_large_messages: u64,
     pub average_size: u64,
     pub max_size: u64,
+    pub largest_message_size: u64,
+    pub average_large_message_time: Duration,
+    pub max_message_processing_time: Duration,
+    pub oversized_message_rejections: u64,
+    pub concurrent_large_messages: u32,
+    pub streaming_operations: u32,
 }
 
 /// Message ordering metrics
 #[derive(Clone, Debug)]
 pub struct MessageOrderingMetrics {
-    pub total_messages: u64,
+    pub total_messages_processed: u64,
     pub out_of_order_count: u64,
     pub ordering_success_rate: f64,
+    pub sequence_violations: u32,
+    pub gap_detections: u32,
+    pub ordering_preserved_percentage: f64,
+    pub average_message_latency: Duration,
+    pub concurrent_sender_ordering_maintained: bool,
+    pub ordering_algorithm: String,
 }
 
 struct WebSocketClientInner {
@@ -478,6 +525,9 @@ struct WebSocketClientInner {
     reconnection_stream: ReconnectionStream,
     circuit_breaker_stream: CircuitBreakerStream,
     connection_attempt_stream: ConnectionAttemptStream,
+    disconnect_event_stream: DisconnectEventStream,
+    state_change_stream: StateChangeStream,
+    progress_stream: ProgressStream,
     parsing_metrics: ParsingMetrics,
     validation_metrics: ValidationMetrics,
     type_validation_metrics: TypeValidationMetrics,
@@ -505,6 +555,23 @@ struct WebSocketClientInner {
     circuit_open_time: Option<Instant>,
     circuit_last_failure: Option<Instant>,
     circuit_last_success: Option<Instant>,
+    connection_timeout: Duration,
+    handshake_timeout: Duration,
+    graceful_disconnect_enabled: bool,
+    disconnect_timeout: Duration,
+    forced_disconnect_timeout: Duration,
+    state_monitoring_enabled: bool,
+    retry_on_failure_enabled: bool,
+    frame_buffering_enabled: bool,
+    partial_frame_handling_enabled: bool,
+    error_tolerance_enabled: bool,
+    message_validation_enabled: bool,
+    max_message_size: u64,
+    large_message_streaming_enabled: bool,
+    progress_reporting_enabled: bool,
+    message_ordering_enabled: bool,
+    sequence_tracking_enabled: bool,
+    order_verification_enabled: bool,
 }
 
 /// Message stream for raw WebSocket messages
@@ -585,6 +652,24 @@ pub struct ConnectionAttemptStream {
     pub sender: broadcast::Sender<ConnectionAttemptEvent>,
 }
 
+/// Disconnect event stream
+#[derive(Clone)]
+pub struct DisconnectEventStream {
+    pub sender: broadcast::Sender<DisconnectEvent>,
+}
+
+/// State change event stream
+#[derive(Clone)]
+pub struct StateChangeStream {
+    pub sender: broadcast::Sender<StateChangeEvent>,
+}
+
+/// Progress event stream
+#[derive(Clone)]
+pub struct ProgressStream {
+    pub sender: broadcast::Sender<ProgressEvent>,
+}
+
 impl ParsingErrorStream {
     pub fn subscribe(&self) -> ParsingErrorReceiver {
         ParsingErrorReceiver {
@@ -628,6 +713,30 @@ impl CircuitBreakerStream {
 impl ConnectionAttemptStream {
     pub fn subscribe(&self) -> ConnectionAttemptReceiver {
         ConnectionAttemptReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
+impl DisconnectEventStream {
+    pub fn subscribe(&self) -> DisconnectEventReceiver {
+        DisconnectEventReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
+impl StateChangeStream {
+    pub fn subscribe(&self) -> StateChangeReceiver {
+        StateChangeReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
+impl ProgressStream {
+    pub fn subscribe(&self) -> ProgressReceiver {
+        ProgressReceiver {
             receiver: self.sender.subscribe(),
         }
     }
@@ -732,6 +841,39 @@ impl ConnectionAttemptReceiver {
     }
 }
 
+/// Disconnect event receiver
+pub struct DisconnectEventReceiver {
+    pub receiver: broadcast::Receiver<DisconnectEvent>,
+}
+
+impl DisconnectEventReceiver {
+    pub async fn recv(&mut self) -> Result<DisconnectEvent, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
+}
+
+/// State change event receiver
+pub struct StateChangeReceiver {
+    pub receiver: broadcast::Receiver<StateChangeEvent>,
+}
+
+impl StateChangeReceiver {
+    pub async fn recv(&mut self) -> Result<StateChangeEvent, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
+}
+
+/// Progress event receiver
+pub struct ProgressReceiver {
+    pub receiver: broadcast::Receiver<ProgressEvent>,
+}
+
+impl ProgressReceiver {
+    pub async fn recv(&mut self) -> Result<ProgressEvent, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
+}
+
 /// Public WebSocket client wrapper
 #[derive(Clone)]
 pub struct WebSocketClient {
@@ -749,6 +891,9 @@ impl WebSocketClient {
         let (reconnection_tx, _) = broadcast::channel(100);
         let (circuit_tx, _) = broadcast::channel(100);
         let (connection_attempt_tx, _) = broadcast::channel(100);
+        let (disconnect_event_tx, _) = broadcast::channel(100);
+        let (state_change_tx, _) = broadcast::channel(100);
+        let (progress_tx, _) = broadcast::channel(100);
 
         // Generate unique connection ID
         let connection_id = format!("ws_{}", std::time::SystemTime::now()
@@ -787,6 +932,9 @@ impl WebSocketClient {
             reconnection_stream: ReconnectionStream { sender: reconnection_tx },
             circuit_breaker_stream: CircuitBreakerStream { sender: circuit_tx },
             connection_attempt_stream: ConnectionAttemptStream { sender: connection_attempt_tx },
+            disconnect_event_stream: DisconnectEventStream { sender: disconnect_event_tx },
+            state_change_stream: StateChangeStream { sender: state_change_tx },
+            progress_stream: ProgressStream { sender: progress_tx },
             parsing_metrics: ParsingMetrics {
                 total_messages_parsed: 0,
                 successful_parses: 0,
@@ -889,6 +1037,23 @@ impl WebSocketClient {
             circuit_open_time: None,
             circuit_last_failure: None,
             circuit_last_success: None,
+            connection_timeout: Duration::from_secs(30),
+            handshake_timeout: Duration::from_secs(10),
+            graceful_disconnect_enabled: true,
+            disconnect_timeout: Duration::from_secs(5),
+            forced_disconnect_timeout: Duration::from_secs(1),
+            state_monitoring_enabled: true,
+            retry_on_failure_enabled: true,
+            frame_buffering_enabled: false,
+            partial_frame_handling_enabled: false,
+            error_tolerance_enabled: false,
+            message_validation_enabled: true,
+            max_message_size: 1024 * 1024,
+            large_message_streaming_enabled: false,
+            progress_reporting_enabled: false,
+            message_ordering_enabled: false,
+            sequence_tracking_enabled: false,
+            order_verification_enabled: false,
         };
 
         Self {
@@ -1397,6 +1562,125 @@ impl WebSocketClient {
         self
     }
 
+    pub fn with_connection_timeout(mut self, timeout: Duration) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.connection_timeout = timeout;
+        }
+        self
+    }
+
+    pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.handshake_timeout = timeout;
+        }
+        self
+    }
+
+    pub fn with_graceful_disconnect(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.graceful_disconnect_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_disconnect_timeout(mut self, timeout: Duration) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.disconnect_timeout = timeout;
+        }
+        self
+    }
+
+    pub fn with_forced_disconnect_timeout(mut self, timeout: Duration) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.forced_disconnect_timeout = timeout;
+        }
+        self
+    }
+
+    pub fn with_state_monitoring(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.state_monitoring_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_retry_on_failure(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.retry_on_failure_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_frame_buffering(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.frame_buffering_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_partial_frame_handling(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.partial_frame_handling_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_error_tolerance(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.error_tolerance_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_message_validation(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.message_validation_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_max_message_size(mut self, size: u64) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.max_message_size = size;
+        }
+        self
+    }
+
+    pub fn with_large_message_streaming(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.large_message_streaming_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_progress_reporting(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.progress_reporting_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_message_ordering(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.message_ordering_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_sequence_tracking(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.sequence_tracking_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_order_verification(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.order_verification_enabled = enabled;
+        }
+        self
+    }
+
     pub async fn price_stream(&self) -> PriceStream {
         let inner = self.inner.lock().await;
         inner.price_stream.clone()
@@ -1500,8 +1784,8 @@ impl WebSocketClient {
         inner.reconnection_stream.clone()
     }
 
-    pub async fn reconnection_metrics(&self) -> ReconnectionMetrics {
-        let inner = self.inner.lock().await;
+    pub fn reconnection_metrics(&self) -> ReconnectionMetrics {
+        let inner = self.inner.blocking_lock();
         inner.reconnection_metrics.clone()
     }
 
@@ -1569,8 +1853,8 @@ impl WebSocketClient {
         inner.connection_attempt_stream.clone()
     }
 
-    pub async fn circuit_breaker_metrics(&self) -> CircuitBreakerMetrics {
-        let inner = self.inner.lock().await;
+    pub fn circuit_breaker_metrics(&self) -> CircuitBreakerMetrics {
+        let inner = self.inner.blocking_lock();
         inner.circuit_breaker_metrics.clone()
     }
 
@@ -1616,18 +1900,18 @@ impl WebSocketClient {
         // Reset metrics
     }
 
-    pub async fn circuit_state(&self) -> CircuitState {
-        let inner = self.inner.lock().await;
+    pub fn circuit_state(&self) -> CircuitState {
+        let inner = self.inner.blocking_lock();
         inner.circuit_state.clone()
     }
 
-    pub async fn is_circuit_open(&self) -> bool {
-        let inner = self.inner.lock().await;
+    pub fn is_circuit_open(&self) -> bool {
+        let inner = self.inner.blocking_lock();
         matches!(inner.circuit_state, CircuitState::Open)
     }
 
-    pub async fn is_circuit_closed(&self) -> bool {
-        let inner = self.inner.lock().await;
+    pub fn is_circuit_closed(&self) -> bool {
+        let inner = self.inner.blocking_lock();
         matches!(inner.circuit_state, CircuitState::Closed)
     }
 
