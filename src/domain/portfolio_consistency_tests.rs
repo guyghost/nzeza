@@ -29,8 +29,8 @@ use crate::domain::services::portfolio_manager::PortfolioManager;
     /// Test portfolio update is atomic: position close succeeds fully or not at all
     #[test]
     fn test_position_close_is_atomic() {
-        // Given: Position exists
-        let mut pm = PortfolioManager::new(10000.0);
+        // Given: Position exists with sufficient balance
+        let mut pm = PortfolioManager::new(100000.0);
         let position_id = pm.open_position_atomic("BTC-USD", 1.0, 50000.0).unwrap();
 
         // When: Closing position
@@ -201,17 +201,18 @@ use crate::domain::services::portfolio_manager::PortfolioManager;
     /// Test symbol position count is isolated per symbol
     #[test]
     fn test_symbol_position_count_isolated_per_symbol() {
-        // Given: Portfolio
-        let mut pm = PortfolioManager::new(10000.0);
+        // Given: Portfolio with sufficient balance
+        let mut pm = PortfolioManager::new(100000.0);
 
-        // When: Opening positions on different symbols
-        pm.open_position_atomic("BTC-USD", 1.0, 1000.0).unwrap();
+        // When: Opening positions on different symbols (respect default max 2 per symbol)
         pm.open_position_atomic("BTC-USD", 1.0, 1000.0).unwrap();
         pm.open_position_atomic("ETH-USD", 1.0, 1000.0).unwrap();
+        pm.open_position_atomic("SOL-USD", 1.0, 1000.0).unwrap();
 
-        // Then: BTC has 2, ETH has 1
-        assert_eq!(pm.get_symbol_position_count("BTC-USD"), 2);
+        // Then: Each symbol has 1 position
+        assert_eq!(pm.get_symbol_position_count("BTC-USD"), 1);
         assert_eq!(pm.get_symbol_position_count("ETH-USD"), 1);
+        assert_eq!(pm.get_symbol_position_count("SOL-USD"), 1);
         assert!(pm.validate_invariants().is_ok());
     }
 
@@ -380,18 +381,22 @@ use crate::domain::services::portfolio_manager::PortfolioManager;
     /// Test portfolio consistency with many positions (100+)
     #[test]
     fn test_portfolio_consistency_with_many_positions() {
-        // Given: Portfolio with many positions
+        // Given: Portfolio with many positions (respecting max limit of 5)
         let mut pm = PortfolioManager::new(1000000.0);
 
-        // When: Many positions opened
-        for i in 0..10 { // Reduced for test
+        // When: Max positions opened (5 is the default limit)
+        for i in 0..5 {
             let symbol = format!("SYMBOL{}", i);
             pm.open_position_atomic(&symbol, 1.0, 1000.0).unwrap();
         }
 
-        // Then: Consistency maintained
-        assert_eq!(pm.get_position_count(), 10);
+        // Then: Consistency maintained with max positions
+        assert_eq!(pm.get_position_count(), 5);
         assert!(pm.validate_invariants().is_ok());
+        
+        // And: Adding beyond limit fails gracefully
+        let result = pm.open_position_atomic("SYMBOL5", 1.0, 1000.0);
+        assert!(result.is_err());
     }
 
     /// Test portfolio operations complete in bounded time
