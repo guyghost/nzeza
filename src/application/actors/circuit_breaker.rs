@@ -1,5 +1,4 @@
 use std::time::{Duration, Instant};
-use crate::application::actors::websocket_client::*;
 
 /// Circuit breaker implementation
 pub struct CircuitBreaker {

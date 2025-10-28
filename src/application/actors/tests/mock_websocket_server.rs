@@ -156,9 +156,9 @@ impl MockWebSocketServer {
         Ok(())
     }
 
-    pub async fn set_failure_mode(&mut self, enabled: bool) -> Result<(), String> {
-        let mut failure_flag = self.failure_mode.lock().await;
-        *failure_flag = enabled;
+    pub async fn simulate_connection(&mut self) -> Result<(), String> {
+        let conn = MockWebSocketConnection::new();
+        let mut conns = self.connections.lock().await;
+        conns.push_back(conn);
         Ok(())
     }
-}

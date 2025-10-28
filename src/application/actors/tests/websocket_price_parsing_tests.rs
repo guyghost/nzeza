@@ -4,6 +4,19 @@ use tracing::info;
 use serde_json::{json, Value};
 
 use super::mock_websocket_server::MockWebSocketServer;
+use crate::application::actors::websocket_client::{
+    WebSocketClient, ConnectionState, PriceUpdate, ParsingError, ValidationError, TypeError,
+    ReconnectionEvent, CircuitBreakerEvent, ConnectionAttemptEvent, ClientConfig,
+    ReconnectionConfig, CircuitBreakerConfig, ExponentialBackoffConfig, ParsingMetrics,
+    ValidationMetrics, TypeValidationMetrics, PrecisionMetrics, ErrorMetrics,
+    ReconnectionMetrics, CircuitBreakerMetrics, FailureEvent, SuccessEvent,
+    TimeoutEvent, BackoffEvent, CircuitEvent, ConnectionMetadata, BufferMetrics,
+    MessageStream, ErrorStream, PriceStream, ParsingErrorStream, ValidationErrorStream,
+    TypeErrorStream, ReconnectionStream, CircuitBreakerStream, ConnectionAttemptStream,
+    MessageReceiver, ErrorReceiver, PriceReceiver, ParsingErrorReceiver,
+    ValidationErrorReceiver, TypeErrorReceiver, ReconnectionReceiver,
+    CircuitBreakerReceiver, ConnectionAttemptReceiver, CircuitState,
+};
 
 // All tests reference functionality that doesn't exist yet (RED phase)
 

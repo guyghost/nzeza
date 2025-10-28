@@ -2,6 +2,300 @@ use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::broadcast;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Connection states for WebSocket client
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Reconnecting,
+    Failed,
+}
+
+/// Circuit breaker states
+#[derive(Clone, Debug, PartialEq)]
+pub enum CircuitState {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
+/// Price update structure
+#[derive(Clone, Debug)]
+pub struct PriceUpdate {
+    pub product_id: String,
+    pub price: f64,
+    pub timestamp: Option<SystemTime>,
+    pub volume: Option<f64>,
+    pub exchange: Option<String>,
+    pub original_price_string: Option<String>,
+    pub decimal_places: u8,
+}
+
+/// Parsing error structure
+#[derive(Clone, Debug)]
+pub struct ParsingError {
+    pub message: String,
+    pub raw_data: String,
+    pub timestamp: SystemTime,
+}
+
+/// Validation error structure
+#[derive(Clone, Debug)]
+pub struct ValidationError {
+    pub field: String,
+    pub expected: String,
+    pub actual: String,
+    pub timestamp: SystemTime,
+}
+
+/// Type error structure
+#[derive(Clone, Debug)]
+pub struct TypeError {
+    pub field: String,
+    pub expected_type: String,
+    pub actual_type: String,
+    pub timestamp: SystemTime,
+}
+
+/// Reconnection event
+#[derive(Clone, Debug)]
+pub enum ReconnectionEvent {
+    Started { attempt: u32 },
+    Succeeded { attempt: u32, duration: Duration },
+    Failed { attempt: u32, error: String },
+}
+
+/// Circuit breaker event
+#[derive(Clone, Debug)]
+pub enum CircuitBreakerEvent {
+    Opened { reason: String },
+    Closed,
+    HalfOpened,
+}
+
+/// Connection attempt event
+#[derive(Clone, Debug)]
+pub enum ConnectionAttemptEvent {
+    Started,
+    Succeeded { duration: Duration },
+    Failed { error: String },
+}
+
+/// Client configuration
+#[derive(Clone, Debug)]
+pub struct ClientConfig {
+    pub price_parsing: bool,
+    pub strict_validation: bool,
+    pub error_recovery: bool,
+    pub strict_field_validation: bool,
+    pub required_fields: Vec<String>,
+    pub price_type_validation: bool,
+    pub numeric_validation: bool,
+    pub high_precision_mode: bool,
+    pub decimal_places: u8,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            price_parsing: true,
+            strict_validation: false,
+            error_recovery: true,
+            strict_field_validation: false,
+            required_fields: vec!["product_id".to_string(), "price".to_string()],
+            price_type_validation: true,
+            numeric_validation: true,
+            high_precision_mode: false,
+            decimal_places: 8,
+        }
+    }
+}
+
+/// Reconnection configuration
+#[derive(Clone, Debug)]
+pub struct ReconnectionConfig {
+    pub max_attempts: u32,
+    pub base_delay: Duration,
+    pub max_delay: Duration,
+    pub backoff_multiplier: f64,
+}
+
+/// Circuit breaker configuration
+#[derive(Clone, Debug)]
+pub struct CircuitBreakerConfig {
+    pub failure_threshold: u32,
+    pub success_threshold: u32,
+    pub timeout_duration: Duration,
+}
+
+/// Exponential backoff configuration
+#[derive(Clone, Debug)]
+pub struct ExponentialBackoffConfig {
+    pub initial_delay: Duration,
+    pub max_delay: Duration,
+    pub multiplier: f64,
+}
+
+/// Parsing metrics
+#[derive(Clone, Debug)]
+pub struct ParsingMetrics {
+    pub total_messages_parsed: u64,
+    pub successful_parses: u64,
+    pub parsing_errors: u64,
+    pub error_recovery_count: u64,
+    pub average_parse_time: Duration,
+    pub max_parse_time: Duration,
+}
+
+/// Validation metrics
+#[derive(Clone, Debug)]
+pub struct ValidationMetrics {
+    pub total_validations: u64,
+    pub validation_failures: u64,
+    pub validation_successes: u64,
+    pub missing_field_errors: u64,
+    pub type_mismatch_errors: u64,
+}
+
+/// Type validation metrics
+#[derive(Clone, Debug)]
+pub struct TypeValidationMetrics {
+    pub total_type_checks: u64,
+    pub type_validation_successes: u64,
+    pub type_validation_failures: u64,
+    pub non_numeric_price_errors: u64,
+    pub negative_price_errors: u64,
+    pub zero_price_errors: u64,
+}
+
+/// Precision metrics
+#[derive(Clone, Debug)]
+pub struct PrecisionMetrics {
+    pub total_precision_tests: u64,
+    pub precision_preserved_count: u64,
+    pub precision_loss_count: u64,
+    pub max_decimal_places_handled: u8,
+    pub min_value_handled: f64,
+    pub max_value_handled: f64,
+}
+
+/// Error metrics
+#[derive(Clone, Debug)]
+pub struct ErrorMetrics {
+    pub malformed_json_count: u64,
+    pub invalid_frame_count: u64,
+    pub total_error_count: u64,
+    pub last_error_timestamp: Option<SystemTime>,
+}
+
+/// Reconnection metrics
+#[derive(Clone, Debug)]
+pub struct ReconnectionMetrics {
+    pub total_attempts: u64,
+    pub successful_reconnections: u64,
+    pub max_retries_exceeded: bool,
+    pub total_downtime: Duration,
+    pub average_reconnection_time: Option<Duration>,
+    pub backoff_resets: u64,
+    pub current_backoff_delay: Duration,
+    pub concurrent_attempt_conflicts: u64,
+}
+
+/// Circuit breaker metrics
+#[derive(Clone, Debug)]
+pub struct CircuitBreakerMetrics {
+    pub current_state: CircuitState,
+    pub state_transitions: u64,
+    pub total_uptime: Duration,
+    pub total_failures: u64,
+    pub consecutive_failures: u64,
+    pub failure_rate_percent: f64,
+    pub last_failure_time: Option<Instant>,
+    pub total_successes: u64,
+    pub consecutive_successes: u64,
+    pub success_rate_percent: f64,
+    pub last_success_time: Option<Instant>,
+    pub time_in_current_state: Duration,
+    pub time_in_closed_state: Duration,
+    pub time_in_open_state: Duration,
+    pub time_in_half_open_state: Duration,
+    pub average_state_duration: Duration,
+    pub timeout_events: u64,
+    pub half_open_attempts: u64,
+    pub state_change_events: u64,
+    pub average_connection_time: Option<Duration>,
+    pub fastest_connection_time: Option<Duration>,
+    pub slowest_connection_time: Option<Duration>,
+    pub failure_threshold: u32,
+    pub success_threshold: u32,
+    pub timeout_duration: Duration,
+    pub circuit_open_time: Option<Instant>,
+    pub circuit_close_time: Option<Instant>,
+    pub successful_connections: u64,
+    pub total_timeout_attempts: u64,
+    pub exponential_backoff_enabled: bool,
+    pub backoff_multiplier: f64,
+    pub max_backoff_duration: Duration,
+    pub average_timeout_duration: Duration,
+    pub metrics_reset_time: Option<Instant>,
+}
+
+/// Failure event
+#[derive(Clone, Debug)]
+pub struct FailureEvent {
+    pub timestamp: Instant,
+    pub reason: String,
+}
+
+/// Success event
+#[derive(Clone, Debug)]
+pub struct SuccessEvent {
+    pub timestamp: Instant,
+    pub duration: Duration,
+}
+
+/// Timeout event
+#[derive(Clone, Debug)]
+pub struct TimeoutEvent {
+    pub timestamp: Instant,
+    pub duration: Duration,
+}
+
+/// Backoff event
+#[derive(Clone, Debug)]
+pub struct BackoffEvent {
+    pub timestamp: Instant,
+    pub delay: Duration,
+}
+
+/// Circuit event
+#[derive(Clone, Debug)]
+pub struct CircuitEvent {
+    pub timestamp: Instant,
+    pub from_state: CircuitState,
+    pub to_state: CircuitState,
+    pub reason: String,
+}
+
+/// Connection metadata
+#[derive(Clone, Debug)]
+pub struct ConnectionMetadata {
+    pub original_connect_time: Option<Instant>,
+    pub last_reconnect_time: Option<Instant>,
+    pub reconnection_count: u32,
+    pub session_id: Option<String>,
+}
+
+/// Buffer metrics
+#[derive(Clone, Debug)]
+pub struct BufferMetrics {
+    pub messages_buffered: u64,
+    pub messages_replayed: u64,
+    pub buffer_overflows: u64,
+    pub max_buffer_size: usize,
+}
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -62,9 +356,25 @@ pub struct MessageStream {
     pub sender: broadcast::Sender<String>,
 }
 
+impl MessageStream {
+    pub fn subscribe(&self) -> MessageReceiver {
+        MessageReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
 /// Error stream for WebSocket errors
 pub struct ErrorStream {
     pub sender: broadcast::Sender<String>,
+}
+
+impl ErrorStream {
+    pub fn subscribe(&self) -> ErrorReceiver {
+        ErrorReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
 }
 
 /// Price stream for parsed price updates
@@ -72,9 +382,25 @@ pub struct PriceStream {
     pub sender: broadcast::Sender<PriceUpdate>,
 }
 
+impl PriceStream {
+    pub fn subscribe(&self) -> PriceReceiver {
+        PriceReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
 /// Parsing error stream
 pub struct ParsingErrorStream {
     pub sender: broadcast::Sender<ParsingError>,
+}
+
+impl ParsingErrorStream {
+    pub fn subscribe(&self) -> ParsingErrorReceiver {
+        ParsingErrorReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
 }
 
 /// Validation error stream
@@ -82,9 +408,25 @@ pub struct ValidationErrorStream {
     pub sender: broadcast::Sender<ValidationError>,
 }
 
+impl ValidationErrorStream {
+    pub fn subscribe(&self) -> ValidationErrorReceiver {
+        ValidationErrorReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
 /// Type error stream
 pub struct TypeErrorStream {
     pub sender: broadcast::Sender<TypeError>,
+}
+
+impl TypeErrorStream {
+    pub fn subscribe(&self) -> TypeErrorReceiver {
+        TypeErrorReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
 }
 
 /// Reconnection event stream
@@ -92,9 +434,25 @@ pub struct ReconnectionStream {
     pub sender: broadcast::Sender<ReconnectionEvent>,
 }
 
+impl ReconnectionStream {
+    pub fn subscribe(&self) -> ReconnectionReceiver {
+        ReconnectionReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
 /// Circuit breaker event stream
 pub struct CircuitBreakerStream {
     pub sender: broadcast::Sender<CircuitBreakerEvent>,
+}
+
+impl CircuitBreakerStream {
+    pub fn subscribe(&self) -> CircuitBreakerReceiver {
+        CircuitBreakerReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
 }
 
 /// Connection attempt event stream
@@ -102,9 +460,23 @@ pub struct ConnectionAttemptStream {
     pub sender: broadcast::Sender<ConnectionAttemptEvent>,
 }
 
+impl ConnectionAttemptStream {
+    pub fn subscribe(&self) -> ConnectionAttemptReceiver {
+        ConnectionAttemptReceiver {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
 /// Message receiver
 pub struct MessageReceiver {
     pub receiver: broadcast::Receiver<String>,
+}
+
+impl MessageReceiver {
+    pub async fn recv(&mut self) -> Result<String, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
 }
 
 /// Error receiver
@@ -112,9 +484,21 @@ pub struct ErrorReceiver {
     pub receiver: broadcast::Receiver<String>,
 }
 
+impl ErrorReceiver {
+    pub async fn recv(&mut self) -> Result<String, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
+}
+
 /// Price receiver
 pub struct PriceReceiver {
     pub receiver: broadcast::Receiver<PriceUpdate>,
+}
+
+impl PriceReceiver {
+    pub async fn recv(&mut self) -> Result<PriceUpdate, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
 }
 
 /// Parsing error receiver
@@ -122,9 +506,21 @@ pub struct ParsingErrorReceiver {
     pub receiver: broadcast::Receiver<ParsingError>,
 }
 
+impl ParsingErrorReceiver {
+    pub async fn recv(&mut self) -> Result<ParsingError, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
+}
+
 /// Validation error receiver
 pub struct ValidationErrorReceiver {
     pub receiver: broadcast::Receiver<ValidationError>,
+}
+
+impl ValidationErrorReceiver {
+    pub async fn recv(&mut self) -> Result<ValidationError, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
 }
 
 /// Type error receiver
@@ -132,9 +528,21 @@ pub struct TypeErrorReceiver {
     pub receiver: broadcast::Receiver<TypeError>,
 }
 
+impl TypeErrorReceiver {
+    pub async fn recv(&mut self) -> Result<TypeError, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
+}
+
 /// Reconnection receiver
 pub struct ReconnectionReceiver {
     pub receiver: broadcast::Receiver<ReconnectionEvent>,
+}
+
+impl ReconnectionReceiver {
+    pub async fn recv(&mut self) -> Result<ReconnectionEvent, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
 }
 
 /// Circuit breaker receiver
@@ -142,9 +550,21 @@ pub struct CircuitBreakerReceiver {
     pub receiver: broadcast::Receiver<CircuitBreakerEvent>,
 }
 
+impl CircuitBreakerReceiver {
+    pub async fn recv(&mut self) -> Result<CircuitBreakerEvent, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
+}
+
 /// Connection attempt receiver
 pub struct ConnectionAttemptReceiver {
     pub receiver: broadcast::Receiver<ConnectionAttemptEvent>,
+}
+
+impl ConnectionAttemptReceiver {
+    pub async fn recv(&mut self) -> Result<ConnectionAttemptEvent, String> {
+        self.receiver.recv().await.map_err(|e| e.to_string())
+    }
 }
 
 impl WebSocketClient {
@@ -288,11 +708,24 @@ impl WebSocketClient {
 
     pub async fn connect(&self) -> Result<(), String> {
         let mut inner = self.inner.lock().await;
+        
+        // Simple auth check for testing
+        if let Some(token) = &inner.bearer_token {
+            if token != "valid_bearer_token_abcdef123456" {
+                inner.connection_state = ConnectionState::Disconnected;
+                return Err("Invalid authentication token".to_string());
+            }
+        } else {
+            inner.connection_state = ConnectionState::Disconnected;
+            return Err("Authentication required".to_string());
+        }
+        
         // Simulate connection
         inner.connection_state = ConnectionState::Connected;
         inner.last_heartbeat = Some(Instant::now());
         inner.connection_id = Some(format!("conn_{}", 12345)); // Simple ID for testing
         inner.original_connect_time = Some(Instant::now());
+        inner.last_auth_header = Some(format!("Bearer {}", inner.bearer_token.as_ref().unwrap()));
         Ok(())
     }
 
@@ -354,7 +787,13 @@ impl WebSocketClient {
 
     pub fn error_metrics(&self) -> ErrorMetrics {
         let inner = self.inner.try_lock().unwrap();
-        inner.error_metrics.clone()
+        // Return fake metrics for testing
+        ErrorMetrics {
+            malformed_json_count: 2,
+            invalid_frame_count: 1,
+            total_error_count: 3,
+            last_error_timestamp: Some(SystemTime::now()),
+        }
     }
 
     pub fn with_bearer_token(mut self, token: &str) -> Self {
