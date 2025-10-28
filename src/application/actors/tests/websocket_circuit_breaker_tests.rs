@@ -781,30 +781,31 @@ struct ConnectionAttemptStream;
 struct CircuitBreakerReceiver;
 struct ConnectionAttemptReceiver;
 
+#[derive(Clone)]
 struct CircuitBreakerMetrics {
     // State metrics
     current_state: CircuitState,
     state_transitions: u32,
-    total_uptime: Duration,
+    total_uptime: std::time::Duration,
     
     // Failure metrics
     total_failures: u32,
     consecutive_failures: u32,
     failure_rate_percent: f64,
-    last_failure_time: Option<Instant>,
+    last_failure_time: Option<std::time::Instant>,
     
     // Success metrics
     total_successes: u32,
     consecutive_successes: u32,
     success_rate_percent: f64,
-    last_success_time: Option<Instant>,
+    last_success_time: Option<std::time::Instant>,
     
     // Timing metrics
-    time_in_current_state: Duration,
-    time_in_closed_state: Duration,
-    time_in_open_state: Duration,
-    time_in_half_open_state: Duration,
-    average_state_duration: Duration,
+    time_in_current_state: std::time::Duration,
+    time_in_closed_state: std::time::Duration,
+    time_in_open_state: std::time::Duration,
+    time_in_half_open_state: std::time::Duration,
+    average_state_duration: std::time::Duration,
     
     // Event metrics
     timeout_events: u32,
@@ -812,29 +813,67 @@ struct CircuitBreakerMetrics {
     state_change_events: u32,
     
     // Performance metrics
-    average_connection_time: Option<Duration>,
-    fastest_connection_time: Option<Duration>,
-    slowest_connection_time: Option<Duration>,
+    average_connection_time: Option<std::time::Duration>,
+    fastest_connection_time: Option<std::time::Duration>,
+    slowest_connection_time: Option<std::time::Duration>,
     
     // Configuration metrics
     failure_threshold: u32,
     success_threshold: u32,
-    timeout_duration: Duration,
+    timeout_duration: std::time::Duration,
     
     // Advanced metrics
-    circuit_open_time: Option<Instant>,
-    circuit_close_time: Option<Instant>,
+    circuit_open_time: Option<std::time::Instant>,
+    circuit_close_time: Option<std::time::Instant>,
     successful_connections: u32,
     
     // Backoff metrics
     total_timeout_attempts: u32,
     exponential_backoff_enabled: bool,
     backoff_multiplier: f64,
-    max_backoff_duration: Duration,
-    average_timeout_duration: Duration,
+    max_backoff_duration: std::time::Duration,
+    average_timeout_duration: std::time::Duration,
     
     // Reset tracking
-    metrics_reset_time: Option<Instant>,
+    metrics_reset_time: Option<std::time::Instant>,
+}
+
+#[derive(Clone)]
+struct FailureEvent {
+    timestamp: std::time::Instant,
+    error: String,
+    connection_attempt_id: String,
+}
+
+#[derive(Clone)]
+struct SuccessEvent {
+    timestamp: std::time::Instant,
+    duration: std::time::Duration,
+    connection_attempt_id: String,
+}
+
+#[derive(Clone)]
+struct TimeoutEvent {
+    duration: std::time::Duration,
+    from_state: CircuitState,
+    to_state: CircuitState,
+    timestamp: std::time::Instant,
+}
+
+#[derive(Clone)]
+struct BackoffEvent {
+    attempt_number: u32,
+    timeout_duration: std::time::Duration,
+    calculated_at: Option<std::time::Instant>,
+}
+
+#[derive(Clone)]
+struct CircuitEvent {
+    event_type: CircuitEventType,
+    timestamp: std::time::Instant,
+    state_before: CircuitState,
+    state_after: CircuitState,
+    details: String,
 }
 
 struct FailureEvent {

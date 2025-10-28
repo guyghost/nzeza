@@ -583,15 +583,32 @@ enum ReconnectionEvent {
 
 struct ReconnectionStream;
 struct ReconnectionReceiver;
+#[derive(Clone)]
 struct ReconnectionMetrics {
     total_attempts: u32,
     successful_reconnections: u32,
     max_retries_exceeded: bool,
-    total_downtime: Duration,
-    average_reconnection_time: Option<Duration>,
+    total_downtime: std::time::Duration,
+    average_reconnection_time: Option<std::time::Duration>,
     backoff_resets: u32,
-    current_backoff_delay: Duration,
+    current_backoff_delay: std::time::Duration,
     concurrent_attempt_conflicts: u32,
+}
+
+#[derive(Clone)]
+struct ConnectionMetadata {
+    original_connect_time: Option<std::time::Instant>,
+    last_reconnect_time: Option<std::time::Instant>,
+    reconnection_count: u32,
+    session_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct BufferMetrics {
+    messages_buffered: u64,
+    messages_replayed: u64,
+    buffer_overflows: u64,
+    max_buffer_size: usize,
 }
 
 struct ConnectionMetadata {

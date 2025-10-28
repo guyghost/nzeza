@@ -821,13 +821,43 @@ struct TypeError {
     raw_value: String,
 }
 
+#[derive(Clone)]
 struct ParsingMetrics {
     total_messages_parsed: u64,
     successful_parses: u64,
     parsing_errors: u64,
     error_recovery_count: u64,
-    average_parse_time: Duration,
-    max_parse_time: Duration,
+    average_parse_time: std::time::Duration,
+    max_parse_time: std::time::Duration,
+}
+
+#[derive(Clone)]
+struct ValidationMetrics {
+    total_validations: u64,
+    validation_failures: u64,
+    validation_successes: u64,
+    missing_field_errors: u64,
+    type_mismatch_errors: u64,
+}
+
+#[derive(Clone)]
+struct TypeValidationMetrics {
+    total_type_checks: u64,
+    type_validation_successes: u64,
+    type_validation_failures: u64,
+    non_numeric_price_errors: u64,
+    negative_price_errors: u64,
+    zero_price_errors: u64,
+}
+
+#[derive(Clone)]
+struct PrecisionMetrics {
+    total_precision_tests: u64,
+    precision_preserved_count: u64,
+    precision_loss_count: u64,
+    max_decimal_places_handled: u8,
+    min_value_handled: f64,
+    max_value_handled: f64,
 }
 
 struct ValidationMetrics {
