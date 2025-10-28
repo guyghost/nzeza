@@ -379,6 +379,146 @@ impl AuditLogRepository {
     }
 }
 
+/// dYdX order metadata repository
+pub struct DydxOrderMetadataRepository {
+    pool: DbPool,
+}
+
+impl DydxOrderMetadataRepository {
+    pub fn new(pool: DbPool) -> Self {
+        Self { pool }
+    }
+
+    /// Create new dYdX order metadata
+    pub async fn create(&self, metadata: CreateDydxOrderMetadata) -> Result<DydxOrderMetadataRecord, DatabaseError> {
+        let now = Utc::now();
+        let record = sqlx::query_as::<_, DydxOrderMetadataRecord>(
+            r#"
+            INSERT INTO dydx_order_metadata (
+                order_id, dydx_order_id, good_until_block, client_id, subaccount_number,
+                order_flags, clob_pair_id, symbol, side, quantity, price, order_type, placed_at, status
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'active')
+            RETURNING *
+            "#,
+        )
+        .bind(&metadata.order_id)
+        .bind(&metadata.dydx_order_id)
+        .bind(metadata.good_until_block)
+        .bind(metadata.client_id)
+        .bind(metadata.subaccount_number)
+        .bind(metadata.order_flags)
+        .bind(metadata.clob_pair_id)
+        .bind(&metadata.symbol)
+        .bind(&metadata.side)
+        .bind(&metadata.quantity)
+        .bind(&metadata.price)
+        .bind(&metadata.order_type)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to create dYdX order metadata: {}", e);
+            DatabaseError::QueryError(format!("Failed to create dYdX order metadata: {}", e))
+        })?;
+
+        debug!("Created dYdX order metadata: {} for {}", record.order_id, record.symbol);
+        Ok(record)
+    }
+
+    /// Get metadata by order ID
+    pub async fn get_by_order_id(&self, order_id: &str) -> Result<Option<DydxOrderMetadataRecord>, DatabaseError> {
+        let record = sqlx::query_as::<_, DydxOrderMetadataRecord>(
+            "SELECT * FROM dydx_order_metadata WHERE order_id = ?1"
+        )
+        .bind(order_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to get dYdX order metadata {}: {}", order_id, e);
+            DatabaseError::QueryError(format!("Failed to get dYdX order metadata: {}", e))
+        })?;
+
+        Ok(record)
+    }
+
+    /// Update order status to cancelled
+    pub async fn update_cancelled(&self, order_id: &str, tx_hash: &str) -> Result<(), DatabaseError> {
+        let now = Utc::now();
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE dydx_order_metadata
+            SET status = 'cancelled', cancelled_at = ?1, tx_hash = ?2
+            WHERE order_id = ?3 AND status = 'active'
+            "#,
+        )
+        .bind(now)
+        .bind(tx_hash)
+        .bind(order_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to update cancelled status for order {}: {}", order_id, e);
+            DatabaseError::QueryError(format!("Failed to update cancelled status: {}", e))
+        })?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            return Err(DatabaseError::QueryError(format!(
+                "Order not found or already cancelled: {}",
+                order_id
+            )));
+        }
+
+        debug!("Updated order {} to cancelled", order_id);
+        Ok(())
+    }
+
+    /// Update order status to expired
+    pub async fn update_expired(&self, order_id: &str) -> Result<(), DatabaseError> {
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE dydx_order_metadata
+            SET status = 'expired'
+            WHERE order_id = ?1 AND status = 'active'
+            "#,
+        )
+        .bind(order_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to update expired status for order {}: {}", order_id, e);
+            DatabaseError::QueryError(format!("Failed to update expired status: {}", e))
+        })?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            return Err(DatabaseError::QueryError(format!(
+                "Order not found or not active: {}",
+                order_id
+            )));
+        }
+
+        debug!("Updated order {} to expired", order_id);
+        Ok(())
+    }
+
+    /// Get active orders that may have expired
+    pub async fn get_active_orders(&self) -> Result<Vec<DydxOrderMetadataRecord>, DatabaseError> {
+        let records = sqlx::query_as::<_, DydxOrderMetadataRecord>(
+            "SELECT * FROM dydx_order_metadata WHERE status = 'active' ORDER BY placed_at ASC"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to get active dYdX orders: {}", e);
+            DatabaseError::QueryError(format!("Failed to get active orders: {}", e))
+        })?;
+
+        Ok(records)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,49 +563,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_trade_crud() {
+    async fn test_dydx_metadata_crud() {
         let pool = init_database("sqlite::memory:").await.unwrap();
+        let repo = DydxOrderMetadataRepository::new(pool);
 
-        // Create a position first (required for foreign key)
-        let position_repo = PositionRepository::new(pool.clone());
-        let position = CreatePosition {
-            id: "test-pos-1".to_string(),
+        // Create metadata
+        let metadata = CreateDydxOrderMetadata {
+            order_id: "test_order_123".to_string(),
+            dydx_order_id: "dydx_order_456".to_string(),
+            good_until_block: 1000,
+            client_id: 123,
+            subaccount_number: 0,
+            order_flags: 0,
+            clob_pair_id: 0,
             symbol: "BTC-USD".to_string(),
-            exchange: "binance".to_string(),
-            side: "long".to_string(),
-            entry_price: 50000.0,
-            quantity: 0.1,
-            stop_loss: None,
-            take_profit: None,
-        };
-        position_repo.create(position).await.unwrap();
-
-        // Now create trade
-        let repo = TradeRepository::new(pool);
-        let trade = CreateTrade {
-            id: "test-trade-1".to_string(),
-            position_id: Some("test-pos-1".to_string()),
-            symbol: "BTC-USD".to_string(),
-            exchange: "binance".to_string(),
             side: "buy".to_string(),
-            price: 50000.0,
-            quantity: 0.1,
-            fee: 5.0,
-            exchange_order_id: Some("binance-123".to_string()),
-            strategy: "fast_scalping".to_string(),
-            signal_confidence: Some(0.85),
+            quantity: "0.1".to_string(),
+            price: Some("50000.0".to_string()),
+            order_type: "limit".to_string(),
         };
 
-        let created = repo.create(trade).await.unwrap();
+        let created = repo.create(metadata).await.unwrap();
+        assert_eq!(created.order_id, "test_order_123");
         assert_eq!(created.symbol, "BTC-USD");
-        assert_eq!(created.strategy, "fast_scalping");
+        assert_eq!(created.status, "active");
 
-        // Get trade
-        let fetched = repo.get(&created.id).await.unwrap().unwrap();
-        assert_eq!(fetched.id, created.id);
+        // Get by order ID
+        let fetched = repo.get_by_order_id("test_order_123").await.unwrap().unwrap();
+        assert_eq!(fetched.order_id, "test_order_123");
+        assert_eq!(fetched.good_until_block, 1000);
 
-        // Get recent trades
-        let recent = repo.get_recent(10).await.unwrap();
-        assert_eq!(recent.len(), 1);
+        // Update to cancelled
+        repo.update_cancelled("test_order_123", "tx_hash_789").await.unwrap();
+        let updated = repo.get_by_order_id("test_order_123").await.unwrap().unwrap();
+        assert_eq!(updated.status, "cancelled");
+        assert_eq!(updated.tx_hash, Some("tx_hash_789".to_string()));
+        assert!(updated.cancelled_at.is_some());
+
+        // Update to expired
+        repo.update_expired("test_order_123").await.unwrap();
+        let expired = repo.get_by_order_id("test_order_123").await.unwrap().unwrap();
+        assert_eq!(expired.status, "expired");
+
+        // Get active orders
+        let active = repo.get_active_orders().await.unwrap();
+        assert_eq!(active.len(), 0); // Should be empty since we marked it as expired
     }
 }

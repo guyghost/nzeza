@@ -1,0 +1,44 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "planner": {
+      "mode": "primary",
+      "description": "Planifie le développement du bot et coordonne le workflow TDD.",
+      "model": "anthropic/claude-haiku-4-20251001",
+      "prompt": "Tu es l'agent principal. Planifie la structure du bot déclenche les étapes du TDD : tests → implémentation → revue.",
+      "tools": {
+        "write": true,
+        "edit": true
+      }
+    },
+    "test-writer": {
+      "mode": "subagent",
+      "description": "Écrit les tests unitaires rouges selon le plan.",
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "prompt": "Écris les tests unitaires rouges selon le plan généré par le planner.",
+      "tools": {
+        "write": true
+      }
+    },
+    "implementer": {
+      "mode": "subagent",
+      "description": "Implémente le code du bot pour faire passer les tests rouges.",
+      "model": "github-copilot/grok-code-fast-1",
+      "prompt": "Implémente le code pour faire passer les tests rouges.",
+      "tools": {
+        "write": true,
+        "bash": true
+      }
+    },
+    "reviewer": {
+      "mode": "subagent",
+      "description": "Revoit le code, valide les tests et effectue le commit s’il n’y a pas de problème.",
+      "model": "github-copilot/gpt-5-codex",
+      "prompt": "Analyse le code, valide les tests, et effectue le commit si tout est correct.",
+      "tools": {
+        "write": false,
+        "edit": false
+      }
+    }
+  }
+}

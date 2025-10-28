@@ -3,3 +3,6 @@ pub mod circuit_breaker;
 pub mod indicators;
 pub mod metrics;
 pub mod strategies;
+
+#[cfg(test)]
+pub mod position_validation_tests;

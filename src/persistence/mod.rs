@@ -183,6 +183,52 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
     .await
     .map_err(|e| DatabaseError::MigrationError(format!("Failed to create audit_log table: {}", e)))?;
 
+    // Create dYdX order metadata table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS dydx_order_metadata (
+            order_id TEXT PRIMARY KEY,
+            dydx_order_id TEXT NOT NULL,
+            good_until_block INTEGER NOT NULL,
+            client_id INTEGER NOT NULL,
+            subaccount_number INTEGER NOT NULL,
+            order_flags INTEGER NOT NULL DEFAULT 0,
+            clob_pair_id INTEGER NOT NULL DEFAULT 0,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
+            quantity TEXT NOT NULL,
+            price TEXT,
+            order_type TEXT NOT NULL CHECK(order_type IN ('market', 'limit')),
+            placed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            cancelled_at DATETIME,
+            tx_hash TEXT,
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'cancelled', 'expired', 'filled'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| DatabaseError::MigrationError(format!("Failed to create dydx_order_metadata table: {}", e)))?;
+
+    // Add new columns if they don't exist (for existing databases)
+    sqlx::query(
+        r#"
+        ALTER TABLE dydx_order_metadata ADD COLUMN order_flags INTEGER DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| DatabaseError::MigrationError(format!("Failed to add order_flags column: {}", e)))?;
+
+    sqlx::query(
+        r#"
+        ALTER TABLE dydx_order_metadata ADD COLUMN clob_pair_id INTEGER DEFAULT 0
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| DatabaseError::MigrationError(format!("Failed to add clob_pair_id column: {}", e)))?;
+
     // Create indexes for better query performance
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status)")
         .execute(pool)
@@ -205,6 +251,16 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
         .map_err(|e| DatabaseError::MigrationError(format!("Failed to create index: {}", e)))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp)")
+        .execute(pool)
+        .await
+        .map_err(|e| DatabaseError::MigrationError(format!("Failed to create index: {}", e)))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_dydx_order_status ON dydx_order_metadata(status)")
+        .execute(pool)
+        .await
+        .map_err(|e| DatabaseError::MigrationError(format!("Failed to create index: {}", e)))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_dydx_order_placed_at ON dydx_order_metadata(placed_at)")
         .execute(pool)
         .await
         .map_err(|e| DatabaseError::MigrationError(format!("Failed to create index: {}", e)))?;

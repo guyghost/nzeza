@@ -3172,6 +3172,7 @@ dependencies = [
  "hmac",
  "jsonwebtoken 10.0.0",
  "lru",
+ "once_cell",
  "p256",
  "rand 0.8.5",
  "reqwest 0.12.23",

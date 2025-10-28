@@ -15,6 +15,8 @@ use crate::domain::services::strategies::{
 };
 use crate::infrastructure::adapters::exchange_actor::ExchangeActor;
 use crate::infrastructure::exchange_client_factory::ExchangeClientFactory;
+use crate::persistence::{DatabaseConfig, init_database};
+use crate::persistence::repository::DydxOrderMetadataRepository;
 use axum::extract::ws::{Message, WebSocket};
 use axum::response::Response;
 use axum::{
@@ -27,6 +29,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::io::ErrorKind;
 use std::time::Duration;
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -79,6 +82,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load trading configuration first to validate before spawning actors
     let mut config = crate::config::TradingConfig::from_env();
+
+    // Initialize database
+    let db_config = DatabaseConfig::from_env();
+    let db_pool = init_database(&db_config.url).await?;
+    let dydx_metadata_repo = DydxOrderMetadataRepository::new(db_pool.clone());
+    info!("Database initialized successfully");
+
+    // Set global metadata repository for dYdX order cancellation
+    use crate::infrastructure::dydx_v4_client::DydxV4Client;
+    DydxV4Client::set_metadata_repository(Arc::new(dydx_metadata_repo));
 
     // ⚠️ WARNING: dYdX v4 integration has known issues
     // The current implementation uses Ethereum (EIP-712) signing instead of Cosmos SDK signing.

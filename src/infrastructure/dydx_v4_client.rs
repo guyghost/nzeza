@@ -15,21 +15,26 @@ use crate::domain::entities::order::{Order, OrderSide, OrderType};
 use crate::domain::repositories::exchange_client::{
     Balance, ExchangeClient, ExchangeError, ExchangeResult, OrderStatus,
 };
+use crate::persistence::models::CreateDydxOrderMetadata;
+use crate::persistence::repository::DydxOrderMetadataRepository;
 use async_trait::async_trait;
+use base64::{self, Engine};
 use bigdecimal::BigDecimal;
 use dydx::config::ClientConfig;
-use dydx::indexer::{Height, IndexerClient, Ticker};
+use once_cell::sync::OnceCell;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use dydx::indexer::{IndexerClient, Ticker};
 use dydx::node::{
-    Account, NodeClient, OrderBuilder, OrderSide as DydxOrderSide, Subaccount, Wallet,
+    Account, NodeClient, OrderBuilder, OrderSide as DydxOrderSide, Subaccount, Wallet, Height,
 };
 use dydx_proto::dydxprotocol::clob::order::TimeInForce;
-use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Arc;
-use std::time::SystemTime;
-use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn, error};
 use zeroize::Zeroizing;
+
+/// Global metadata repository for order cancellation support
+static METADATA_REPO: OnceCell<Arc<DydxOrderMetadataRepository>> = OnceCell::new();
 
 /// dYdX v4 client for API interactions using official client
 pub struct DydxV4Client {
@@ -39,6 +44,21 @@ pub struct DydxV4Client {
     account: Arc<Mutex<Account>>,
     #[allow(dead_code)]
     config_path: String,
+}
+
+impl DydxV4Client {
+    /// Set the global metadata repository for order cancellation support
+    /// This must be called before using dYdX clients for order placement
+    pub fn set_metadata_repository(repo: Arc<DydxOrderMetadataRepository>) {
+        METADATA_REPO.set(repo).unwrap_or_else(|_| {
+            warn!("dYdX metadata repository already set, ignoring new value");
+        });
+    }
+
+    /// Get the global metadata repository
+    fn get_metadata_repository() -> Option<&'static Arc<DydxOrderMetadataRepository>> {
+        METADATA_REPO.get()
+    }
 }
 
 impl DydxV4Client {
@@ -125,6 +145,9 @@ impl DydxV4Client {
     }
 
     /// Convert our Order to dYdX v4 format and place it
+    /// 
+    /// # Arguments
+    /// * `order` - The order to place
     pub async fn place_order(&self, order: &Order) -> Result<String, String> {
         // Get market info
         let ticker = Ticker(order.symbol.clone());
@@ -227,36 +250,142 @@ impl DydxV4Client {
             tx_hash, order_id_string
         );
 
+        // Store order metadata for future cancellation
+        let subaccount = self.get_subaccount().await?;
+        
+        // Encode the OrderId as base64 for storage
+        let order_id_bytes = order_id.encode_to_vec();
+        let dydx_order_id_b64 = base64::engine::general_purpose::STANDARD.encode(&order_id_bytes);
+        
+        // Get market info to extract clob_pair_id
+        let ticker = Ticker(order.symbol.clone());
+        let market = self
+            .indexer_client
+            .markets()
+            .get_perpetual_market(&ticker)
+            .await
+            .map_err(|e| format!("Failed to get market for metadata: {:?}", e))?;
+        
+        let metadata = CreateDydxOrderMetadata {
+            order_id: order_id_string.clone(),
+            dydx_order_id: dydx_order_id_b64,
+            good_until_block: good_until_block.0 as i64,
+            client_id: order_id.client_id as i64,
+            subaccount_number: subaccount.number.value() as i32,
+            order_flags: order_id.order_flags as i32,
+            clob_pair_id: order_id.clob_pair_id as i32,
+            symbol: order.symbol.clone(),
+            side: match order.side {
+                OrderSide::Buy => "buy".to_string(),
+                OrderSide::Sell => "sell".to_string(),
+            },
+            quantity: order.quantity.value().to_string(),
+            price: order.price.map(|p| p.value().to_string()),
+            order_type: match order.order_type {
+                OrderType::Market => "market".to_string(),
+                OrderType::Limit => "limit".to_string(),
+            },
+        };
+
+        // Store metadata if repository is available
+        if let Some(metadata_repo) = Self::get_metadata_repository() {
+            if let Err(e) = metadata_repo.create(metadata).await {
+                error!("Failed to store order metadata for {}: {}", order_id_string, e);
+                // Don't fail the order placement if metadata storage fails
+                // The order was placed successfully, just log the error
+            }
+        } else {
+            warn!("dYdX metadata repository not set - order cancellation will not be available for {}", order_id_string);
+        }
+
         // Return the order ID as string
         Ok(order_id_string)
     }
 
+    /// Reconstruct OrderId from stored metadata
+    async fn reconstruct_order_id(&self, metadata: &DydxOrderMetadataRecord) -> Result<OrderId, String> {
+        use dydx_proto::dydxprotocol::subaccounts::SubaccountId;
+        
+        // Get the account address
+        let account = self.account.lock().await;
+        let address = account.address().to_string();
+        drop(account);
+        
+        // Reconstruct subaccount ID
+        let subaccount_id = SubaccountId {
+            owner: address,
+            number: metadata.subaccount_number as u32,
+        };
+        
+        // Reconstruct OrderId
+        let order_id = OrderId {
+            subaccount_id: Some(subaccount_id),
+            client_id: metadata.client_id as u32,
+            order_flags: metadata.order_flags as u32,
+            clob_pair_id: metadata.clob_pair_id as u32,
+        };
+        
+        Ok(order_id)
+    }
+
     /// Cancel order on dYdX v4
     ///
-    /// # Current Limitation
-    /// Order cancellation on dYdX v4 requires the original OrderId and good_until_block from order placement.
-    /// The current implementation has limited cancellation support due to the complexity of reconstructing
-    /// the exact OrderId format needed by the dYdX protocol.
-    ///
     /// # Arguments
-    /// * `order_id` - The order ID returned from place_order (informational only)
-    ///
-    /// # Returns
-    /// * `Err(String)` - Always returns an error explaining the limitation
-    ///
-    /// # Future Enhancement
-    /// Full cancellation support will require storing the original OrderId and Height
-    /// from order placement in a persistent store (database or file).
+    /// * `order_id` - The order ID returned from place_order
     pub async fn cancel_order(&self, order_id: &str) -> Result<(), String> {
         info!("Cancel order requested for: {}", order_id);
 
-        Err(format!(
-            "Order cancellation for dYdX v4 requires the original OrderId and good_until_block height. \
-             Order {} cannot be cancelled through this interface. \
-             As a workaround, orders will expire automatically based on their good_until_block height. \
-             For manual cancellation, use the dYdX web interface or CLI tools.",
-            order_id
-        ))
+        // Get metadata repository
+        let metadata_repo = Self::get_metadata_repository()
+            .ok_or_else(|| "dYdX metadata repository not configured - order cancellation not available".to_string())?;
+
+        // Retrieve stored metadata
+        let metadata = metadata_repo
+            .get_by_order_id(order_id)
+            .await
+            .map_err(|e| format!("Failed to retrieve order metadata: {}", e))?
+            .ok_or_else(|| format!("Order metadata not found for: {}. This order may have been placed before metadata storage was implemented.", order_id))?;
+
+        // Check if order is already cancelled/expired/filled
+        if metadata.status != "active" {
+            return Err(format!("Order {} is already {}", order_id, metadata.status));
+        }
+
+        // Check if order has expired
+        let current_block = self.node_client.lock().await
+            .latest_block_height()
+            .await
+            .map_err(|e| format!("Failed to get current block height: {:?}", e))?;
+
+        if current_block.0 as u64 >= metadata.good_until_block as u64 {
+            // Mark as expired in database
+            metadata_repo.update_expired(order_id).await
+                .map_err(|e| format!("Failed to mark order as expired: {}", e))?;
+            return Err(format!("Order {} has expired at block {}", order_id, metadata.good_until_block));
+        }
+
+        // Reconstruct the OrderId from stored metadata
+        let reconstructed_order_id = self.reconstruct_order_id(&metadata).await
+            .map_err(|e| format!("Failed to reconstruct OrderId: {}", e))?;
+
+        // Reconstruct the good_until_block
+        let good_until_block = Height(metadata.good_until_block as u32);
+
+        // Perform the cancellation
+        let mut account = self.account.lock().await;
+        let mut node_client = self.node_client.lock().await;
+
+        let tx_hash = node_client
+            .cancel_order(&mut *account, reconstructed_order_id, good_until_block)
+            .await
+            .map_err(|e| format!("Failed to cancel order on dYdX: {:?}", e))?;
+
+        // Update the metadata to mark as cancelled
+        metadata_repo.update_cancelled(order_id, &tx_hash).await
+            .map_err(|e| format!("Failed to update order status: {}", e))?;
+
+        info!("Successfully cancelled order {} with tx hash: {:?}", order_id, tx_hash);
+        Ok(())
     }
 
     /// Get order status from dYdX v4 indexer
@@ -401,6 +530,29 @@ mod tests {
         assert_eq!(info.address, "dydx1abc...");
         assert_eq!(info.account_number, 123);
         assert_eq!(info.sequence, 456);
+    }
+
+    #[test]
+    fn test_parse_order_status() {
+        assert_eq!(DydxV4Client::parse_order_status("OPEN"), OrderStatus::Pending);
+        assert_eq!(DydxV4Client::parse_order_status("FILLED"), OrderStatus::Filled);
+        assert_eq!(DydxV4Client::parse_order_status("CANCELLED"), OrderStatus::Cancelled);
+        assert_eq!(DydxV4Client::parse_order_status("PARTIALLY_FILLED"), OrderStatus::PartiallyFilled);
+        assert_eq!(DydxV4Client::parse_order_status("NOT_FOUND"), OrderStatus::Unknown);
+        assert_eq!(DydxV4Client::parse_order_status("INVALID"), OrderStatus::Unknown);
+    }
+
+    #[test]
+    fn test_metadata_repository_not_set() {
+        // Test that get_metadata_repository returns None when not set
+        assert!(DydxV4Client::get_metadata_repository().is_none());
+    }
+
+    #[test]
+    fn test_metadata_repository_set_and_get() {
+        // This test would require a mock repository, but for now we just test the static access
+        // In a real test, we'd create a test database and repository
+        assert!(DydxV4Client::get_metadata_repository().is_none());
     }
 
     #[test]

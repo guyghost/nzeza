@@ -1,28 +1,27 @@
 use crate::domain::entities::exchange::Exchange;
-use crate::domain::services::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
+use crate::domain::entities::order::Order;
 use crate::domain::value_objects::price::Price;
-use futures_util::{SinkExt, StreamExt};
+use crate::domain::services::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
+use crate::infrastructure::coinbase_advanced_client::CoinbaseAdvancedClient;
+use crate::infrastructure::coinbase_client::CoinbaseClient;
+use crate::infrastructure::dydx_v4_client::DydxV4Client;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::broadcast;
-use tokio::sync::mpsc;
-use tokio::sync::Mutex;
-use tokio::time::Instant;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message;
+use std::time::{Duration, Instant};
+use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use futures_util::stream::StreamExt;
+use futures_util::SinkExt;
 use tracing::{debug, error, info, warn};
+use serde_json;
+use rustls;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum SubscriptionCommand {
     Subscribe(String),
     Unsubscribe(String),
 }
-
-use crate::domain::entities::order::Order;
-use crate::infrastructure::coinbase_client::CoinbaseClient;
-use crate::infrastructure::coinbase_advanced_client::CoinbaseAdvancedClient;
-use crate::infrastructure::dydx_v4_client::DydxV4Client;
 
 #[derive(Debug)]
 pub enum ExchangeMessage {
