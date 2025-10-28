@@ -36,27 +36,35 @@ pub struct PriceUpdate {
 /// Parsing error structure
 #[derive(Clone, Debug)]
 pub struct ParsingError {
-    pub message: String,
-    pub raw_data: String,
-    pub timestamp: SystemTime,
+    pub error_type: ParsingErrorType,
+    pub raw_message: String,
+    pub error_message: String,
+    pub timestamp: Option<SystemTime>,
+    pub line_number: Option<u32>,
+    pub character_position: Option<u32>,
 }
 
 /// Validation error structure
 #[derive(Clone, Debug)]
 pub struct ValidationError {
-    pub field: String,
-    pub expected: String,
-    pub actual: String,
-    pub timestamp: SystemTime,
+    pub missing_fields: Vec<String>,
+    pub null_fields: Vec<String>,
+    pub empty_fields: Vec<String>,
+    pub type_mismatches: Vec<TypeMismatch>,
+    pub raw_message: String,
+    pub error_summary: String,
+    pub timestamp: Option<SystemTime>,
 }
 
 /// Type error structure
 #[derive(Clone, Debug)]
 pub struct TypeError {
-    pub field: String,
-    pub expected_type: String,
+    pub field_name: String,
     pub actual_type: String,
-    pub timestamp: SystemTime,
+    pub expected_type: String,
+    pub validation_rule: String,
+    pub reason: String,
+    pub raw_value: String,
 }
 
 /// Reconnection event
@@ -288,13 +296,21 @@ pub struct ConnectionMetadata {
     pub session_id: Option<String>,
 }
 
-/// Buffer metrics
+/// Parsing error types
 #[derive(Clone, Debug)]
-pub struct BufferMetrics {
-    pub messages_buffered: u64,
-    pub messages_replayed: u64,
-    pub buffer_overflows: u64,
-    pub max_buffer_size: usize,
+pub enum ParsingErrorType {
+    JsonSyntaxError,
+    InvalidStructure,
+    TypeMismatch,
+    ValidationFailure,
+}
+
+/// Type mismatch details
+#[derive(Clone, Debug)]
+pub struct TypeMismatch {
+    pub field_name: String,
+    pub expected_type: String,
+    pub actual_type: String,
 }
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -935,23 +951,23 @@ impl WebSocketClient {
         inner.type_error_stream.clone()
     }
 
-    pub async fn parsing_metrics(&self) -> ParsingMetrics {
-        let inner = self.inner.lock().await;
+    pub fn parsing_metrics(&self) -> ParsingMetrics {
+        let inner = self.inner.try_lock().unwrap();
         inner.parsing_metrics.clone()
     }
 
-    pub async fn validation_metrics(&self) -> ValidationMetrics {
-        let inner = self.inner.lock().await;
+    pub fn validation_metrics(&self) -> ValidationMetrics {
+        let inner = self.inner.try_lock().unwrap();
         inner.validation_metrics.clone()
     }
 
-    pub async fn type_validation_metrics(&self) -> TypeValidationMetrics {
-        let inner = self.inner.lock().await;
+    pub fn type_validation_metrics(&self) -> TypeValidationMetrics {
+        let inner = self.inner.try_lock().unwrap();
         inner.type_validation_metrics.clone()
     }
 
-    pub async fn precision_metrics(&self) -> PrecisionMetrics {
-        let inner = self.inner.lock().await;
+    pub fn precision_metrics(&self) -> PrecisionMetrics {
+        let inner = self.inner.try_lock().unwrap();
         inner.precision_metrics.clone()
     }
 
