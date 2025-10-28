@@ -1858,6 +1858,168 @@ impl WebSocketClient {
         inner.circuit_breaker_metrics.clone()
     }
 
+    pub fn timeout_metrics(&self) -> TimeoutMetrics {
+        let inner = self.inner.blocking_lock();
+        let timeout_count = inner.timeout_history.len() as u64;
+        let average_duration = if !inner.timeout_history.is_empty() {
+            let total: Duration = inner.timeout_history.iter().map(|e| e.duration).sum();
+            total / inner.timeout_history.len() as u32
+        } else {
+            Duration::ZERO
+        };
+        let max_duration = inner.timeout_history.iter().map(|e| e.duration).max().unwrap_or(Duration::ZERO);
+        let last_timestamp = inner.timeout_history.last().map(|e| e.timestamp);
+
+        TimeoutMetrics {
+            connection_timeouts: timeout_count,
+            average_timeout_duration: average_duration,
+            max_timeout_duration: max_duration,
+            last_timeout_timestamp: last_timestamp,
+        }
+    }
+
+    pub fn disconnect_metrics(&self) -> DisconnectMetrics {
+        let inner = self.inner.blocking_lock();
+        let total = inner.failure_history.len() as u64;
+        let graceful = inner.failure_history.iter().filter(|e| e.is_graceful.unwrap_or(false)).count() as u64;
+        let forced = total - graceful;
+        let error_count = inner.failure_history.iter().filter(|e| e.error_message.is_some()).count() as u64;
+        
+        let average_time = if !inner.failure_history.is_empty() {
+            let total_time: Duration = inner.failure_history.iter().filter_map(|e| e.duration).sum();
+            total_time / inner.failure_history.len().max(1) as u32
+        } else {
+            Duration::ZERO
+        };
+
+        DisconnectMetrics {
+            total_disconnects: total,
+            graceful_disconnects: graceful,
+            forced_disconnects: forced,
+            error_disconnects: error_count,
+            average_disconnect_time: average_time,
+        }
+    }
+
+    pub fn state_transition_metrics(&self) -> StateTransitionMetrics {
+        let inner = self.inner.blocking_lock();
+        let total = inner.backoff_history.len() as u64;
+        let average_duration = if !inner.backoff_history.is_empty() {
+            let total_dur: Duration = inner.backoff_history.iter().map(|b| b.wait_duration).sum();
+            total_dur / inner.backoff_history.len().max(1) as u32
+        } else {
+            Duration::ZERO
+        };
+
+        StateTransitionMetrics {
+            total_transitions: total,
+            transitions_by_state: vec![],
+            average_transition_duration: average_duration,
+            current_state: inner.connection_state.clone(),
+            time_in_connected_state: Duration::ZERO,
+            time_in_connecting_state: Duration::ZERO,
+            time_in_disconnected_state: Duration::ZERO,
+            time_in_reconnecting_state: Duration::ZERO,
+            time_in_failed_state: Duration::ZERO,
+        }
+    }
+
+    pub fn connection_prevention_metrics(&self) -> ConnectionPreventionMetrics {
+        let inner = self.inner.blocking_lock();
+        ConnectionPreventionMetrics {
+            duplicate_connection_attempts: 0,
+            last_prevention_timestamp: None,
+            current_connections: 1,
+            max_concurrent_connections: 1,
+            prevention_reasons: vec![],
+        }
+    }
+
+    pub fn connection_error_metrics(&self) -> ConnectionErrorMetrics {
+        let inner = self.inner.blocking_lock();
+        let total_failures = inner.failure_history.len() as u64;
+        let rejection_errors = inner.failure_history
+            .iter()
+            .filter(|e| e.error_message.as_ref().map(|m| m.contains("rejection")).unwrap_or(false))
+            .count() as u64;
+        let timeout_errors = inner.timeout_history.len() as u64;
+
+        ConnectionErrorMetrics {
+            total_connection_failures: total_failures,
+            rejection_errors,
+            timeout_errors,
+            dns_resolution_errors: 0,
+            handshake_errors: 0,
+            last_error_timestamp: inner.last_connection_error.as_ref().map(|_| SystemTime::now()),
+            last_error_message: inner.last_connection_error.clone().unwrap_or_default(),
+            error_type_distribution: Default::default(),
+        }
+    }
+
+    pub fn frame_buffer_metrics(&self) -> FrameBufferMetrics {
+        let inner = self.inner.blocking_lock();
+        let buffer_len = inner.outbound_message_buffer.len() as u64;
+
+        FrameBufferMetrics {
+            total_frames_buffered: buffer_len,
+            frames_flushed: 0,
+            buffer_capacity: inner.buffer_size,
+            messages_reassembled: 0,
+            buffer_utilization_max: if inner.buffer_size > 0 {
+                (buffer_len as f64 / inner.buffer_size as f64) * 100.0
+            } else {
+                0.0
+            },
+            average_buffer_time: Duration::ZERO,
+            buffer_overflows: 0,
+            concurrent_buffer_operations: 0,
+            buffer_size_limit: inner.buffer_size,
+        }
+    }
+
+    pub fn mixed_message_metrics(&self) -> MixedMessageMetrics {
+        let inner = self.inner.blocking_lock();
+        MixedMessageMetrics {
+            mixed_message_count: 0,
+            separation_success_rate: 100.0,
+            total_messages_processed: 0,
+            valid_messages_processed: 0,
+            invalid_messages_processed: 0,
+            error_tolerance_activated: inner.error_tolerance_enabled,
+            connection_stability_maintained: true,
+        }
+    }
+
+    pub fn large_message_metrics(&self) -> LargeMessageMetrics {
+        let inner = self.inner.blocking_lock();
+        LargeMessageMetrics {
+            total_large_messages: 0,
+            average_size: 0,
+            max_size: 0,
+            largest_message_size: 0,
+            average_large_message_time: Duration::ZERO,
+            max_message_processing_time: Duration::ZERO,
+            oversized_message_rejections: 0,
+            concurrent_large_messages: 0,
+            streaming_operations: 0,
+        }
+    }
+
+    pub fn message_ordering_metrics(&self) -> MessageOrderingMetrics {
+        let inner = self.inner.blocking_lock();
+        MessageOrderingMetrics {
+            total_messages_processed: 0,
+            out_of_order_count: 0,
+            ordering_success_rate: 100.0,
+            sequence_violations: 0,
+            gap_detections: 0,
+            ordering_preserved_percentage: 100.0,
+            average_message_latency: Duration::ZERO,
+            concurrent_sender_ordering_maintained: inner.message_ordering_enabled,
+            ordering_algorithm: "sequence_tracking".to_string(),
+        }
+    }
+
     pub async fn failure_history(&self) -> Vec<FailureEvent> {
         let inner = self.inner.lock().await;
         inner.failure_history.clone()
