@@ -7,6 +7,9 @@ pub mod circuit_breaker;
 pub mod tests;
 
 // Re-exports for convenience
-pub use websocket_handler::{WebSocketClient, ConnectionState, CircuitBreaker, CircuitBreakerState, PriceUpdate};
+// All WebSocketClient and related types come from websocket_client module
 pub use websocket_client::*;
 pub use circuit_breaker::*;
+
+// Re-export only specialized types from websocket_handler
+pub use websocket_handler::{CircuitBreaker, CircuitBreakerState};
