@@ -33,7 +33,7 @@
     "reviewer": {
       "mode": "subagent",
       "description": "Revoit le code, valide les tests et effectue le commit s’il n’y a pas de problème.",
-      "model": "github-copilot/gpt-5-codex",
+      "model": "github-copilot/gpt-4.1",
       "prompt": "Analyse le code, valide les tests, et effectue le commit si tout est correct.",
       "tools": {
         "write": false,

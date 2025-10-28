@@ -539,6 +539,278 @@ async fn test_connection_state_preservation() {
     info!("Connection state preservation test completed");
 }
 
+#[tokio::test]
+async fn test_reconnection_failure_modes() {
+    info!("Testing various reconnection failure scenarios");
+    
+    // Start mock server that will be unreliable
+    let mut mock_server = MockWebSocketServer::new(9041);
+    let server_addr = mock_server.start().await;
+    
+    // Create client with reconnection config
+    let client = WebSocketClient::new(&format!("ws://{}", server_addr))
+        .with_reconnection_config(ReconnectionConfig {
+            base_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(2),
+            max_retries: 8,
+            backoff_multiplier: 1.5,
+        })
+        .with_failure_mode_detection(true);
+    
+    // Monitor reconnection events
+    let reconnection_stream = client.reconnection_stream();
+    let mut reconnection_receiver = reconnection_stream.subscribe();
+    
+    // Initial connection
+    client.connect().await.expect("Initial connection should succeed");
+    mock_server.simulate_connection().await.expect("Failed to simulate connection");
+    
+    // Test scenario 1: Intermittent failures
+    info!("Testing intermittent failure scenario");
+    mock_server.set_failure_mode(true).await.expect("Failed to set failure mode");
+    
+    // Cause multiple failures
+    for i in 1..=3 {
+        mock_server.close_connection().await.expect("Failed to close connection");
+        sleep(Duration::from_millis(50)).await;
+        
+        // Wait for reconnection attempt
+        let attempt_event = timeout(Duration::from_secs(3), reconnection_receiver.recv()).await;
+        assert!(attempt_event.is_ok(), "Should receive reconnection attempt {}", i);
+        
+        // Allow some attempts to fail
+        if i % 2 == 0 {
+            mock_server.set_failure_mode(false).await.expect("Failed to disable failure mode");
+            sleep(Duration::from_millis(100)).await;
+            mock_server.set_failure_mode(true).await.expect("Failed to enable failure mode");
+        }
+    }
+    
+    // Test scenario 2: Network partition simulation
+    info!("Testing network partition scenario");
+    mock_server.set_reject_connections(true).await.expect("Failed to set reject mode");
+    mock_server.close_connection().await.expect("Failed to close connection");
+    
+    // Monitor partition behavior
+    let mut partition_attempts = 0;
+    let partition_start = Instant::now();
+    
+    while partition_start.elapsed() < Duration::from_secs(10) && partition_attempts < 5 {
+        if let Ok(event_result) = timeout(Duration::from_millis(500), reconnection_receiver.recv()).await {
+            if let Ok(event) = event_result {
+                match event {
+                    ReconnectionEvent::AttemptStarted { attempt_number, .. } => {
+                        partition_attempts = attempt_number;
+                        info!("Partition attempt #{}", attempt_number);
+                    }
+                    ReconnectionEvent::Failed { error, .. } => {
+                        info!("Partition attempt failed: {}", error);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    assert!(partition_attempts >= 3, "Should attempt multiple reconnections during partition");
+    
+    // Test scenario 3: Recovery after partition
+    info!("Testing recovery after network partition");
+    mock_server.set_reject_connections(false).await.expect("Failed to disable reject mode");
+    mock_server.set_failure_mode(false).await.expect("Failed to disable failure mode");
+    
+    // Wait for successful reconnection
+    let recovery_start = Instant::now();
+    let mut recovery_successful = false;
+    
+    while recovery_start.elapsed() < Duration::from_secs(15) && !recovery_successful {
+        if let Ok(event_result) = timeout(Duration::from_millis(200), reconnection_receiver.recv()).await {
+            if let Ok(event) = event_result {
+                if let ReconnectionEvent::Connected { .. } = event {
+                    recovery_successful = true;
+                    info!("Successfully recovered from partition");
+                }
+            }
+        }
+    }
+    
+    assert!(recovery_successful, "Should recover from network partition");
+    assert!(client.is_connected(), "Should be connected after recovery");
+    
+    // Verify failure mode metrics
+    let failure_metrics = client.failure_mode_metrics();
+    assert!(failure_metrics.intermittent_failures >= 3);
+    assert!(failure_metrics.network_partition_detected);
+    assert!(failure_metrics.recovery_successful);
+    assert!(failure_metrics.total_failure_modes >= 2);
+    assert!(failure_metrics.time_to_recovery <= Duration::from_secs(15));
+    
+    // Test scenario 4: Degraded mode operation
+    info!("Testing degraded mode operation");
+    
+    // Simulate poor network conditions
+    for _ in 0..3 {
+        mock_server.close_connection().await.expect("Failed to close connection");
+        sleep(Duration::from_millis(200)).await;
+        mock_server.simulate_connection().await.expect("Failed to simulate connection");
+        sleep(Duration::from_millis(100)).await;
+    }
+    
+    // Verify degraded mode detection
+    let degraded_metrics = client.degraded_mode_metrics();
+    assert!(degraded_metrics.degraded_mode_detected);
+    assert!(degraded_metrics.connection_quality_score < 0.8);
+    assert!(degraded_metrics.instability_events >= 3);
+    
+    // Clean up
+    client.disconnect().await;
+    mock_server.stop().await;
+    
+    info!("Reconnection failure modes test completed");
+}
+
+#[tokio::test]
+async fn test_adaptive_backoff_strategy() {
+    info!("Testing adaptive backoff strategy based on failure patterns");
+    
+    // Start mock server
+    let mut mock_server = MockWebSocketServer::new(9042);
+    let server_addr = mock_server.start().await;
+    
+    // Create client with adaptive backoff
+    let client = WebSocketClient::new(&format!("ws://{}", server_addr))
+        .with_reconnection_config(ReconnectionConfig {
+            base_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(10),
+            max_retries: 12,
+            backoff_multiplier: 2.0,
+        })
+        .with_adaptive_backoff(true)
+        .with_failure_pattern_analysis(true);
+    
+    // Monitor reconnection events
+    let reconnection_stream = client.reconnection_stream();
+    let mut reconnection_receiver = reconnection_stream.subscribe();
+    
+    // Initial connection and immediate failure
+    client.connect().await.expect("Initial connection should succeed");
+    mock_server.simulate_connection().await.expect("Failed to simulate connection");
+    
+    // Test scenario 1: Rapid failures (should increase backoff quickly)
+    info!("Testing rapid failure pattern");
+    mock_server.set_failure_mode(true).await.expect("Failed to set failure mode");
+    
+    let mut rapid_failure_delays = Vec::new();
+    for i in 1..=4 {
+        mock_server.close_connection().await.expect("Failed to close connection");
+        
+        // Record backoff delay
+        if let Ok(event_result) = timeout(Duration::from_secs(2), reconnection_receiver.recv()).await {
+            if let Ok(ReconnectionEvent::AttemptStarted { delay, .. }) = event_result {
+                rapid_failure_delays.push(delay);
+                info!("Rapid failure #{}: delay {:?}", i, delay);
+            }
+        }
+        
+        sleep(Duration::from_millis(50)).await;
+    }
+    
+    // Verify adaptive increase
+    assert!(rapid_failure_delays.len() >= 3, "Should capture rapid failure delays");
+    
+    // Should show accelerated backoff due to rapid failures
+    for i in 1..rapid_failure_delays.len() {
+        let ratio = rapid_failure_delays[i].as_millis() as f64 / rapid_failure_delays[i-1].as_millis() as f64;
+        assert!(ratio >= 1.8, "Adaptive backoff should increase aggressively for rapid failures");
+    }
+    
+    // Test scenario 2: Intermittent success (should moderate backoff)
+    info!("Testing intermittent success pattern");
+    mock_server.set_failure_mode(false).await.expect("Failed to disable failure mode");
+    
+    // Allow a successful connection
+    sleep(Duration::from_millis(300)).await;
+    
+    let success_event = timeout(Duration::from_secs(3), reconnection_receiver.recv()).await;
+    if let Ok(Ok(ReconnectionEvent::Connected { .. })) = success_event {
+        info!("Achieved intermittent success");
+    }
+    
+    // Cause failure again
+    mock_server.set_failure_mode(true).await.expect("Failed to set failure mode");
+    mock_server.close_connection().await.expect("Failed to close connection");
+    
+    // Check if backoff was moderated due to recent success
+    let post_success_delay = timeout(Duration::from_secs(2), reconnection_receiver.recv()).await;
+    if let Ok(Ok(ReconnectionEvent::AttemptStarted { delay, .. })) = post_success_delay {
+        info!("Post-success delay: {:?}", delay);
+        
+        // Should be less than the last rapid failure delay (adaptive moderation)
+        if let Some(last_rapid_delay) = rapid_failure_delays.last() {
+            assert!(delay <= *last_rapid_delay, 
+                   "Backoff should be moderated after success: {:?} vs {:?}", 
+                   delay, last_rapid_delay);
+        }
+    }
+    
+    // Test scenario 3: Persistent failures (should reach max backoff)
+    info!("Testing persistent failure pattern");
+    
+    let mut persistent_delays = Vec::new();
+    for i in 1..=6 {
+        mock_server.close_connection().await.expect("Failed to close connection");
+        
+        if let Ok(event_result) = timeout(Duration::from_secs(3), reconnection_receiver.recv()).await {
+            if let Ok(ReconnectionEvent::AttemptStarted { delay, .. }) = event_result {
+                persistent_delays.push(delay);
+                info!("Persistent failure #{}: delay {:?}", i, delay);
+            }
+        }
+        
+        sleep(Duration::from_millis(100)).await;
+    }
+    
+    // Should eventually reach max backoff
+    let max_delay = persistent_delays.iter().max().unwrap();
+    assert!(*max_delay >= Duration::from_secs(8), 
+           "Should approach max backoff for persistent failures: {:?}", max_delay);
+    
+    // Verify adaptive metrics
+    let adaptive_metrics = client.adaptive_backoff_metrics();
+    assert!(adaptive_metrics.rapid_failure_sequences >= 1);
+    assert!(adaptive_metrics.intermittent_success_detected);
+    assert!(adaptive_metrics.persistent_failure_sequences >= 1);
+    assert!(adaptive_metrics.backoff_adjustments >= 5);
+    assert!(adaptive_metrics.max_backoff_reached);
+    
+    // Verify pattern analysis
+    let pattern_analysis = client.failure_pattern_analysis();
+    assert!(pattern_analysis.failure_patterns.contains_key("rapid_consecutive"));
+    assert!(pattern_analysis.failure_patterns.contains_key("persistent_failure"));
+    assert!(pattern_analysis.success_patterns.contains_key("intermittent_recovery"));
+    
+    // Test scenario 4: Recovery and backoff reset
+    info!("Testing recovery and backoff reset");
+    mock_server.set_failure_mode(false).await.expect("Failed to disable failure mode");
+    
+    // Wait for successful recovery
+    let recovery_event = timeout(Duration::from_secs(10), reconnection_receiver.recv()).await;
+    if let Ok(Ok(ReconnectionEvent::Connected { .. })) = recovery_event {
+        info!("Successfully recovered");
+    }
+    
+    // Verify backoff was reset
+    let reset_metrics = client.adaptive_backoff_metrics();
+    assert!(reset_metrics.backoff_resets >= 1);
+    assert!(reset_metrics.current_backoff_level < 5); // Should be reset to lower level
+    
+    // Clean up
+    client.disconnect().await;
+    mock_server.stop().await;
+    
+    info!("Adaptive backoff strategy test completed");
+}
+
 // Placeholder structs and enums that will be implemented in GREEN phase
 struct WebSocketClient {
     url: String,
@@ -731,5 +1003,95 @@ impl MessageStream {
 impl MockMessageReceiver {
     async fn recv(&mut self) -> Result<String, String> {
         unimplemented!("MockMessageReceiver::recv() - to be implemented in GREEN phase")
+    }
+}
+
+// Additional placeholder structs for new reconnection functionality
+#[derive(Clone)]
+struct FailureModeMetrics {
+    intermittent_failures: u64,
+    network_partition_detected: bool,
+    recovery_successful: bool,
+    total_failure_modes: u32,
+    time_to_recovery: Duration,
+    failure_mode_distribution: std::collections::HashMap<String, u64>,
+    last_failure_mode: Option<String>,
+}
+
+#[derive(Clone)]
+struct DegradedModeMetrics {
+    degraded_mode_detected: bool,
+    connection_quality_score: f64,
+    instability_events: u64,
+    degraded_mode_duration: Duration,
+    quality_threshold: f64,
+    recovery_attempts_in_degraded_mode: u64,
+}
+
+#[derive(Clone)]
+struct AdaptiveBackoffMetrics {
+    rapid_failure_sequences: u64,
+    intermittent_success_detected: bool,
+    persistent_failure_sequences: u64,
+    backoff_adjustments: u64,
+    max_backoff_reached: bool,
+    backoff_resets: u64,
+    current_backoff_level: u32,
+    adaptive_algorithm_version: String,
+}
+
+#[derive(Clone)]
+struct FailurePatternAnalysis {
+    failure_patterns: std::collections::HashMap<String, u64>,
+    success_patterns: std::collections::HashMap<String, u64>,
+    pattern_detection_confidence: f64,
+    time_series_analysis: Vec<FailureDataPoint>,
+    trend_direction: TrendDirection,
+}
+
+#[derive(Debug, Clone)]
+enum TrendDirection {
+    Improving,
+    Degrading,
+    Stable,
+    Volatile,
+}
+
+#[derive(Debug, Clone)]
+struct FailureDataPoint {
+    timestamp: std::time::Instant,
+    failure_type: String,
+    duration: Duration,
+    recovery_time: Option<Duration>,
+}
+
+// Extended WebSocketClient implementation for reconnection tests
+impl WebSocketClient {
+    fn with_failure_mode_detection(self, enabled: bool) -> Self {
+        unimplemented!("WebSocketClient::with_failure_mode_detection() - to be implemented in GREEN phase")
+    }
+    
+    fn with_adaptive_backoff(self, enabled: bool) -> Self {
+        unimplemented!("WebSocketClient::with_adaptive_backoff() - to be implemented in GREEN phase")
+    }
+    
+    fn with_failure_pattern_analysis(self, enabled: bool) -> Self {
+        unimplemented!("WebSocketClient::with_failure_pattern_analysis() - to be implemented in GREEN phase")
+    }
+    
+    fn failure_mode_metrics(&self) -> FailureModeMetrics {
+        unimplemented!("WebSocketClient::failure_mode_metrics() - to be implemented in GREEN phase")
+    }
+    
+    fn degraded_mode_metrics(&self) -> DegradedModeMetrics {
+        unimplemented!("WebSocketClient::degraded_mode_metrics() - to be implemented in GREEN phase")
+    }
+    
+    fn adaptive_backoff_metrics(&self) -> AdaptiveBackoffMetrics {
+        unimplemented!("WebSocketClient::adaptive_backoff_metrics() - to be implemented in GREEN phase")
+    }
+    
+    fn failure_pattern_analysis(&self) -> FailurePatternAnalysis {
+        unimplemented!("WebSocketClient::failure_pattern_analysis() - to be implemented in GREEN phase")
     }
 }

@@ -1038,3 +1038,11 @@ impl MockFailureEvent {
 }
 
 // Note: MockWebSocketServer methods are defined in mock_websocket_server.rs
+
+// Additional placeholder structs for circuit breaker extension
+impl MockWebSocketServer {
+    // Clone method for concurrent testing
+    fn clone(&self) -> Self {
+        unimplemented!("MockWebSocketServer::clone() - to be implemented in GREEN phase")
+    }
+}

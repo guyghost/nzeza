@@ -39,6 +39,7 @@ impl MockWebSocketConnection {
     }
 }
 
+#[derive(Clone)]
 pub struct MockWebSocketServer {
     port: u16,
     listener: Option<Arc<TcpListener>>,
