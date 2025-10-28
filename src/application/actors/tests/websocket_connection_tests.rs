@@ -3,19 +3,6 @@ use tokio::time::{sleep, timeout};
 use tracing::info;
 
 use super::mock_websocket_server::MockWebSocketServer;
-use crate::application::actors::websocket_client::{
-    WebSocketClient, ConnectionState, PriceUpdate, ParsingError, ValidationError, TypeError,
-    ReconnectionEvent, CircuitBreakerEvent, ConnectionAttemptEvent, ClientConfig,
-    ReconnectionConfig, CircuitBreakerConfig, ExponentialBackoffConfig, ParsingMetrics,
-    ValidationMetrics, TypeValidationMetrics, PrecisionMetrics, ErrorMetrics,
-    ReconnectionMetrics, CircuitBreakerMetrics, FailureEvent, SuccessEvent,
-    TimeoutEvent, BackoffEvent, CircuitEvent, ConnectionMetadata, BufferMetrics,
-    MessageStream, ErrorStream, PriceStream, ParsingErrorStream, ValidationErrorStream,
-    TypeErrorStream, ReconnectionStream, CircuitBreakerStream, ConnectionAttemptStream,
-    MessageReceiver, ErrorReceiver, PriceReceiver, ParsingErrorReceiver,
-    ValidationErrorReceiver, TypeErrorReceiver, ReconnectionReceiver,
-    CircuitBreakerReceiver, ConnectionAttemptReceiver, CircuitState,
-};
 
 // All tests reference functionality that doesn't exist yet (RED phase)
 
@@ -374,50 +361,6 @@ impl WebSocketClient {
         Some("test_token")
     }
     
-    async fn disconnect(&self) {
-        unimplemented!("WebSocketClient::disconnect() - to be implemented in GREEN phase")
-    }
-    
-    fn is_connected(&self) -> bool {
-        unimplemented!("WebSocketClient::is_connected() - to be implemented in GREEN phase")
-    }
-    
-    fn connection_state(&self) -> ConnectionState {
-        unimplemented!("WebSocketClient::connection_state() - to be implemented in GREEN phase")
-    }
-    
-    fn last_heartbeat(&self) -> Option<std::time::Instant> {
-        unimplemented!("WebSocketClient::last_heartbeat() - to be implemented in GREEN phase")
-    }
-    
-    fn connection_id(&self) -> Option<String> {
-        unimplemented!("WebSocketClient::connection_id() - to be implemented in GREEN phase")
-    }
-    
-    fn message_stream(&self) -> MessageStream {
-        unimplemented!("WebSocketClient::message_stream() - to be implemented in GREEN phase")
-    }
-    
-    fn error_stream(&self) -> ErrorStream {
-        unimplemented!("WebSocketClient::error_stream() - to be implemented in GREEN phase")
-    }
-    
-    fn extract_timestamp(&self, message: &str) -> Option<std::time::SystemTime> {
-        unimplemented!("WebSocketClient::extract_timestamp() - to be implemented in GREEN phase")
-    }
-    
-    fn last_auth_header(&self) -> Option<String> {
-        unimplemented!("WebSocketClient::last_auth_header() - to be implemented in GREEN phase")
-    }
-    
-    async fn refresh_token(&self, token: &str) {
-        unimplemented!("WebSocketClient::refresh_token() - to be implemented in GREEN phase")
-    }
-    
-    fn current_token(&self) -> Option<&str> {
-        unimplemented!("WebSocketClient::current_token() - to be implemented in GREEN phase")
-    }
-    
     fn error_metrics(&self) -> ErrorMetrics {
         ErrorMetrics {
             malformed_json_count: 0,
@@ -428,8 +371,12 @@ impl WebSocketClient {
     }
 }
 
-struct MessageStream;
-struct ErrorStream;
+struct MessageStream {
+    sender: tokio::sync::broadcast::Sender<String>,
+}
+struct ErrorStream {
+    sender: tokio::sync::broadcast::Sender<String>,
+}
 #[derive(Clone)]
 struct ErrorMetrics {
     malformed_json_count: u64,
@@ -439,28 +386,28 @@ struct ErrorMetrics {
 }
 
 impl MessageStream {
-    fn subscribe(&self) -> MessageReceiver {
+    fn subscribe(&self) -> MockMessageReceiver {
         unimplemented!("MessageStream::subscribe() - to be implemented in GREEN phase")
     }
 }
 
 impl ErrorStream {
-    fn subscribe(&self) -> ErrorReceiver {
+    fn subscribe(&self) -> MockErrorReceiver {
         unimplemented!("ErrorStream::subscribe() - to be implemented in GREEN phase")
     }
 }
 
-struct MessageReceiver;
-struct ErrorReceiver;
+struct MockMessageReceiver;
+struct MockErrorReceiver;
 
-impl MessageReceiver {
+impl MockMessageReceiver {
     async fn recv(&mut self) -> Result<String, String> {
-        unimplemented!("MessageReceiver::recv() - to be implemented in GREEN phase")
+        unimplemented!("MockMessageReceiver::recv() - to be implemented in GREEN phase")
     }
 }
 
-impl ErrorReceiver {
+impl MockErrorReceiver {
     async fn recv(&mut self) -> Result<String, String> {
-        unimplemented!("ErrorReceiver::recv() - to be implemented in GREEN phase")
+        unimplemented!("MockErrorReceiver::recv() - to be implemented in GREEN phase")
     }
 }

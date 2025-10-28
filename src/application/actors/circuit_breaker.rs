@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use crate::domain::services::circuit_breaker::{CircuitBreakerConfig, CircuitState};
+
 /// Circuit breaker implementation
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
@@ -93,7 +95,7 @@ impl CircuitBreaker {
             CircuitState::Open => {
                 // Check if timeout has elapsed
                 if let Some(open_time) = self.open_time {
-                    if open_time.elapsed() >= self.config.timeout_duration {
+                    if open_time.elapsed() >= self.config.window_duration {
                         self.transition_to(CircuitState::HalfOpen);
                         true
                     } else {

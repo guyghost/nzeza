@@ -3,19 +3,6 @@ use tokio::time::{sleep, timeout};
 use tracing::info;
 
 use super::mock_websocket_server::MockWebSocketServer;
-use crate::application::actors::websocket_client::{
-    WebSocketClient, ConnectionState, PriceUpdate, ParsingError, ValidationError, TypeError,
-    ReconnectionEvent, CircuitBreakerEvent, ConnectionAttemptEvent, ClientConfig,
-    ReconnectionConfig, CircuitBreakerConfig, ExponentialBackoffConfig, ParsingMetrics,
-    ValidationMetrics, TypeValidationMetrics, PrecisionMetrics, ErrorMetrics,
-    ReconnectionMetrics, CircuitBreakerMetrics, FailureEvent, SuccessEvent,
-    TimeoutEvent, BackoffEvent, CircuitEvent, ConnectionMetadata, BufferMetrics,
-    MessageStream, ErrorStream, PriceStream, ParsingErrorStream, ValidationErrorStream,
-    TypeErrorStream, ReconnectionStream, CircuitBreakerStream, ConnectionAttemptStream,
-    MessageReceiver, ErrorReceiver, PriceReceiver, ParsingErrorReceiver,
-    ValidationErrorReceiver, TypeErrorReceiver, ReconnectionReceiver,
-    CircuitBreakerReceiver, ConnectionAttemptReceiver, CircuitState,
-};
 
 // All tests reference functionality that doesn't exist yet (RED phase)
 
@@ -791,8 +778,8 @@ enum CircuitEventType {
 
 struct CircuitBreakerStream;
 struct ConnectionAttemptStream;
-struct CircuitBreakerReceiver;
-struct ConnectionAttemptReceiver;
+struct MockCircuitBreakerReceiver;
+struct MockConnectionAttemptReceiver;
 
 #[derive(Clone)]
 struct CircuitBreakerMetrics {
@@ -889,37 +876,29 @@ struct CircuitEvent {
     details: String,
 }
 
-struct FailureEvent {
+struct MockFailureEvent {
     timestamp: Instant,
     error: String,
     connection_attempt_id: String,
 }
 
-struct SuccessEvent {
+struct MockSuccessEvent {
     timestamp: Instant,
     duration: Duration,
     connection_attempt_id: String,
 }
 
-struct TimeoutEvent {
+struct MockTimeoutEvent {
     duration: Duration,
     from_state: CircuitState,
     to_state: CircuitState,
     timestamp: Instant,
 }
 
-struct BackoffEvent {
+struct MockBackoffEvent {
     attempt_number: u32,
     timeout_duration: Duration,
     calculated_at: Option<Instant>,
-}
-
-struct CircuitEvent {
-    event_type: CircuitEventType,
-    timestamp: Instant,
-    state_before: CircuitState,
-    state_after: CircuitState,
-    details: String,
 }
 
 impl WebSocketClient {
@@ -979,19 +958,19 @@ impl WebSocketClient {
         unimplemented!("WebSocketClient::circuit_breaker_metrics() - to be implemented in GREEN phase")
     }
     
-    fn failure_history(&self) -> Vec<FailureEvent> {
+    fn failure_history(&self) -> Vec<MockFailureEvent> {
         unimplemented!("WebSocketClient::failure_history() - to be implemented in GREEN phase")
     }
     
-    fn success_history(&self) -> Vec<SuccessEvent> {
+    fn success_history(&self) -> Vec<MockSuccessEvent> {
         unimplemented!("WebSocketClient::success_history() - to be implemented in GREEN phase")
     }
     
-    fn timeout_history(&self) -> Vec<TimeoutEvent> {
+    fn timeout_history(&self) -> Vec<MockTimeoutEvent> {
         unimplemented!("WebSocketClient::timeout_history() - to be implemented in GREEN phase")
     }
     
-    fn backoff_history(&self) -> Vec<BackoffEvent> {
+    fn backoff_history(&self) -> Vec<MockBackoffEvent> {
         unimplemented!("WebSocketClient::backoff_history() - to be implemented in GREEN phase")
     }
     
@@ -1017,44 +996,44 @@ impl WebSocketClient {
 }
 
 impl CircuitBreakerStream {
-    fn subscribe(&self) -> CircuitBreakerReceiver {
+    fn subscribe(&self) -> MockCircuitBreakerReceiver {
         unimplemented!("CircuitBreakerStream::subscribe() - to be implemented in GREEN phase")
     }
 }
 
 impl ConnectionAttemptStream {
-    fn subscribe(&self) -> ConnectionAttemptReceiver {
+    fn subscribe(&self) -> MockConnectionAttemptReceiver {
         unimplemented!("ConnectionAttemptStream::subscribe() - to be implemented in GREEN phase")
     }
 }
 
-impl CircuitBreakerReceiver {
+impl MockCircuitBreakerReceiver {
     async fn recv(&mut self) -> Result<CircuitBreakerEvent, String> {
-        unimplemented!("CircuitBreakerReceiver::recv() - to be implemented in GREEN phase")
+        unimplemented!("MockCircuitBreakerReceiver::recv() - to be implemented in GREEN phase")
     }
 }
 
-impl ConnectionAttemptReceiver {
+impl MockConnectionAttemptReceiver {
     async fn recv(&mut self) -> Result<ConnectionAttemptEvent, String> {
-        unimplemented!("ConnectionAttemptReceiver::recv() - to be implemented in GREEN phase")
+        unimplemented!("MockConnectionAttemptReceiver::recv() - to be implemented in GREEN phase")
     }
 }
 
-impl FailureEvent {
+impl MockFailureEvent {
     fn is_within_window(&self, duration: Duration) -> bool {
-        unimplemented!("FailureEvent::is_within_window() - to be implemented in GREEN phase")
+        unimplemented!("MockFailureEvent::is_within_window() - to be implemented in GREEN phase")
     }
 }
 
-impl SuccessEvent {
+impl MockSuccessEvent {
     fn occurred_recently(&self, _duration: Duration) -> bool {
-        unimplemented!("SuccessEvent::occurred_recently() - to be implemented in GREEN phase")
+        unimplemented!("MockSuccessEvent::occurred_recently() - to be implemented in GREEN phase")
     }
 }
 
-impl FailureEvent {
+impl MockFailureEvent {
     fn is_recent(&self, _duration: Duration) -> bool {
-        unimplemented!("FailureEvent::is_recent() - to be implemented in GREEN phase")
+        unimplemented!("MockFailureEvent::is_recent() - to be implemented in GREEN phase")
     }
 }
 

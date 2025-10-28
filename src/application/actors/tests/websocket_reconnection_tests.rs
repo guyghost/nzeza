@@ -3,19 +3,6 @@ use tokio::time::{sleep, timeout};
 use tracing::info;
 
 use super::mock_websocket_server::MockWebSocketServer;
-use crate::application::actors::websocket_client::{
-    WebSocketClient, ConnectionState, PriceUpdate, ParsingError, ValidationError, TypeError,
-    ReconnectionEvent, CircuitBreakerEvent, ConnectionAttemptEvent, ClientConfig,
-    ReconnectionConfig, CircuitBreakerConfig, ExponentialBackoffConfig, ParsingMetrics,
-    ValidationMetrics, TypeValidationMetrics, PrecisionMetrics, ErrorMetrics,
-    ReconnectionMetrics, CircuitBreakerMetrics, FailureEvent, SuccessEvent,
-    TimeoutEvent, BackoffEvent, CircuitEvent, ConnectionMetadata, BufferMetrics,
-    MessageStream, ErrorStream, PriceStream, ParsingErrorStream, ValidationErrorStream,
-    TypeErrorStream, ReconnectionStream, CircuitBreakerStream, ConnectionAttemptStream,
-    MessageReceiver, ErrorReceiver, PriceReceiver, ParsingErrorReceiver,
-    ValidationErrorReceiver, TypeErrorReceiver, ReconnectionReceiver,
-    CircuitBreakerReceiver, ConnectionAttemptReceiver, CircuitState,
-};
 
 // All tests reference functionality that doesn't exist yet (RED phase)
 
@@ -595,7 +582,7 @@ enum ReconnectionEvent {
 }
 
 struct ReconnectionStream;
-struct ReconnectionReceiver;
+struct MockReconnectionReceiver;
 #[derive(Clone)]
 struct ReconnectionMetrics {
     total_attempts: u32,
@@ -624,14 +611,14 @@ struct BufferMetrics {
     max_buffer_size: usize,
 }
 
-struct ConnectionMetadata {
+struct MockConnectionMetadata {
     original_connect_time: Option<Instant>,
     last_reconnect_time: Option<Instant>,
     reconnection_count: u32,
     session_id: Option<String>,
 }
 
-struct BufferMetrics {
+struct MockBufferMetrics {
     messages_buffered: u64,
     messages_replayed: u64,
     buffer_overflows: u64,
@@ -721,28 +708,28 @@ impl WebSocketClient {
 }
 
 struct MessageStream;
-struct MessageReceiver;
+struct MockMessageReceiver;
 
 impl ReconnectionStream {
-    fn subscribe(&self) -> ReconnectionReceiver {
+    fn subscribe(&self) -> MockReconnectionReceiver {
         unimplemented!("ReconnectionStream::subscribe() - to be implemented in GREEN phase")
     }
 }
 
-impl ReconnectionReceiver {
+impl MockReconnectionReceiver {
     async fn recv(&mut self) -> Result<ReconnectionEvent, String> {
-        unimplemented!("ReconnectionReceiver::recv() - to be implemented in GREEN phase")
+        unimplemented!("MockReconnectionReceiver::recv() - to be implemented in GREEN phase")
     }
 }
 
 impl MessageStream {
-    fn subscribe(&self) -> MessageReceiver {
+    fn subscribe(&self) -> MockMessageReceiver {
         unimplemented!("MessageStream::subscribe() - to be implemented in GREEN phase")
     }
 }
 
-impl MessageReceiver {
+impl MockMessageReceiver {
     async fn recv(&mut self) -> Result<String, String> {
-        unimplemented!("MessageReceiver::recv() - to be implemented in GREEN phase")
+        unimplemented!("MockMessageReceiver::recv() - to be implemented in GREEN phase")
     }
 }
