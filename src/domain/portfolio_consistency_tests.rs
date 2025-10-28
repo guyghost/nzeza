@@ -3,8 +3,7 @@
 
 #[cfg(test)]
 mod portfolio_consistency_tests {
-    use crate::domain::services::portfolio_manager::PortfolioManager;
-    use crate::domain::entities::position::PositionSide;
+use crate::domain::services::portfolio_manager::PortfolioManager;
 
     // ============================================================================
     // ATOMICITY TESTS (All or Nothing)

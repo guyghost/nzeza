@@ -2,42 +2,6 @@
 
 use std::time::SystemTime;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-/// Portfolio transaction record
-#[derive(Debug, Clone)]
-pub struct PortfolioTransaction {
-    pub id: String,
-    pub action: PortfolioAction,
-    pub timestamp: SystemTime,
-    pub status: TransactionStatus,
-}
-
-/// Portfolio action type
-#[derive(Debug, Clone)]
-pub enum PortfolioAction {
-    OpenPosition {
-        symbol: String,
-        quantity: f64,
-        price: f64,
-    },
-    ClosePosition {
-        position_id: String,
-        pnl: f64,
-    },
-    UpdatePrice {
-        position_id: String,
-        price: f64,
-    },
-}
-
-/// Transaction status
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransactionStatus {
-    Pending,
-    Committed,
-    RolledBack,
-}
 
 /// Position data
 #[derive(Debug, Clone)]
@@ -49,42 +13,28 @@ pub struct Position {
     pub current_price: Option<f64>,
 }
 
-/// Portfolio snapshot for recovery
-#[derive(Debug, Clone)]
-struct PortfolioSnapshot {
-    total_value: f64,
-    available_cash: f64,
-    position_value: f64,
-    positions: HashMap<String, Position>,
-}
-
 /// ACID-compliant portfolio manager
 pub struct PortfolioManager {
+    initial_value: f64,
     total_value: f64,
     available_cash: f64,
-    position_value: f64,
-    open_positions: HashMap<String, Position>,
-    position_locks: Arc<Mutex<HashMap<String, SystemTime>>>,
-    transaction_log: Vec<PortfolioTransaction>,
-    snapshots: Vec<PortfolioSnapshot>,
+    positions: HashMap<String, Position>,
+    max_total_positions: usize,
+    max_per_symbol: usize,
+    max_exposure: f64,
 }
 
 impl PortfolioManager {
     /// Create a new portfolio manager
     pub fn new(initial_value: f64) -> Self {
         Self {
+            initial_value,
             total_value: initial_value,
             available_cash: initial_value,
-            position_value: 0.0,
-            open_positions: HashMap::new(),
-            position_locks: Arc::new(Mutex::new(HashMap::new())),
-            transaction_log: Vec::new(),
-            snapshots: vec![PortfolioSnapshot {
-                total_value: initial_value,
-                available_cash: initial_value,
-                position_value: 0.0,
-                positions: HashMap::new(),
-            }],
+            positions: HashMap::new(),
+            max_total_positions: 5,
+            max_per_symbol: 3,
+            max_exposure: 0.8,
         }
     }
 
@@ -95,14 +45,19 @@ impl PortfolioManager {
         quantity: f64,
         entry_price: f64,
     ) -> Result<String, String> {
-        // Take snapshot before operation
-        let snapshot = self.take_snapshot();
+        // Check position count limits
+        if self.positions.len() >= self.max_total_positions {
+            return Err(format!("Maximum positions ({}) reached", self.max_total_positions));
+        }
+
+        // Check per-symbol limit
+        let symbol_count = self.positions.values().filter(|p| p.symbol == symbol).count();
+        if symbol_count >= self.max_per_symbol {
+            return Err(format!("Maximum positions per symbol ({}) reached for {}", self.max_per_symbol, symbol));
+        }
 
         // Calculate position value
         let position_value = quantity * entry_price;
-
-        // Validate invariants before operation
-        self.validate_invariants()?;
 
         // Check balance
         if position_value > self.available_cash {
@@ -110,6 +65,19 @@ impl PortfolioManager {
                 "Insufficient balance: required {:.2}, available {:.2}",
                 position_value, self.available_cash
             ));
+        }
+
+        // Check exposure limit
+        let current_position_value = self.get_position_value();
+        let total_value = self.get_total_value();
+        if total_value > 0.0 {
+            let new_exposure = (current_position_value + position_value) / total_value;
+            if new_exposure > self.max_exposure {
+                return Err(format!(
+                    "Exposure limit exceeded: {:.2} > {:.2}",
+                    new_exposure, self.max_exposure
+                ));
+            }
         }
 
         // Generate position ID
@@ -127,39 +95,26 @@ impl PortfolioManager {
             current_price: Some(entry_price),
         };
 
-        // Reserve cash and update state
+        // Update state
         self.available_cash -= position_value;
-        self.position_value += position_value;
-        self.open_positions.insert(position_id.clone(), position);
+        self.positions.insert(position_id.clone(), position);
 
-        // Validate invariants after operation
+        // Validate invariants
         if let Err(e) = self.validate_invariants() {
-            // Rollback on invariant violation
-            self.restore_snapshot(snapshot);
-            return Err(format!("Operation failed invariant check: {}", e));
+            // This shouldn't happen if logic is correct, but rollback just in case
+            self.positions.remove(&position_id);
+            self.available_cash += position_value;
+            return Err(format!("Invariant violation after open: {}", e));
         }
-
-        // Record transaction
-        self.record_transaction(
-            PortfolioAction::OpenPosition {
-                symbol: symbol.to_string(),
-                quantity,
-                price: entry_price,
-            },
-            TransactionStatus::Committed,
-        );
 
         Ok(position_id)
     }
 
     /// Close a position atomically
     pub fn close_position_atomic(&mut self, position_id: &str) -> Result<f64, String> {
-        // Take snapshot before operation
-        let snapshot = self.take_snapshot();
-
         // Find position
         let position = self
-            .open_positions
+            .positions
             .get(position_id)
             .ok_or_else(|| format!("Position {} not found", position_id))?
             .clone();
@@ -170,69 +125,81 @@ impl PortfolioManager {
         let current_value = position.quantity * current_price;
         let pnl = current_value - entry_value;
 
-        // Release cash and update state
+        // Update state
         self.available_cash += entry_value + pnl;
-        self.position_value -= entry_value;
         self.total_value += pnl;
-        self.open_positions.remove(position_id);
+        self.positions.remove(position_id);
 
-        // Validate invariants after operation
+        // Validate invariants
         if let Err(e) = self.validate_invariants() {
-            // Rollback on invariant violation
-            self.restore_snapshot(snapshot);
-            return Err(format!("Operation failed invariant check: {}", e));
+            // This shouldn't happen, but rollback just in case
+            self.positions.insert(position_id.to_string(), position);
+            self.available_cash -= entry_value + pnl;
+            self.total_value -= pnl;
+            return Err(format!("Invariant violation after close: {}", e));
         }
-
-        // Record transaction
-        self.record_transaction(
-            PortfolioAction::ClosePosition {
-                position_id: position_id.to_string(),
-                pnl,
-            },
-            TransactionStatus::Committed,
-        );
 
         Ok(pnl)
     }
 
     /// Validate all portfolio invariants
     pub fn validate_invariants(&self) -> Result<(), String> {
-        // Invariant 1: total_value >= 0
-        if self.total_value < 0.0 {
-            return Err(format!("Invariant 1 violated: total_value {} < 0", self.total_value));
-        }
-
-        // Invariant 2: available_cash >= 0
+        // Invariant 1: available_cash >= 0
         if self.available_cash < 0.0 {
             return Err(format!(
-                "Invariant 2 violated: available_cash {} < 0",
+                "Invariant 1 violated: available_cash {} < 0",
                 self.available_cash
             ));
         }
 
-        // Invariant 3: position_value >= 0
-        if self.position_value < 0.0 {
-            return Err(format!(
-                "Invariant 3 violated: position_value {} < 0",
-                self.position_value
-            ));
-        }
-
-        // Invariant 4: total_value == available_cash + position_value
-        let expected_total = self.available_cash + self.position_value;
+        // Invariant 2: total_value == available_cash + position_value
+        let position_value = self.get_position_value();
+        let expected_total = self.available_cash + position_value;
         if (self.total_value - expected_total).abs() > 0.01 {
             return Err(format!(
-                "Invariant 4 violated: total_value {} != available_cash {} + position_value {}",
-                self.total_value, self.available_cash, self.position_value
+                "Invariant 2 violated: total_value {} != available_cash {} + position_value {}",
+                self.total_value, self.available_cash, position_value
             ));
         }
 
-        // Invariant 5: No negative values and all finite
-        if !self.total_value.is_finite()
-            || !self.available_cash.is_finite()
-            || !self.position_value.is_finite()
-        {
-            return Err("Invariant 5 violated: Non-finite values detected".to_string());
+        // Invariant 3: position count <= max_total_positions
+        if self.positions.len() > self.max_total_positions {
+            return Err(format!(
+                "Invariant 3 violated: position count {} > max_total_positions {}",
+                self.positions.len(), self.max_total_positions
+            ));
+        }
+
+        // Invariant 4: per-symbol position count <= max_per_symbol
+        for symbol in self.positions.values().map(|p| &p.symbol).collect::<std::collections::HashSet<_>>() {
+            let count = self.positions.values().filter(|p| &p.symbol == symbol).count();
+            if count > self.max_per_symbol {
+                return Err(format!(
+                    "Invariant 4 violated: symbol {} has {} positions > max_per_symbol {}",
+                    symbol, count, self.max_per_symbol
+                ));
+            }
+        }
+
+        // Invariant 5: exposure <= max_exposure
+        if self.total_value > 0.0 {
+            let exposure = position_value / self.total_value;
+            if exposure > self.max_exposure {
+                return Err(format!(
+                    "Invariant 5 violated: exposure {} > max_exposure {}",
+                    exposure, self.max_exposure
+                ));
+            }
+        }
+
+        // Invariant 6: all positions have valid data
+        for position in self.positions.values() {
+            if position.quantity <= 0.0 || position.entry_price <= 0.0 {
+                return Err(format!(
+                    "Invariant 6 violated: position {} has invalid quantity {} or entry_price {}",
+                    position.id, position.quantity, position.entry_price
+                ));
+            }
         }
 
         Ok(())
@@ -240,7 +207,8 @@ impl PortfolioManager {
 
     /// Quick consistency check
     pub fn validate_consistency(&self) -> bool {
-        let expected_total = self.available_cash + self.position_value;
+        let position_value = self.get_position_value();
+        let expected_total = self.available_cash + position_value;
         (self.total_value - expected_total).abs() < 0.01
     }
 
@@ -256,22 +224,24 @@ impl PortfolioManager {
 
     /// Get position value
     pub fn get_position_value(&self) -> f64 {
-        self.position_value
+        self.positions.values()
+            .map(|p| p.quantity * p.current_price.unwrap_or(p.entry_price))
+            .sum()
     }
 
     /// Get all open positions
     pub fn get_open_positions(&self) -> HashMap<String, Position> {
-        self.open_positions.clone()
+        self.positions.clone()
     }
 
     /// Get position count
     pub fn get_position_count(&self) -> usize {
-        self.open_positions.len()
+        self.positions.len()
     }
 
     /// Get symbol position count
     pub fn get_symbol_position_count(&self, symbol: &str) -> u32 {
-        self.open_positions
+        self.positions
             .values()
             .filter(|p| p.symbol == symbol)
             .count() as u32
@@ -282,12 +252,12 @@ impl PortfolioManager {
         if portfolio_value <= 0.0 {
             return 0.0;
         }
-        self.position_value / portfolio_value
+        self.get_position_value() / portfolio_value
     }
 
     /// Update position price
     pub fn update_position_price(&mut self, position_id: &str, new_price: f64) -> Result<(), String> {
-        if let Some(position) = self.open_positions.get_mut(position_id) {
+        if let Some(position) = self.positions.get_mut(position_id) {
             position.current_price = Some(new_price);
             Ok(())
         } else {
@@ -297,52 +267,10 @@ impl PortfolioManager {
 
     /// Recover from failure to last known good state
     pub fn recover_from_failure(&mut self) {
-        if let Some(snapshot) = self.snapshots.last() {
-            self.restore_snapshot(snapshot.clone());
-        }
-    }
-
-    // ========== Private Helper Methods ==========
-
-    /// Take a snapshot of current state
-    fn take_snapshot(&self) -> PortfolioSnapshot {
-        PortfolioSnapshot {
-            total_value: self.total_value,
-            available_cash: self.available_cash,
-            position_value: self.position_value,
-            positions: self.open_positions.clone(),
-        }
-    }
-
-    /// Restore from snapshot
-    fn restore_snapshot(&mut self, snapshot: PortfolioSnapshot) {
-        self.total_value = snapshot.total_value;
-        self.available_cash = snapshot.available_cash;
-        self.position_value = snapshot.position_value;
-        self.open_positions = snapshot.positions;
-    }
-
-    /// Record transaction in log
-    fn record_transaction(&mut self, action: PortfolioAction, status: TransactionStatus) {
-        let transaction = PortfolioTransaction {
-            id: format!(
-                "txn_{}",
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0)
-            ),
-            action,
-            timestamp: SystemTime::now(),
-            status,
-        };
-
-        self.transaction_log.push(transaction);
-
-        // Store snapshot after each committed transaction
-        if status == TransactionStatus::Committed {
-            self.snapshots.push(self.take_snapshot());
-        }
+        // Reset to initial state
+        self.total_value = self.initial_value;
+        self.available_cash = self.initial_value;
+        self.positions.clear();
     }
 }
 
