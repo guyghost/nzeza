@@ -83,6 +83,7 @@ mod position_validation_tests {
         positions: Arc<std::sync::Mutex<HashMap<String, Position>>>,
         limits: PositionLimits,
         portfolio_value: f64,
+        next_id: Arc<std::sync::Mutex<u64>>,
     }
 
     impl PositionManager {
@@ -91,6 +92,7 @@ mod position_validation_tests {
                 positions: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 limits,
                 portfolio_value,
+                next_id: Arc::new(std::sync::Mutex::new(1)),
             }
         }
 
@@ -103,45 +105,232 @@ mod position_validation_tests {
             stop_loss_pct: Option<f64>,
             take_profit_pct: Option<f64>,
         ) -> PositionResult {
-            // INTENTIONAL: This will panic - TDD RED phase
-            // Implementation needed: Validate positions, create position
-            panic!("PositionManager::open_position not implemented");
+            // Lock positions for validation and creation
+            let mut positions = match self.positions.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    return PositionResult {
+                        success: false,
+                        position_id: None,
+                        error: Some("Failed to acquire lock".to_string()),
+                        pnl: None,
+                    }
+                }
+            };
+
+            // Validate per-symbol limit
+            let symbol_count: u32 = positions
+                .values()
+                .filter(|p| p.symbol == symbol)
+                .count() as u32;
+
+            if symbol_count >= self.limits.max_per_symbol {
+                return PositionResult {
+                    success: false,
+                    position_id: None,
+                    error: Some(format!(
+                        "Position limit exceeded for symbol {}: {} current, {} max",
+                        symbol, symbol_count, self.limits.max_per_symbol
+                    )),
+                    pnl: None,
+                };
+            }
+
+            // Validate total position limit
+            if positions.len() as u32 >= self.limits.max_total {
+                return PositionResult {
+                    success: false,
+                    position_id: None,
+                    error: Some(format!(
+                        "Total position limit exceeded: {} current, {} max",
+                        positions.len(),
+                        self.limits.max_total
+                    )),
+                    pnl: None,
+                };
+            }
+
+            // Validate available balance
+            let position_value = quantity * entry_price;
+            if position_value > self.portfolio_value {
+                return PositionResult {
+                    success: false,
+                    position_id: None,
+                    error: Some(format!(
+                        "Insufficient balance: {:.2} required, {:.2} available",
+                        position_value, self.portfolio_value
+                    )),
+                    pnl: None,
+                };
+            }
+
+            // Validate portfolio exposure
+            let current_exposure: f64 = positions
+                .values()
+                .map(|p| (p.quantity * p.entry_price) / self.portfolio_value)
+                .sum();
+
+            let new_exposure = current_exposure + (position_value / self.portfolio_value);
+            if new_exposure > self.limits.max_portfolio_exposure {
+                return PositionResult {
+                    success: false,
+                    position_id: None,
+                    error: Some(format!(
+                        "Portfolio exposure would exceed limit: {:.1}% > {:.1}%",
+                        new_exposure * 100.0,
+                        self.limits.max_portfolio_exposure * 100.0
+                    )),
+                    pnl: None,
+                };
+            }
+
+            // Generate position ID
+            let id_num = {
+                let mut id_guard = self.next_id.lock().unwrap();
+                let id = *id_guard;
+                *id_guard += 1;
+                id
+            };
+            let position_id = format!("pos_{}_{}", symbol, id_num);
+
+            // Calculate stop-loss and take-profit prices
+            let stop_loss_price = stop_loss_pct.map(|pct| {
+                match side {
+                    PositionSide::Long => entry_price * (1.0 - pct),
+                    PositionSide::Short => entry_price * (1.0 + pct),
+                }
+            });
+
+            let take_profit_price = take_profit_pct.map(|pct| {
+                match side {
+                    PositionSide::Long => entry_price * (1.0 + pct),
+                    PositionSide::Short => entry_price * (1.0 - pct),
+                }
+            });
+
+            // Create and store position
+            let position = Position {
+                id: position_id.clone(),
+                symbol: symbol.to_string(),
+                side,
+                quantity,
+                entry_price,
+                current_price: None,
+                stop_loss_price,
+                take_profit_price,
+            };
+
+            positions.insert(position_id.clone(), position);
+
+            PositionResult {
+                success: true,
+                position_id: Some(position_id),
+                error: None,
+                pnl: None,
+            }
         }
 
         pub fn close_position(&self, position_id: &str) -> PositionResult {
-            // INTENTIONAL: This will panic - TDD RED phase
-            panic!("PositionManager::close_position not implemented");
+            let mut positions = match self.positions.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    return PositionResult {
+                        success: false,
+                        position_id: None,
+                        error: Some("Failed to acquire lock".to_string()),
+                        pnl: None,
+                    }
+                }
+            };
+
+            // Find and remove position
+            match positions.remove(position_id) {
+                Some(position) => {
+                    let pnl = position.calculate_pnl();
+                    PositionResult {
+                        success: true,
+                        position_id: Some(position_id.to_string()),
+                        error: None,
+                        pnl,
+                    }
+                }
+                None => PositionResult {
+                    success: false,
+                    position_id: None,
+                    error: Some(format!("Position {} not found", position_id)),
+                    pnl: None,
+                },
+            }
         }
 
         pub fn update_position_price(&self, position_id: &str, new_price: f64) -> Result<(), String> {
-            // INTENTIONAL: This will panic - TDD RED phase
-            panic!("PositionManager::update_position_price not implemented");
+            let mut positions = self
+                .positions
+                .lock()
+                .map_err(|_| "Failed to acquire lock".to_string())?;
+
+            match positions.get_mut(position_id) {
+                Some(position) => {
+                    position.current_price = Some(new_price);
+                    Ok(())
+                }
+                None => Err(format!("Position {} not found", position_id)),
+            }
         }
 
         pub fn check_triggers(&self) -> Vec<(String, String)> {
-            // INTENTIONAL: This will panic - TDD RED phase
-            // Should return list of (position_id, trigger_type)
-            panic!("PositionManager::check_triggers not implemented");
+            let positions = match self.positions.lock() {
+                Ok(guard) => guard,
+                Err(_) => return Vec::new(),
+            };
+
+            let mut triggers = Vec::new();
+            for (position_id, position) in positions.iter() {
+                if position.should_stop_loss() {
+                    triggers.push((position_id.clone(), "stop_loss".to_string()));
+                } else if position.should_take_profit() {
+                    triggers.push((position_id.clone(), "take_profit".to_string()));
+                }
+            }
+
+            triggers
         }
 
         pub fn get_positions(&self) -> Vec<Position> {
-            // INTENTIONAL: This will panic - TDD RED phase
-            panic!("PositionManager::get_positions not implemented");
+            match self.positions.lock() {
+                Ok(positions) => positions.values().cloned().collect(),
+                Err(_) => Vec::new(),
+            }
         }
 
         pub fn get_position_count(&self) -> usize {
-            // INTENTIONAL: This will panic - TDD RED phase
-            panic!("PositionManager::get_position_count not implemented");
+            match self.positions.lock() {
+                Ok(positions) => positions.len(),
+                Err(_) => 0,
+            }
         }
 
         pub fn get_symbol_position_count(&self, symbol: &str) -> u32 {
-            // INTENTIONAL: This will panic - TDD RED phase
-            panic!("PositionManager::get_symbol_position_count not implemented");
+            match self.positions.lock() {
+                Ok(positions) => positions
+                    .values()
+                    .filter(|p| p.symbol == symbol)
+                    .count() as u32,
+                Err(_) => 0,
+            }
         }
 
         pub fn get_portfolio_exposure(&self) -> f64 {
-            // INTENTIONAL: This will panic - TDD RED phase
-            panic!("PositionManager::get_portfolio_exposure not implemented");
+            match self.positions.lock() {
+                Ok(positions) => {
+                    let total_position_value: f64 = positions
+                        .values()
+                        .map(|p| p.quantity * p.entry_price)
+                        .sum();
+                    total_position_value / self.portfolio_value
+                }
+                Err(_) => 0.0,
+            }
         }
     }
 
