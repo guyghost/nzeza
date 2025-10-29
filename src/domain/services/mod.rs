@@ -2,6 +2,7 @@ pub mod balance_manager;
 pub mod candle_builder;
 pub mod circuit_breaker;
 pub mod indicators;
+pub mod leverage_calculator;
 pub mod lock_validator;
 pub mod metrics;
 pub mod order_executor;
