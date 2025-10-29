@@ -16,6 +16,7 @@ use crate::domain::services::leverage_calculator::LeverageCalculator;
 use crate::domain::services::metrics::{PerformanceProfiler, TradingMetrics};
 use crate::domain::services::position_manager::{PositionLimits, PositionManager, PositionResult};
 use crate::domain::services::position_sizer::PositionSizer;
+use crate::domain::services::trade_execution_error::TradeExecutionError;
 use crate::domain::value_objects::position_sizing::PositionSizingRequest;
 use crate::domain::value_objects::{price::Price, quantity::Quantity};
 
@@ -646,15 +647,19 @@ impl OrderExecutor {
     /// Helper: Get balance and leverage managers (ensures both are configured)
     fn get_required_managers(
         &self,
-    ) -> Result<(&Arc<BalanceManager>, &Arc<LeverageCalculator>), String> {
+    ) -> Result<(&Arc<BalanceManager>, &Arc<LeverageCalculator>), TradeExecutionError> {
         let balance_manager = self
             .balance_manager
             .as_ref()
-            .ok_or("BalanceManager not configured")?;
+            .ok_or(TradeExecutionError::ManagerNotConfigured {
+                manager_name: "BalanceManager".to_string(),
+            })?;
         let leverage_calculator = self
             .leverage_calculator
             .as_ref()
-            .ok_or("LeverageCalculator not configured")?;
+            .ok_or(TradeExecutionError::ManagerNotConfigured {
+                manager_name: "LeverageCalculator".to_string(),
+            })?;
         Ok((balance_manager, leverage_calculator))
     }
 
@@ -662,12 +667,12 @@ impl OrderExecutor {
     fn validate_balance_sufficient(
         available_balance: f64,
         required_order_value: f64,
-    ) -> Result<(), String> {
+    ) -> Result<(), TradeExecutionError> {
         if available_balance < required_order_value {
-            return Err(format!(
-                "Insufficient balance: required {:.2}, available {:.2}",
-                required_order_value, available_balance
-            ));
+            return Err(TradeExecutionError::InsufficientBalance {
+                required: required_order_value,
+                available: available_balance,
+            });
         }
         Ok(())
     }
@@ -676,12 +681,12 @@ impl OrderExecutor {
     fn validate_leverage_sufficient(
         available_leverage: f64,
         required_leverage: f64,
-    ) -> Result<(), String> {
+    ) -> Result<(), TradeExecutionError> {
         if available_leverage < required_leverage {
-            return Err(format!(
-                "Insufficient leverage: required {:.2}, available {:.2}",
-                required_leverage, available_leverage
-            ));
+            return Err(TradeExecutionError::InsufficientLeverage {
+                required: required_leverage,
+                available: available_leverage,
+            });
         }
         Ok(())
     }
@@ -693,7 +698,7 @@ impl OrderExecutor {
         available_balance: f64,
         available_leverage: f64,
         current_price: f64,
-    ) -> Result<PositionSizingRequest, String> {
+    ) -> Result<PositionSizingRequest, TradeExecutionError> {
         PositionSizingRequest::new(
             symbol.to_string(),
             available_balance,
@@ -703,7 +708,9 @@ impl OrderExecutor {
             100.0, // min_order_size: $100
             self.portfolio_value, // max_order_size: portfolio value
         )
-        .map_err(|e| format!("Invalid position sizing request: {}", e))
+        .map_err(|e| TradeExecutionError::PositionSizingFailed {
+            reason: e.to_string(),
+        })
     }
 
     /// Helper: Validate position size meets minimum requirements
@@ -711,19 +718,20 @@ impl OrderExecutor {
         quantity: f64,
         sizing_reason: &str,
         min_quantity: f64,
-    ) -> Result<(), String> {
+    ) -> Result<(), TradeExecutionError> {
         if quantity <= 0.0 {
-            return Err(format!(
-                "Position sizing resulted in zero quantity: {}",
-                sizing_reason
-            ));
+            return Err(TradeExecutionError::InvalidPositionSize {
+                reason: format!("Position sizing resulted in zero quantity: {}", sizing_reason),
+            });
         }
 
         if quantity < min_quantity {
-            return Err(format!(
-                "Position size {:.8} is below minimum quantity {:.8}",
-                quantity, min_quantity
-            ));
+            return Err(TradeExecutionError::InvalidPositionSize {
+                reason: format!(
+                    "Position size {:.8} is below minimum quantity {:.8}",
+                    quantity, min_quantity
+                ),
+            });
         }
 
         Ok(())
@@ -743,15 +751,16 @@ impl OrderExecutor {
     /// * `current_price` - Current market price of the asset
     ///
     /// # Returns
-    /// Ok(String) with order ID if successful, Err(String) with error message otherwise
+    /// Ok(String) with order ID if successful, Err(TradeExecutionError) with error details otherwise
     pub async fn execute_signal_with_balance_and_leverage_check(
         &mut self,
         symbol: &str,
         signal: &TradingSignal,
         current_price: f64,
-    ) -> Result<String, String> {
+    ) -> Result<String, TradeExecutionError> {
         // Validate signal
-        self.validate_signal(symbol, signal)?;
+        self.validate_signal(symbol, signal)
+            .map_err(|e| TradeExecutionError::InvalidSignal { reason: e })?;
 
         // Handle HOLD signals
         if signal.signal == Signal::Hold {
@@ -766,7 +775,7 @@ impl OrderExecutor {
         let balance_info = balance_manager
             .get_balance()
             .await
-            .map_err(|e| format!("Failed to fetch balance: {}", e))?;
+            .map_err(|e| TradeExecutionError::BalanceFetchFailed { reason: e })?;
 
         // Validate sufficient balance
         let required_order_value = self.portfolio_value * self.config.portfolio_percentage;
@@ -794,7 +803,9 @@ impl OrderExecutor {
         let sizing_result = self
             .position_sizer
             .size_position(&sizing_request)
-            .map_err(|e| format!("Position sizing failed: {}", e))?;
+            .map_err(|e| TradeExecutionError::PositionSizingFailed {
+                reason: e.to_string(),
+            })?;
 
         // Validate position size meets minimum requirements
         Self::validate_position_size(
@@ -846,7 +857,10 @@ impl OrderExecutor {
                     elapsed_ms
                 );
 
-                Err(error.clone())
+                // Convert string error to TradeExecutionError
+                Err(TradeExecutionError::OrderPlacementFailed {
+                    reason: error.clone(),
+                })
             }
         }
     }
