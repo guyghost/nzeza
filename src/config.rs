@@ -15,7 +15,17 @@ pub struct TradingConfig {
     pub portfolio_percentage_per_position: f64, // Pourcentage du portefeuille par position
     pub max_trades_per_hour: usize,             // Limite de trades par heure
     pub max_trades_per_day: usize,              // Limite de trades par jour
-    pub max_slippage_percent: f64,              // Maximum slippage allowed on orders (e.g., 0.002 = 0.2%)
+    pub max_slippage_percent: f64, // Maximum slippage allowed on orders (e.g., 0.002 = 0.2%)
+
+    // Symbol screening configuration
+    pub screening_enabled: bool, // Enable symbol screening for scalping
+    pub screening_interval_seconds: u64, // Interval between screening runs (seconds)
+    pub screening_cache_ttl_seconds: u64, // Cache TTL for screening results (seconds)
+    pub screening_score_threshold: f64, // Minimum overall score to consider (0.0-1.0)
+    pub screening_volatility_weight: f64, // Weight for volatility in score aggregation
+    pub screening_volume_weight: f64, // Weight for volume in score aggregation
+    pub screening_spread_weight: f64, // Weight for spread in score aggregation
+    pub screening_momentum_weight: f64, // Weight for momentum in score aggregation
 }
 
 impl TradingConfig {
@@ -59,7 +69,12 @@ impl TradingConfig {
         // Hyperliquid symbols (just the asset name)
         symbols.insert(
             Exchange::Hyperliquid,
-            vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string(), "BNB".to_string()],
+            vec![
+                "BTC".to_string(),
+                "ETH".to_string(),
+                "SOL".to_string(),
+                "BNB".to_string(),
+            ],
         );
 
         // Kraken symbols (with slash)
@@ -86,6 +101,16 @@ impl TradingConfig {
             max_trades_per_hour: 10,                 // 10 trades par heure max
             max_trades_per_day: 50,                  // 50 trades par jour max
             max_slippage_percent: 0.002,             // 0.2% maximum slippage protection
+
+            // Symbol screening defaults
+            screening_enabled: true,
+            screening_interval_seconds: 60, // Screen every 60 seconds
+            screening_cache_ttl_seconds: 300, // 5 minute cache TTL
+            screening_score_threshold: 0.50, // Minimum 0.50 score
+            screening_volatility_weight: 0.3, // 30% weight
+            screening_volume_weight: 0.3,   // 30% weight
+            screening_spread_weight: 0.2,   // 20% weight
+            screening_momentum_weight: 0.2, // 20% weight
         }
     }
 
@@ -107,7 +132,9 @@ impl TradingConfig {
                 Err(e) => {
                     tracing::warn!(
                         "Failed to parse MIN_CONFIDENCE_THRESHOLD '{}': {}, using default: {}",
-                        threshold, e, config.min_confidence_threshold
+                        threshold,
+                        e,
+                        config.min_confidence_threshold
                     );
                 }
             }
@@ -183,6 +210,68 @@ impl TradingConfig {
                 if (0.0001..=0.05).contains(&value) {
                     // Entre 0.01% et 5%
                     config.max_slippage_percent = value;
+                }
+            }
+        }
+
+        // Symbol screening configuration from environment
+        if let Ok(screening_enabled) = std::env::var("SCREENING_ENABLED") {
+            config.screening_enabled =
+                screening_enabled.to_lowercase() == "true" || screening_enabled == "1";
+        }
+
+        if let Ok(screening_interval) = std::env::var("SCREENING_INTERVAL_SECONDS") {
+            if let Ok(value) = screening_interval.parse::<u64>() {
+                if value >= 10 && value <= 3600 {
+                    config.screening_interval_seconds = value;
+                }
+            }
+        }
+
+        if let Ok(screening_cache_ttl) = std::env::var("SCREENING_CACHE_TTL_SECONDS") {
+            if let Ok(value) = screening_cache_ttl.parse::<u64>() {
+                if value >= 60 && value <= 3600 {
+                    config.screening_cache_ttl_seconds = value;
+                }
+            }
+        }
+
+        if let Ok(screening_threshold) = std::env::var("SCREENING_SCORE_THRESHOLD") {
+            if let Ok(value) = screening_threshold.parse::<f64>() {
+                if (0.0..=1.0).contains(&value) {
+                    config.screening_score_threshold = value;
+                }
+            }
+        }
+
+        if let Ok(vol_weight) = std::env::var("SCREENING_VOLATILITY_WEIGHT") {
+            if let Ok(value) = vol_weight.parse::<f64>() {
+                if (0.0..=1.0).contains(&value) {
+                    config.screening_volatility_weight = value;
+                }
+            }
+        }
+
+        if let Ok(vol_weight) = std::env::var("SCREENING_VOLUME_WEIGHT") {
+            if let Ok(value) = vol_weight.parse::<f64>() {
+                if (0.0..=1.0).contains(&value) {
+                    config.screening_volume_weight = value;
+                }
+            }
+        }
+
+        if let Ok(spread_weight) = std::env::var("SCREENING_SPREAD_WEIGHT") {
+            if let Ok(value) = spread_weight.parse::<f64>() {
+                if (0.0..=1.0).contains(&value) {
+                    config.screening_spread_weight = value;
+                }
+            }
+        }
+
+        if let Ok(momentum_weight) = std::env::var("SCREENING_MOMENTUM_WEIGHT") {
+            if let Ok(value) = momentum_weight.parse::<f64>() {
+                if (0.0..=1.0).contains(&value) {
+                    config.screening_momentum_weight = value;
                 }
             }
         }
