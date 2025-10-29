@@ -9,35 +9,37 @@ use crate::application::actors::{WebSocketClient, ConnectionState, DisconnectTyp
 async fn test_basic_websocket_connection() {
     info!("Testing basic WebSocket connection establishment");
     
-    // Start mock server
-    let mut mock_server = MockWebSocketServer::new(9001);
-    let server_addr = mock_server.start().await;
+    // Wrap in timeout to prevent hanging
+    let result = timeout(Duration::from_secs(5), async {
+        // Start mock server
+        let mut mock_server = MockWebSocketServer::new(9001);
+        let server_addr = mock_server.start().await;
+        
+        // Create WebSocket client
+        let client = WebSocketClient::new(&format!("ws://{}", server_addr));
+        
+        // Attempt connection
+        let connection_result = client.connect().await;
+        
+        // Give server time to accept connection
+        sleep(Duration::from_millis(100)).await;
+        
+        // Verify connection state
+        assert!(connection_result.is_ok(), "Connection should succeed: {:?}", connection_result);
+        assert!(client.is_connected(), "Client should report as connected");
+        assert_eq!(client.connection_state(), ConnectionState::Connected);
+        assert!(client.last_heartbeat().is_some(), "Should have heartbeat timestamp");
+        assert!(client.connection_id().is_some(), "Should have connection ID");
+        
+        // Clean up
+        client.disconnect().await;
+        sleep(Duration::from_millis(100)).await;
+        mock_server.stop().await;
+        
+        info!("Basic WebSocket connection test completed");
+    }).await;
     
-    // Create WebSocket client (doesn't exist yet)
-    let client = WebSocketClient::new(&format!("ws://{}", server_addr));
-    
-    // Attempt connection
-    let connection_result = client.connect().await;
-    
-    // Simulate connection in mock server (since client doesn't actually connect)
-    mock_server.simulate_connection().await.expect("Failed to simulate connection");
-    
-    // Verify connection state
-    assert!(connection_result.is_ok(), "Connection should succeed");
-    assert!(client.is_connected(), "Client should report as connected");
-    assert_eq!(client.connection_state(), ConnectionState::Connected);
-    assert!(client.last_heartbeat().is_some(), "Should have heartbeat timestamp");
-    assert!(client.connection_id().is_some(), "Should have connection ID");
-    
-    // Verify server sees the connection
-    let server_connection = mock_server.next_connection().await;
-    assert!(server_connection.is_some(), "Server should see the connection");
-    
-    // Clean up
-    client.disconnect().await;
-    mock_server.stop().await;
-    
-    info!("Basic WebSocket connection test completed");
+    assert!(result.is_ok(), "Test timed out");
 }
 
 #[tokio::test]

@@ -3,6 +3,9 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use std::collections::VecDeque;
+use tokio_tungstenite::accept_async;
+use futures_util::stream::StreamExt;
+use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Clone)]
 pub struct MockWebSocketConnection {
@@ -47,6 +50,7 @@ pub struct MockWebSocketServer {
     reject_connections: Arc<Mutex<bool>>,
     failure_mode: Arc<Mutex<bool>>,
     message_queue: Arc<Mutex<VecDeque<String>>>,
+    active: Arc<Mutex<bool>>,
 }
 
 impl MockWebSocketServer {
@@ -58,6 +62,7 @@ impl MockWebSocketServer {
             reject_connections: Arc::new(Mutex::new(false)),
             failure_mode: Arc::new(Mutex::new(false)),
             message_queue: Arc::new(Mutex::new(VecDeque::new())),
+            active: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -70,20 +75,58 @@ impl MockWebSocketServer {
         let connections = Arc::clone(&self.connections);
         let reject_connections = Arc::clone(&self.reject_connections);
         let message_queue = Arc::clone(&self.message_queue);
+        let active = Arc::clone(&self.active);
+
+        *active.lock().await = true;
 
         tokio::spawn(async move {
             loop {
-                if let Ok((_, _peer_addr)) = listener.accept().await {
-                    let reject = *reject_connections.lock().await;
-                    if !reject {
-                        let mut conn = MockWebSocketConnection::new();
-                        // Send any queued messages to the new connection
-                        let mut queue = message_queue.lock().await;
-                        while let Some(msg) = queue.pop_front() {
-                            conn.send_message(&msg).await;
+                // Check if server is still active
+                if !*active.lock().await {
+                    break;
+                }
+
+                match tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept()).await {
+                    Ok(Ok((stream, _peer_addr))) => {
+                        let reject = *reject_connections.lock().await;
+                        if reject {
+                            continue;
                         }
-                        let mut conns = connections.lock().await;
-                        conns.push_back(conn);
+
+                        let conns = Arc::clone(&connections);
+                        let msgs = Arc::clone(&message_queue);
+
+                        tokio::spawn(async move {
+                            // Handle WebSocket handshake
+                            match accept_async(stream).await {
+                                Ok(ws_stream) => {
+                                    let mut conn = MockWebSocketConnection::new();
+                                    // Send any queued messages to the new connection
+                                    let mut queue = msgs.lock().await;
+                                    while let Some(msg) = queue.pop_front() {
+                                        conn.send_message(&msg).await;
+                                    }
+                                    let mut conns = conns.lock().await;
+                                    conns.push_back(conn);
+
+                                    // Keep connection alive
+                                    let (_write, mut read) = ws_stream.split();
+                                    while let Some(_msg) = read.next().await {
+                                        // Echo messages or process them
+                                    }
+                                }
+                                Err(_) => {
+                                    // WebSocket handshake failed
+                                }
+                            }
+                        });
+                    }
+                    Ok(Err(_)) => {
+                        // Accept error
+                        break;
+                    }
+                    Err(_) => {
+                        // Timeout - continue accepting
                     }
                 }
             }
@@ -93,6 +136,7 @@ impl MockWebSocketServer {
     }
 
     pub async fn stop(&mut self) {
+        *self.active.lock().await = false;
         self.listener = None;
     }
 
