@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod portfolio_consistency_tests {
-use crate::domain::services::portfolio_manager::PortfolioManager;
+    use crate::domain::services::portfolio_manager::PortfolioManager;
 
     // ============================================================================
     // ATOMICITY TESTS (All or Nothing)
@@ -393,7 +393,7 @@ use crate::domain::services::portfolio_manager::PortfolioManager;
         // Then: Consistency maintained with max positions
         assert_eq!(pm.get_position_count(), 5);
         assert!(pm.validate_invariants().is_ok());
-        
+
         // And: Adding beyond limit fails gracefully
         let result = pm.open_position_atomic("SYMBOL5", 1.0, 1000.0);
         assert!(result.is_err());
@@ -454,5 +454,4 @@ use crate::domain::services::portfolio_manager::PortfolioManager;
         // Then: Detected
         assert!(result.is_err());
     }
-
 }

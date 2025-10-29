@@ -18,11 +18,9 @@ impl Price {
         self.0
     }
 
-
     pub fn add(&self, other: Price) -> Result<Price, ValidationError> {
         Price::new(self.0 + other.0)
     }
-
 
     pub fn multiply(&self, factor: f64) -> Result<Price, ValidationError> {
         if !factor.is_finite() {

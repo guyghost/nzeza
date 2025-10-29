@@ -45,8 +45,9 @@
 //! - details: JSON details
 //! - timestamp: Timestamp
 
-pub mod repository;
 pub mod models;
+pub mod repository;
+pub mod screening_repository;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::ConnectOptions;
@@ -139,7 +140,9 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
     )
     .execute(pool)
     .await
-    .map_err(|e| DatabaseError::MigrationError(format!("Failed to create positions table: {}", e)))?;
+    .map_err(|e| {
+        DatabaseError::MigrationError(format!("Failed to create positions table: {}", e))
+    })?;
 
     // Create trades table
     sqlx::query(
@@ -181,7 +184,9 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
     )
     .execute(pool)
     .await
-    .map_err(|e| DatabaseError::MigrationError(format!("Failed to create audit_log table: {}", e)))?;
+    .map_err(|e| {
+        DatabaseError::MigrationError(format!("Failed to create audit_log table: {}", e))
+    })?;
 
     // Create dYdX order metadata table
     sqlx::query(
@@ -212,32 +217,36 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
 
     // Add order_flags column if it doesn't exist (for databases migrated from older versions)
     let order_flags_exists: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM pragma_table_info('dydx_order_metadata') WHERE name='order_flags'"
+        "SELECT COUNT(*) FROM pragma_table_info('dydx_order_metadata') WHERE name='order_flags'",
     )
     .fetch_one(pool)
     .await
     .unwrap_or((0,));
-    
+
     if order_flags_exists.0 == 0 {
         sqlx::query("ALTER TABLE dydx_order_metadata ADD COLUMN order_flags INTEGER DEFAULT 0")
             .execute(pool)
             .await
-            .map_err(|e| DatabaseError::MigrationError(format!("Failed to add order_flags column: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::MigrationError(format!("Failed to add order_flags column: {}", e))
+            })?;
     }
 
     // Add clob_pair_id column if it doesn't exist (for databases migrated from older versions)
     let clob_pair_id_exists: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM pragma_table_info('dydx_order_metadata') WHERE name='clob_pair_id'"
+        "SELECT COUNT(*) FROM pragma_table_info('dydx_order_metadata') WHERE name='clob_pair_id'",
     )
     .fetch_one(pool)
     .await
     .unwrap_or((0,));
-    
+
     if clob_pair_id_exists.0 == 0 {
         sqlx::query("ALTER TABLE dydx_order_metadata ADD COLUMN clob_pair_id INTEGER DEFAULT 0")
             .execute(pool)
             .await
-            .map_err(|e| DatabaseError::MigrationError(format!("Failed to add clob_pair_id column: {}", e)))?;
+            .map_err(|e| {
+                DatabaseError::MigrationError(format!("Failed to add clob_pair_id column: {}", e))
+            })?;
     }
 
     // Create indexes for better query performance
@@ -271,10 +280,12 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
         .await
         .map_err(|e| DatabaseError::MigrationError(format!("Failed to create index: {}", e)))?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_dydx_order_placed_at ON dydx_order_metadata(placed_at)")
-        .execute(pool)
-        .await
-        .map_err(|e| DatabaseError::MigrationError(format!("Failed to create index: {}", e)))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_dydx_order_placed_at ON dydx_order_metadata(placed_at)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| DatabaseError::MigrationError(format!("Failed to create index: {}", e)))?;
 
     info!("✓ Database migrations completed successfully");
 
@@ -307,8 +318,8 @@ impl Default for DatabaseConfig {
 impl DatabaseConfig {
     /// Load from environment variables
     pub fn from_env() -> Self {
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "sqlite://data/nzeza.db".to_string());
+        let url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://data/nzeza.db".to_string());
 
         let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
             .ok()

@@ -1,25 +1,25 @@
 //! Position Validation and Management Tests (TDD - RED Phase)
-//! 
+//!
 //! These tests define the expected behavior for position validation and management.
 //! All tests should FAIL initially as the implementation doesn't exist yet.
 //!
 //! Focus Areas:
 //! - Position opening validation (limits, symbols, balances)
-//! - Position closing and PnL calculations  
+//! - Position closing and PnL calculations
 //! - Stop-loss and take-profit triggers
 //! - Position updates during market movements
 //! - Concurrent position management (no race conditions)
 
 #[cfg(test)]
 mod position_validation_tests {
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-    use futures_util::future;
     use crate::domain::{
         entities::position::{Position, PositionSide},
-        value_objects::{price::Price, quantity::Quantity, pnl::PnL},
         errors::MpcError,
+        value_objects::{pnl::PnL, price::Price, quantity::Quantity},
     };
+    use futures_util::future;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     /// Position limits configuration
     #[derive(Debug, Clone)]
@@ -46,34 +46,52 @@ mod position_validation_tests {
         }
 
         /// Open a new position with validation
-        pub async fn open_position(&mut self, position: Position, available_balance: f64) -> Result<(), MpcError> {
+        pub async fn open_position(
+            &mut self,
+            position: Position,
+            available_balance: f64,
+        ) -> Result<(), MpcError> {
             // Validate per-symbol limit
             let symbol_count = self.count_positions_for_symbol(&position.symbol);
             if symbol_count >= self.limits.max_positions_per_symbol {
-                return Err(MpcError::InvalidConfiguration(format!("symbol limit exceeded: {} positions for {}", symbol_count, position.symbol)));
+                return Err(MpcError::InvalidConfiguration(format!(
+                    "symbol limit exceeded: {} positions for {}",
+                    symbol_count, position.symbol
+                )));
             }
 
             // Validate total position limit
             if self.positions.len() >= self.limits.max_total_positions {
-                return Err(MpcError::InvalidConfiguration("total positions limit exceeded".to_string()));
+                return Err(MpcError::InvalidConfiguration(
+                    "total positions limit exceeded".to_string(),
+                ));
             }
 
             // Validate position value limit
             let position_value = position.quantity.value() * position.entry_price.value();
             if position_value > self.limits.max_position_value_usd {
-                return Err(MpcError::InvalidInput(format!("position value {} exceeds limit {}", position_value, self.limits.max_position_value_usd)));
+                return Err(MpcError::InvalidInput(format!(
+                    "position value {} exceeds limit {}",
+                    position_value, self.limits.max_position_value_usd
+                )));
             }
 
             // Validate available balance
             if position_value > available_balance {
-                return Err(MpcError::InvalidInput(format!("insufficient balance: {} required, {} available", position_value, available_balance)));
+                return Err(MpcError::InvalidInput(format!(
+                    "insufficient balance: {} required, {} available",
+                    position_value, available_balance
+                )));
             }
 
             // Validate portfolio exposure
             let current_exposure = self.get_portfolio_exposure_sync();
             let new_exposure = current_exposure + (position_value / 100000.0); // Assuming $100k portfolio for tests
             if new_exposure > self.limits.max_portfolio_exposure {
-                return Err(MpcError::InvalidConfiguration(format!("exposure limit exceeded: {:.2} > {:.2}", new_exposure, self.limits.max_portfolio_exposure)));
+                return Err(MpcError::InvalidConfiguration(format!(
+                    "exposure limit exceeded: {:.2} > {:.2}",
+                    new_exposure, self.limits.max_portfolio_exposure
+                )));
             }
 
             // Add position
@@ -82,38 +100,57 @@ mod position_validation_tests {
         }
 
         /// Close a position and calculate realized PnL
-        pub async fn close_position(&mut self, position_id: &str, current_price: Price) -> Result<PnL, MpcError> {
+        pub async fn close_position(
+            &mut self,
+            position_id: &str,
+            current_price: Price,
+        ) -> Result<PnL, MpcError> {
             // Find position
-            let position_index = self.positions.iter().position(|p| p.id == position_id)
-                .ok_or_else(|| MpcError::InvalidInput(format!("position {} not found", position_id)))?;
+            let position_index = self
+                .positions
+                .iter()
+                .position(|p| p.id == position_id)
+                .ok_or_else(|| {
+                    MpcError::InvalidInput(format!("position {} not found", position_id))
+                })?;
 
             let position = &self.positions[position_index];
-            
+
             // Update price and calculate PnL
             let mut temp_position = position.clone();
             temp_position.update_price(current_price);
-            
-            let pnl = temp_position.unrealized_pnl()
+
+            let pnl = temp_position
+                .unrealized_pnl()
                 .ok_or_else(|| MpcError::InvalidInput("could not calculate PnL".to_string()))?;
 
             // Remove position
             self.positions.remove(position_index);
-            
+
             Ok(pnl)
         }
 
         /// Update position price and check for stop-loss/take-profit triggers
-        pub async fn update_position_price(&mut self, position_id: &str, price: Price) -> Result<bool, MpcError> {
+        pub async fn update_position_price(
+            &mut self,
+            position_id: &str,
+            price: Price,
+        ) -> Result<bool, MpcError> {
             // Find position
-            let position_index = self.positions.iter().position(|p| p.id == position_id)
-                .ok_or_else(|| MpcError::InvalidInput(format!("position {} not found", position_id)))?;
+            let position_index = self
+                .positions
+                .iter()
+                .position(|p| p.id == position_id)
+                .ok_or_else(|| {
+                    MpcError::InvalidInput(format!("position {} not found", position_id))
+                })?;
 
             let position = &mut self.positions[position_index];
             position.update_price(price);
 
             // Check triggers
             let should_close = position.should_stop_loss() || position.should_take_profit();
-            
+
             if should_close {
                 self.positions.remove(position_index);
             }
@@ -138,7 +175,9 @@ mod position_validation_tests {
 
         /// Get current portfolio exposure (helper method)
         fn get_portfolio_exposure_sync(&self) -> f64 {
-            let total_value: f64 = self.positions.iter()
+            let total_value: f64 = self
+                .positions
+                .iter()
                 .map(|p| p.quantity.value() * p.entry_price.value())
                 .sum();
             // Assume $100k portfolio for test calculations
@@ -147,7 +186,13 @@ mod position_validation_tests {
     }
 
     // Helper function to create test position
-    fn create_test_position(id: &str, symbol: &str, side: PositionSide, quantity: f64, entry_price: f64) -> Position {
+    fn create_test_position(
+        id: &str,
+        symbol: &str,
+        side: PositionSide,
+        quantity: f64,
+        entry_price: f64,
+    ) -> Position {
         Position::new(
             id.to_string(),
             symbol.to_string(),
@@ -163,7 +208,7 @@ mod position_validation_tests {
             max_positions_per_symbol: 3,
             max_total_positions: 10,
             max_position_value_usd: 100000.0, // Increased to allow larger test positions
-            max_portfolio_exposure: 0.8, // 80% max exposure
+            max_portfolio_exposure: 0.8,      // 80% max exposure
         };
         PositionManager::new(limits)
     }
@@ -173,7 +218,7 @@ mod position_validation_tests {
         // ARRANGE: Create position manager with symbol limit of 3 positions per symbol
         let mut manager = create_test_position_manager();
         let symbol = "BTC-USD";
-        
+
         // Add 3 positions for the same symbol (should be at limit)
         for i in 0..3 {
             let position = create_test_position(
@@ -181,7 +226,7 @@ mod position_validation_tests {
                 symbol,
                 PositionSide::Long,
                 0.1,
-                50000.0
+                50000.0,
             );
             manager.open_position(position, 100000.0).await.unwrap();
         }
@@ -195,7 +240,7 @@ mod position_validation_tests {
         match result.unwrap_err() {
             MpcError::InvalidConfiguration(msg) => {
                 assert!(msg.contains("symbol limit"));
-            },
+            }
             _ => panic!("Expected InvalidConfiguration error for symbol limit"),
         }
     }
@@ -204,7 +249,7 @@ mod position_validation_tests {
     async fn test_open_position_should_validate_total_portfolio_limits() {
         // ARRANGE: Create position manager with total limit of 10 positions
         let mut manager = create_test_position_manager();
-        
+
         // Add 10 positions across different symbols (should be at limit)
         for i in 0..10 {
             let position = create_test_position(
@@ -212,13 +257,14 @@ mod position_validation_tests {
                 &format!("SYMBOL_{}", i),
                 PositionSide::Long,
                 0.1,
-                50000.0
+                50000.0,
             );
             manager.open_position(position, 100000.0).await.unwrap();
         }
 
         // ACT: Try to open 11th position
-        let new_position = create_test_position("pos_11", "NEW_SYMBOL", PositionSide::Long, 0.1, 50000.0);
+        let new_position =
+            create_test_position("pos_11", "NEW_SYMBOL", PositionSide::Long, 0.1, 50000.0);
         let result = manager.open_position(new_position, 100000.0).await;
 
         // ASSERT: Should fail due to total portfolio limit exceeded
@@ -226,7 +272,7 @@ mod position_validation_tests {
         match result.unwrap_err() {
             MpcError::InvalidConfiguration(msg) => {
                 assert!(msg.contains("total positions"));
-            },
+            }
             _ => panic!("Expected InvalidConfiguration error for total positions"),
         }
     }
@@ -236,17 +282,17 @@ mod position_validation_tests {
         // ARRANGE: Create position manager
         let mut manager = create_test_position_manager();
         let available_balance = 10000.0; // Limited balance
-        
+
         // ACT: Try to open position requiring more than available balance
         let position = create_test_position("pos_1", "BTC-USD", PositionSide::Long, 1.0, 50000.0);
         let result = manager.open_position(position, available_balance).await;
 
-        // ASSERT: Should fail due to insufficient balance  
+        // ASSERT: Should fail due to insufficient balance
         assert!(result.is_err());
         match result.unwrap_err() {
             MpcError::InvalidInput(msg) => {
                 assert!(msg.contains("insufficient balance"));
-            },
+            }
             _ => panic!("Expected InvalidInput error for insufficient balance"),
         }
     }
@@ -259,7 +305,9 @@ mod position_validation_tests {
         manager.open_position(position, 100000.0).await.unwrap();
 
         // ACT: Close position with profit
-        let result = manager.close_position("pos_1", Price::new(55000.0).unwrap()).await;
+        let result = manager
+            .close_position("pos_1", Price::new(55000.0).unwrap())
+            .await;
 
         // ASSERT: Should return accurate PnL calculation
         assert!(result.is_ok());
@@ -279,21 +327,31 @@ mod position_validation_tests {
             Price::new(50000.0).unwrap(),
             Some(0.05), // 5% stop-loss at $47,500
             None,
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         manager.open_position(position, 100000.0).await.unwrap();
 
         // ACT: Update price to trigger stop-loss
         let trigger_price = Price::new(47500.0).unwrap(); // Exactly at stop-loss
-        let was_closed = manager.update_position_price("pos_1", trigger_price).await.unwrap();
+        let was_closed = manager
+            .update_position_price("pos_1", trigger_price)
+            .await
+            .unwrap();
 
         // ASSERT: Position should be automatically closed
-        assert!(was_closed, "Position should be closed due to stop-loss trigger");
+        assert!(
+            was_closed,
+            "Position should be closed due to stop-loss trigger"
+        );
         let position_status = manager.get_position("pos_1").await;
-        assert!(position_status.is_none(), "Position should be removed after stop-loss");
+        assert!(
+            position_status.is_none(),
+            "Position should be removed after stop-loss"
+        );
     }
 
-    #[tokio::test]  
+    #[tokio::test]
     async fn test_take_profit_trigger_should_auto_close_position() {
         // ARRANGE: Create position with take-profit
         let mut manager = create_test_position_manager();
@@ -305,18 +363,28 @@ mod position_validation_tests {
             Price::new(3000.0).unwrap(),
             None,
             Some(0.08), // 8% take-profit at $2,760
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         manager.open_position(position, 100000.0).await.unwrap();
 
         // ACT: Update price to trigger take-profit
         let trigger_price = Price::new(2760.0).unwrap(); // Exactly at take-profit
-        let was_closed = manager.update_position_price("pos_1", trigger_price).await.unwrap();
+        let was_closed = manager
+            .update_position_price("pos_1", trigger_price)
+            .await
+            .unwrap();
 
         // ASSERT: Position should be automatically closed with profit
-        assert!(was_closed, "Position should be closed due to take-profit trigger");
+        assert!(
+            was_closed,
+            "Position should be closed due to take-profit trigger"
+        );
         let position_status = manager.get_position("pos_1").await;
-        assert!(position_status.is_none(), "Position should be removed after take-profit");
+        assert!(
+            position_status.is_none(),
+            "Position should be removed after take-profit"
+        );
     }
 
     #[tokio::test]
@@ -324,11 +392,11 @@ mod position_validation_tests {
         // ARRANGE: Create position with precise values
         let mut manager = create_test_position_manager();
         let position = create_test_position(
-            "pos_1", 
-            "BTC-USD", 
-            PositionSide::Long, 
+            "pos_1",
+            "BTC-USD",
+            PositionSide::Long,
             0.12345678, // Precise quantity
-            49999.99    // Precise entry price
+            49999.99,   // Precise entry price
         );
         manager.open_position(position, 100000.0).await.unwrap();
 
@@ -340,8 +408,12 @@ mod position_validation_tests {
         assert!(result.is_ok());
         let pnl = result.unwrap();
         let expected_pnl = 0.12345678 * (51234.56 - 49999.99); // Precise calculation
-        assert!((pnl.value() - expected_pnl).abs() < 0.0001, 
-                "PnL precision error: expected {}, got {}", expected_pnl, pnl.value());
+        assert!(
+            (pnl.value() - expected_pnl).abs() < 0.0001,
+            "PnL precision error: expected {}, got {}",
+            expected_pnl,
+            pnl.value()
+        );
     }
 
     #[tokio::test]
@@ -349,10 +421,13 @@ mod position_validation_tests {
         // ARRANGE: Create position manager with 80% max exposure limit
         let mut manager = create_test_position_manager();
         let portfolio_value = 100000.0;
-        
+
         // Add positions totaling 70% of portfolio (under limit)
         let position1 = create_test_position("pos_1", "BTC-USD", PositionSide::Long, 1.4, 50000.0);
-        manager.open_position(position1, portfolio_value).await.unwrap(); // $70k position = 70%
+        manager
+            .open_position(position1, portfolio_value)
+            .await
+            .unwrap(); // $70k position = 70%
 
         // ACT: Try to add another position that would exceed 80% exposure
         let position2 = create_test_position("pos_2", "ETH-USD", PositionSide::Long, 5.0, 3000.0);
@@ -363,7 +438,7 @@ mod position_validation_tests {
         match result.unwrap_err() {
             MpcError::InvalidConfiguration(msg) => {
                 assert!(msg.contains("exposure limit"));
-            },
+            }
             _ => panic!("Expected InvalidConfiguration error for exposure limit"),
         }
     }
@@ -371,43 +446,50 @@ mod position_validation_tests {
     #[tokio::test]
     async fn test_position_atomic_operations() {
         // ARRANGE: Create position manager for concurrent access
-        let manager: Arc<Mutex<PositionManager>> = Arc::new(Mutex::new(create_test_position_manager()));
-        
+        let manager: Arc<Mutex<PositionManager>> =
+            Arc::new(Mutex::new(create_test_position_manager()));
+
         // ACT: Simulate concurrent position operations
-        let tasks: Vec<_> = (0..5).map(|i| {
-            let manager_clone = Arc::clone(&manager);
-            tokio::spawn(async move {
-                let position = create_test_position(
-                    &format!("pos_{}", i),
-                    "BTC-USD",
-                    PositionSide::Long,
-                    0.1,
-                    50000.0 + (i as f64 * 100.0)
-                );
-                
-                let mut mgr = manager_clone.lock().await;
-                mgr.open_position(position, 100000.0).await
+        let tasks: Vec<_> = (0..5)
+            .map(|i| {
+                let manager_clone = Arc::clone(&manager);
+                tokio::spawn(async move {
+                    let position = create_test_position(
+                        &format!("pos_{}", i),
+                        "BTC-USD",
+                        PositionSide::Long,
+                        0.1,
+                        50000.0 + (i as f64 * 100.0),
+                    );
+
+                    let mut mgr = manager_clone.lock().await;
+                    mgr.open_position(position, 100000.0).await
+                })
             })
-        }).collect();
+            .collect();
 
         // ASSERT: All operations should either succeed or fail atomically
         let results = future::join_all(tasks).await;
-        let successful_operations = results.into_iter()
+        let successful_operations = results
+            .into_iter()
             .filter_map(|task_result| task_result.ok())
             .filter(|op_result| op_result.is_ok())
             .count();
 
         // Exactly 3 should succeed due to symbol limit (max_positions_per_symbol = 3)
-        assert_eq!(successful_operations, 3, 
-                   "Expected exactly 3 successful operations due to symbol limit");
+        assert_eq!(
+            successful_operations, 3,
+            "Expected exactly 3 successful operations due to symbol limit"
+        );
     }
 
     #[tokio::test]
     async fn test_position_update_should_handle_concurrent_reads() {
         // ARRANGE: Create position manager with shared position
-        let manager: Arc<Mutex<PositionManager>> = Arc::new(Mutex::new(create_test_position_manager()));
+        let manager: Arc<Mutex<PositionManager>> =
+            Arc::new(Mutex::new(create_test_position_manager()));
         let position = create_test_position("pos_1", "BTC-USD", PositionSide::Long, 1.0, 50000.0);
-        
+
         {
             let mut mgr = manager.lock().await;
             mgr.open_position(position, 100000.0).await.unwrap();
@@ -418,7 +500,9 @@ mod position_validation_tests {
         let update_task = tokio::spawn(async move {
             for price in [51000.0, 52000.0, 53000.0] {
                 let mut mgr = manager_clone.lock().await;
-                mgr.update_position_price("pos_1", Price::new(price).unwrap()).await.unwrap();
+                mgr.update_position_price("pos_1", Price::new(price).unwrap())
+                    .await
+                    .unwrap();
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             }
         });
@@ -434,8 +518,14 @@ mod position_validation_tests {
 
         // ASSERT: Both tasks should complete without deadlock or corruption
         let (update_result, read_result) = tokio::join!(update_task, read_task);
-        assert!(update_result.is_ok(), "Update task should complete successfully");
-        assert!(read_result.is_ok(), "Read task should complete successfully");
+        assert!(
+            update_result.is_ok(),
+            "Update task should complete successfully"
+        );
+        assert!(
+            read_result.is_ok(),
+            "Read task should complete successfully"
+        );
     }
 
     #[tokio::test]
@@ -446,13 +536,18 @@ mod position_validation_tests {
         manager.open_position(position, 100000.0).await.unwrap();
 
         // ACT: Attempt to close position
-        let result = manager.close_position("pos_1", Price::new(55000.0).unwrap()).await;
+        let result = manager
+            .close_position("pos_1", Price::new(55000.0).unwrap())
+            .await;
 
         // ASSERT: Operation should succeed and position should be removed
         assert!(result.is_ok(), "Close operation should succeed");
-        
+
         // Position should be removed after successful close
         let position_status = manager.get_position("pos_1").await;
-        assert!(position_status.is_none(), "Position should be removed after successful close");
+        assert!(
+            position_status.is_none(),
+            "Position should be removed after successful close"
+        );
     }
 }

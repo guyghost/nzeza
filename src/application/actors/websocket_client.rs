@@ -1,10 +1,10 @@
-use std::time::{Duration, Instant, SystemTime};
+use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
-use tokio::sync::broadcast;
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
+use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use futures_util::{SinkExt, StreamExt};
 use url::Url;
 
 /// Connection states for WebSocket client
@@ -99,19 +99,43 @@ pub enum PriceParseError {
 /// Reconnection event
 #[derive(Clone, Debug)]
 pub enum ReconnectionEvent {
-    AttemptStarted { attempt_number: u32, delay: Duration },
-    Connected { attempt_number: u32, duration: Duration },
-    Failed { attempt_number: u32, error: String },
-    MaxRetriesExceeded { total_attempts: u32 },
+    AttemptStarted {
+        attempt_number: u32,
+        delay: Duration,
+    },
+    Connected {
+        attempt_number: u32,
+        duration: Duration,
+    },
+    Failed {
+        attempt_number: u32,
+        error: String,
+    },
+    MaxRetriesExceeded {
+        total_attempts: u32,
+    },
 }
 
 /// Circuit breaker event
 #[derive(Clone, Debug)]
 pub enum CircuitBreakerEvent {
-    StateChanged { from: CircuitState, to: CircuitState, reason: String },
-    FailureRecorded { total_failures: u32, threshold: u32 },
-    TimeoutStarted { timeout_duration: Duration, duration: Duration, attempt: u32 },
-    TimeoutElapsed { next_state: CircuitState },
+    StateChanged {
+        from: CircuitState,
+        to: CircuitState,
+        reason: String,
+    },
+    FailureRecorded {
+        total_failures: u32,
+        threshold: u32,
+    },
+    TimeoutStarted {
+        timeout_duration: Duration,
+        duration: Duration,
+        attempt: u32,
+    },
+    TimeoutElapsed {
+        next_state: CircuitState,
+    },
 }
 
 /// Connection attempt event
@@ -642,23 +666,23 @@ struct WebSocketClientInner {
     message_ordering_enabled: bool,
     sequence_tracking_enabled: bool,
     order_verification_enabled: bool,
-     failure_mode_detection_enabled: bool,
-     adaptive_backoff_enabled: bool,
-     error_type_distribution: HashMap<String, u64>,
-     duplicate_connection_attempts: u64,
-     last_prevention_timestamp: Option<SystemTime>,
-     incoming_frame_buffer: Vec<String>,
-      frame_buffer_timeout: Duration,
-      last_frame_arrival: Option<Instant>,
-      total_frames_buffered: u64,
-       messages_reassembled: u64,
-       buffer_overflows: u64,
-       max_buffer_utilization: f64,
-       total_buffer_time_ms: u64,
-       concurrent_buffer_operations: u64,
+    failure_mode_detection_enabled: bool,
+    adaptive_backoff_enabled: bool,
+    error_type_distribution: HashMap<String, u64>,
+    duplicate_connection_attempts: u64,
+    last_prevention_timestamp: Option<SystemTime>,
+    incoming_frame_buffer: Vec<String>,
+    frame_buffer_timeout: Duration,
+    last_frame_arrival: Option<Instant>,
+    total_frames_buffered: u64,
+    messages_reassembled: u64,
+    buffer_overflows: u64,
+    max_buffer_utilization: f64,
+    total_buffer_time_ms: u64,
+    concurrent_buffer_operations: u64,
 }
- 
- /// Message stream for raw WebSocket messages
+
+/// Message stream for raw WebSocket messages
 #[derive(Clone)]
 pub struct MessageStream {
     pub sender: broadcast::Sender<String>,
@@ -980,10 +1004,13 @@ impl WebSocketClient {
         let (progress_tx, _) = broadcast::channel(100);
 
         // Generate unique connection ID
-        let connection_id = format!("ws_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0));
+        let connection_id = format!(
+            "ws_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
 
         let inner = WebSocketClientInner {
             url: url.to_string(),
@@ -1010,15 +1037,31 @@ impl WebSocketClient {
             message_stream: MessageStream { sender: message_tx },
             error_stream: ErrorStream { sender: error_tx },
             price_stream: PriceStream { sender: price_tx },
-            parsing_error_stream: ParsingErrorStream { sender: parsing_error_tx },
-            validation_error_stream: ValidationErrorStream { sender: validation_error_tx },
-            type_error_stream: TypeErrorStream { sender: type_error_tx },
-            reconnection_stream: ReconnectionStream { sender: reconnection_tx },
+            parsing_error_stream: ParsingErrorStream {
+                sender: parsing_error_tx,
+            },
+            validation_error_stream: ValidationErrorStream {
+                sender: validation_error_tx,
+            },
+            type_error_stream: TypeErrorStream {
+                sender: type_error_tx,
+            },
+            reconnection_stream: ReconnectionStream {
+                sender: reconnection_tx,
+            },
             circuit_breaker_stream: CircuitBreakerStream { sender: circuit_tx },
-            connection_attempt_stream: ConnectionAttemptStream { sender: connection_attempt_tx },
-            disconnect_event_stream: DisconnectEventStream { sender: disconnect_event_tx },
-            state_change_stream: StateChangeStream { sender: state_change_tx },
-            progress_stream: ProgressStream { sender: progress_tx },
+            connection_attempt_stream: ConnectionAttemptStream {
+                sender: connection_attempt_tx,
+            },
+            disconnect_event_stream: DisconnectEventStream {
+                sender: disconnect_event_tx,
+            },
+            state_change_stream: StateChangeStream {
+                sender: state_change_tx,
+            },
+            progress_stream: ProgressStream {
+                sender: progress_tx,
+            },
             parsing_metrics: ParsingMetrics {
                 total_messages_parsed: 0,
                 successful_parses: 0,
@@ -1137,38 +1180,41 @@ impl WebSocketClient {
             progress_reporting_enabled: false,
             message_ordering_enabled: false,
             sequence_tracking_enabled: false,
-             order_verification_enabled: false,
-             failure_mode_detection_enabled: false,
-             adaptive_backoff_enabled: false,
-             error_type_distribution: HashMap::new(),
-             duplicate_connection_attempts: 0,
-             last_prevention_timestamp: None,
-             incoming_frame_buffer: Vec::new(),
-             frame_buffer_timeout: Duration::from_millis(100),
-             last_frame_arrival: None,
-              total_frames_buffered: 0,
-              messages_reassembled: 0,
-              buffer_overflows: 0,
-              max_buffer_utilization: 0.0,
-              total_buffer_time_ms: 0,
-              concurrent_buffer_operations: 0,
-           };
- 
-         Self {
-             inner: Arc::new(Mutex::new(inner)),
-         }
+            order_verification_enabled: false,
+            failure_mode_detection_enabled: false,
+            adaptive_backoff_enabled: false,
+            error_type_distribution: HashMap::new(),
+            duplicate_connection_attempts: 0,
+            last_prevention_timestamp: None,
+            incoming_frame_buffer: Vec::new(),
+            frame_buffer_timeout: Duration::from_millis(100),
+            last_frame_arrival: None,
+            total_frames_buffered: 0,
+            messages_reassembled: 0,
+            buffer_overflows: 0,
+            max_buffer_utilization: 0.0,
+            total_buffer_time_ms: 0,
+            concurrent_buffer_operations: 0,
+        };
+
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+        }
     }
 
     pub async fn connect(&self) -> Result<(), String> {
         let mut inner = self.inner.lock().await;
-        
+
         // Check if already connected or connecting
-        if matches!(inner.connection_state, ConnectionState::Connected | ConnectionState::Connecting) {
+        if matches!(
+            inner.connection_state,
+            ConnectionState::Connected | ConnectionState::Connecting
+        ) {
             inner.duplicate_connection_attempts += 1;
             inner.last_prevention_timestamp = Some(SystemTime::now());
             return Err("Client already connected".to_string());
         }
-        
+
         // Check circuit breaker state
         if matches!(inner.circuit_state, CircuitState::Open) {
             if let Some(config) = &inner.circuit_config {
@@ -1178,68 +1224,74 @@ impl WebSocketClient {
                     } else {
                         // Transition to half-open
                         inner.circuit_state = CircuitState::HalfOpen;
-                        let _ = inner.circuit_breaker_stream.sender.send(CircuitBreakerEvent::StateChanged {
-                            from: CircuitState::Open,
-                            to: CircuitState::HalfOpen,
-                            reason: "Timeout elapsed, attempting recovery".to_string(),
-                        });
+                        let _ = inner.circuit_breaker_stream.sender.send(
+                            CircuitBreakerEvent::StateChanged {
+                                from: CircuitState::Open,
+                                to: CircuitState::HalfOpen,
+                                reason: "Timeout elapsed, attempting recovery".to_string(),
+                            },
+                        );
                     }
                 }
             }
         }
-        
+
         // Set connecting state
         inner.connection_state = ConnectionState::Connecting;
-        let _ = inner.connection_attempt_stream.sender.send(ConnectionAttemptEvent::Started);
-        
+        let _ = inner
+            .connection_attempt_stream
+            .sender
+            .send(ConnectionAttemptEvent::Started);
+
         let connect_start = Instant::now();
-        
+
         // Parse URL
         let url = Url::parse(&inner.url).map_err(|e| format!("Invalid URL: {}", e))?;
-         
-         // Auth check - skip for localhost connections (testing)
-         let is_localhost = url.host_str().map_or(false, |host| {
-             host == "127.0.0.1" || host == "localhost" || host == "[::1]"
-         });
-         
-         if !is_localhost {
-             if let Some(token) = &inner.bearer_token {
-                 if token != "valid_bearer_token_abcdef123456" {
-                     inner.connection_state = ConnectionState::Disconnected;
-                     return Err("Invalid authentication token".to_string());
-                 }
-             } else {
-                 inner.connection_state = ConnectionState::Disconnected;
-                 return Err("Authentication required".to_string());
-             }
-         } else {
-             // For localhost connections, validate token if provided
-             if let Some(token) = &inner.bearer_token {
-                 if token != "valid_bearer_token_abcdef123456" {
-                     inner.connection_state = ConnectionState::Disconnected;
-                     return Err("Invalid authentication token".to_string());
-                 }
-             }
-             // No token is OK for localhost connections (for testing)
-         }
-         
-         // Attempt WebSocket connection with timeout
-         let connection_timeout = inner.connection_timeout;
-         match tokio::time::timeout(connection_timeout, connect_async(url.as_str())).await {
-             Ok(Ok((ws_stream, _))) => {
-                 let connect_duration = connect_start.elapsed();
-                 inner.connection_state = ConnectionState::Connected;
-                 inner.last_heartbeat = Some(Instant::now());
-                 inner.original_connect_time = Some(Instant::now());
-                 inner.last_auth_header = inner.bearer_token.as_ref().map(|t| format!("Bearer {}", t));
-                
+
+        // Auth check - skip for localhost connections (testing)
+        let is_localhost = url.host_str().map_or(false, |host| {
+            host == "127.0.0.1" || host == "localhost" || host == "[::1]"
+        });
+
+        if !is_localhost {
+            if let Some(token) = &inner.bearer_token {
+                if token != "valid_bearer_token_abcdef123456" {
+                    inner.connection_state = ConnectionState::Disconnected;
+                    return Err("Invalid authentication token".to_string());
+                }
+            } else {
+                inner.connection_state = ConnectionState::Disconnected;
+                return Err("Authentication required".to_string());
+            }
+        } else {
+            // For localhost connections, validate token if provided
+            if let Some(token) = &inner.bearer_token {
+                if token != "valid_bearer_token_abcdef123456" {
+                    inner.connection_state = ConnectionState::Disconnected;
+                    return Err("Invalid authentication token".to_string());
+                }
+            }
+            // No token is OK for localhost connections (for testing)
+        }
+
+        // Attempt WebSocket connection with timeout
+        let connection_timeout = inner.connection_timeout;
+        match tokio::time::timeout(connection_timeout, connect_async(url.as_str())).await {
+            Ok(Ok((ws_stream, _))) => {
+                let connect_duration = connect_start.elapsed();
+                inner.connection_state = ConnectionState::Connected;
+                inner.last_heartbeat = Some(Instant::now());
+                inner.original_connect_time = Some(Instant::now());
+                inner.last_auth_header =
+                    inner.bearer_token.as_ref().map(|t| format!("Bearer {}", t));
+
                 // Split the stream
                 let (write, read) = ws_stream.split();
-                
+
                 // Create channel for sending messages
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 inner.websocket_sender = Some(tx.clone());
-                
+
                 // Generate unique connection ID
                 use std::time::{SystemTime, UNIX_EPOCH};
                 let timestamp = SystemTime::now()
@@ -1248,137 +1300,166 @@ impl WebSocketClient {
                     .as_nanos();
                 let connection_id = format!("conn_{}_{}", timestamp, rand::random::<u32>());
                 inner.connection_id = Some(connection_id);
-                
-                 // Store task handles
-                 let client_for_reader = self.clone();
-                 inner.connection_task = Some(tokio::spawn(async move {
-                     // Spawn writer task
-                     let write_task = tokio::spawn(async move {
-                         let mut write_stream = write;
-                         let mut rx = rx;
-                         while let Some(message) = rx.recv().await {
-                             if let Err(_) = write_stream.send(message).await {
-                                 break;
-                             }
-                         }
-                     });
-                     
-                     // Spawn reader task
-                     let read_task = tokio::spawn(async move {
-                         let mut read_stream = read;
-                         while let Some(message) = read_stream.next().await {
-                             match message {
-                                 Ok(Message::Text(text)) => {
-                                     client_for_reader.process_incoming_message(&text).await;
-                                 }
-                                 Ok(Message::Binary(data)) => {
-                                     // Send binary data as error for now
-                                     let mut inner = client_for_reader.inner.lock().await;
-                                     let _ = inner.error_stream.sender.send(format!("Binary message received: {} bytes", data.len()));
-                                 }
-                                 Ok(Message::Ping(data)) => {
-                                     // Respond with pong
-                                     if let Some(sender) = &client_for_reader.inner.lock().await.websocket_sender {
-                                         let _ = sender.send(Message::Pong(data));
-                                     }
-                                 }
-                                 Ok(Message::Pong(_)) => {
-                                     // Update heartbeat
-                                     let mut inner = client_for_reader.inner.lock().await;
-                                     inner.last_heartbeat = Some(Instant::now());
-                                 }
-                                 Ok(Message::Close(_)) => {
-                                     // Connection closed
-                                     let mut inner = client_for_reader.inner.lock().await;
-                                     inner.connection_state = ConnectionState::Disconnected;
-                                     break;
-                                 }
-                                 Ok(Message::Frame(_)) => {
-                                     // Raw frame - ignore for now
-                                 }
-                                 Err(e) => {
-                                     // Connection error
-                                     let mut inner = client_for_reader.inner.lock().await;
-                                     inner.connection_state = ConnectionState::Disconnected;
-                                     let _ = inner.error_stream.sender.send(format!("WebSocket error: {}", e));
-                                     break;
-                                 }
-                             }
-                         }
+
+                // Store task handles
+                let client_for_reader = self.clone();
+                inner.connection_task = Some(tokio::spawn(async move {
+                    // Spawn writer task
+                    let write_task = tokio::spawn(async move {
+                        let mut write_stream = write;
+                        let mut rx = rx;
+                        while let Some(message) = rx.recv().await {
+                            if let Err(_) = write_stream.send(message).await {
+                                break;
+                            }
+                        }
                     });
-                    
+
+                    // Spawn reader task
+                    let read_task = tokio::spawn(async move {
+                        let mut read_stream = read;
+                        while let Some(message) = read_stream.next().await {
+                            match message {
+                                Ok(Message::Text(text)) => {
+                                    client_for_reader.process_incoming_message(&text).await;
+                                }
+                                Ok(Message::Binary(data)) => {
+                                    // Send binary data as error for now
+                                    let mut inner = client_for_reader.inner.lock().await;
+                                    let _ = inner.error_stream.sender.send(format!(
+                                        "Binary message received: {} bytes",
+                                        data.len()
+                                    ));
+                                }
+                                Ok(Message::Ping(data)) => {
+                                    // Respond with pong
+                                    if let Some(sender) =
+                                        &client_for_reader.inner.lock().await.websocket_sender
+                                    {
+                                        let _ = sender.send(Message::Pong(data));
+                                    }
+                                }
+                                Ok(Message::Pong(_)) => {
+                                    // Update heartbeat
+                                    let mut inner = client_for_reader.inner.lock().await;
+                                    inner.last_heartbeat = Some(Instant::now());
+                                }
+                                Ok(Message::Close(_)) => {
+                                    // Connection closed
+                                    let mut inner = client_for_reader.inner.lock().await;
+                                    inner.connection_state = ConnectionState::Disconnected;
+                                    break;
+                                }
+                                Ok(Message::Frame(_)) => {
+                                    // Raw frame - ignore for now
+                                }
+                                Err(e) => {
+                                    // Connection error
+                                    let mut inner = client_for_reader.inner.lock().await;
+                                    inner.connection_state = ConnectionState::Disconnected;
+                                    let _ = inner
+                                        .error_stream
+                                        .sender
+                                        .send(format!("WebSocket error: {}", e));
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
                     let _ = tokio::join!(write_task, read_task);
                 }));
-                
+
                 // Send success event
-                let _ = inner.connection_attempt_stream.sender.send(ConnectionAttemptEvent::Succeeded { duration: connect_duration });
-                
+                let _ = inner.connection_attempt_stream.sender.send(
+                    ConnectionAttemptEvent::Succeeded {
+                        duration: connect_duration,
+                    },
+                );
+
                 // Start message processing loop
                 let message_client_clone = self.clone();
                 tokio::spawn(async move {
                     message_client_clone.message_processing_loop().await;
                 });
-                
+
                 Ok(())
             }
-             Err(_timeout_err) => {
-                 let connect_duration = connect_start.elapsed();
-                 inner.connection_state = ConnectionState::Disconnected;
-                 let error_msg = format!("Connection timeout after {:?}", inner.connection_timeout);
-                 inner.last_connection_error = Some(error_msg.clone());
-                 
-                 // Send failure event
-                 let _ = inner.connection_attempt_stream.sender.send(ConnectionAttemptEvent::Failed { error: error_msg.clone() });
-                 
-                 // Update circuit breaker
-                 inner.consecutive_failures += 1;
-                 if let Some(config) = &inner.circuit_config {
-                     if inner.consecutive_failures >= config.failure_threshold {
-                         inner.circuit_state = CircuitState::Open;
-                         inner.circuit_open_time = Some(Instant::now());
-                         let _ = inner.circuit_breaker_stream.sender.send(CircuitBreakerEvent::StateChanged {
-                             from: CircuitState::Closed,
-                             to: CircuitState::Open,
-                             reason: "Failure threshold exceeded".to_string(),
-                         });
-                     }
-                 }
-                 
-                 Err(format!("WebSocket connection failed: {}", error_msg))
-             }
-              Ok(Err(e)) => {
-                  let _connect_duration = connect_start.elapsed();
-                  inner.connection_state = ConnectionState::Disconnected;
-                  inner.last_connection_error = Some(e.to_string());
-                  
-                  // Enhance error message for connection rejection scenarios
-                  let error_msg = if e.to_string().contains("Connection reset") || 
-                                     e.to_string().contains("broken pipe") ||
-                                     e.to_string().contains("connection closed") {
-                      "Server rejected the connection".to_string()
-                  } else {
-                      e.to_string()
-                  };
-                  
-                  // Send failure event
-                  let _ = inner.connection_attempt_stream.sender.send(ConnectionAttemptEvent::Failed { error: error_msg.clone() });
-                  
-                  // Update circuit breaker
-                  inner.consecutive_failures += 1;
-                  if let Some(config) = &inner.circuit_config {
-                      if inner.consecutive_failures >= config.failure_threshold {
-                          inner.circuit_state = CircuitState::Open;
-                          inner.circuit_open_time = Some(Instant::now());
-                          let _ = inner.circuit_breaker_stream.sender.send(CircuitBreakerEvent::StateChanged {
-                              from: CircuitState::Closed,
-                              to: CircuitState::Open,
-                              reason: "Failure threshold exceeded".to_string(),
-                          });
-                      }
-                  }
-                  
-                  Err(format!("WebSocket connection failed: {}", error_msg))
-             }
+            Err(_timeout_err) => {
+                let connect_duration = connect_start.elapsed();
+                inner.connection_state = ConnectionState::Disconnected;
+                let error_msg = format!("Connection timeout after {:?}", inner.connection_timeout);
+                inner.last_connection_error = Some(error_msg.clone());
+
+                // Send failure event
+                let _ =
+                    inner
+                        .connection_attempt_stream
+                        .sender
+                        .send(ConnectionAttemptEvent::Failed {
+                            error: error_msg.clone(),
+                        });
+
+                // Update circuit breaker
+                inner.consecutive_failures += 1;
+                if let Some(config) = &inner.circuit_config {
+                    if inner.consecutive_failures >= config.failure_threshold {
+                        inner.circuit_state = CircuitState::Open;
+                        inner.circuit_open_time = Some(Instant::now());
+                        let _ = inner.circuit_breaker_stream.sender.send(
+                            CircuitBreakerEvent::StateChanged {
+                                from: CircuitState::Closed,
+                                to: CircuitState::Open,
+                                reason: "Failure threshold exceeded".to_string(),
+                            },
+                        );
+                    }
+                }
+
+                Err(format!("WebSocket connection failed: {}", error_msg))
+            }
+            Ok(Err(e)) => {
+                let _connect_duration = connect_start.elapsed();
+                inner.connection_state = ConnectionState::Disconnected;
+                inner.last_connection_error = Some(e.to_string());
+
+                // Enhance error message for connection rejection scenarios
+                let error_msg = if e.to_string().contains("Connection reset")
+                    || e.to_string().contains("broken pipe")
+                    || e.to_string().contains("connection closed")
+                {
+                    "Server rejected the connection".to_string()
+                } else {
+                    e.to_string()
+                };
+
+                // Send failure event
+                let _ =
+                    inner
+                        .connection_attempt_stream
+                        .sender
+                        .send(ConnectionAttemptEvent::Failed {
+                            error: error_msg.clone(),
+                        });
+
+                // Update circuit breaker
+                inner.consecutive_failures += 1;
+                if let Some(config) = &inner.circuit_config {
+                    if inner.consecutive_failures >= config.failure_threshold {
+                        inner.circuit_state = CircuitState::Open;
+                        inner.circuit_open_time = Some(Instant::now());
+                        let _ = inner.circuit_breaker_stream.sender.send(
+                            CircuitBreakerEvent::StateChanged {
+                                from: CircuitState::Closed,
+                                to: CircuitState::Open,
+                                reason: "Failure threshold exceeded".to_string(),
+                            },
+                        );
+                    }
+                }
+
+                Err(format!("WebSocket connection failed: {}", error_msg))
+            }
         }
     }
 
@@ -1387,12 +1468,12 @@ impl WebSocketClient {
         inner.connection_state = ConnectionState::Disconnected;
         inner.connection_id = None;
         inner.last_heartbeat = None;
-        
+
         // Close WebSocket connection
         if let Some(sender) = &inner.websocket_sender {
             let _ = sender.send(Message::Close(None));
         }
-        
+
         // Cancel connection task
         if let Some(task) = inner.connection_task.take() {
             task.abort();
@@ -1401,50 +1482,55 @@ impl WebSocketClient {
 
     pub async fn reconnect(&self) -> Result<(), String> {
         let mut inner = self.inner.lock().await;
-        
+
         if matches!(inner.connection_state, ConnectionState::Connected) {
             return Err("Already connected".to_string());
         }
-        
+
         // Check reconnection config
         let config = match inner.reconnection_config.as_ref() {
             Some(c) => c.clone(),
             None => return Err("Reconnection not configured".to_string()),
         };
-        
+
         if inner.current_reconnection_attempt >= config.max_retries {
             inner.connection_state = ConnectionState::Failed;
             return Err("Max reconnection attempts exceeded".to_string());
         }
-        
+
         inner.current_reconnection_attempt += 1;
         inner.connection_state = ConnectionState::Reconnecting;
-        
+
         // Calculate backoff delay
         let base_delay = config.base_backoff;
         let multiplier = config.backoff_multiplier;
         let attempt = inner.current_reconnection_attempt;
-        
-        inner.backoff_delay = Duration::from_millis((base_delay.as_millis() as f64 * multiplier.powi((attempt - 1) as i32)) as u64);
+
+        inner.backoff_delay = Duration::from_millis(
+            (base_delay.as_millis() as f64 * multiplier.powi((attempt - 1) as i32)) as u64,
+        );
         if inner.backoff_delay > config.max_backoff {
             inner.backoff_delay = config.max_backoff;
         }
-        
+
         // Send reconnection event
-        let _ = inner.reconnection_stream.sender.send(ReconnectionEvent::AttemptStarted { 
-            attempt_number: attempt,
-            delay: inner.backoff_delay,
-        });
-        
+        let _ = inner
+            .reconnection_stream
+            .sender
+            .send(ReconnectionEvent::AttemptStarted {
+                attempt_number: attempt,
+                delay: inner.backoff_delay,
+            });
+
         let backoff_delay = inner.backoff_delay;
         drop(inner);
-        
+
         // Wait for backoff delay
         tokio::time::sleep(backoff_delay).await;
-        
+
         // Attempt reconnection
         let result = self.connect().await;
-        
+
         let mut inner = self.inner.lock().await;
         match result {
             Ok(()) => {
@@ -1452,35 +1538,43 @@ impl WebSocketClient {
                 inner.backoff_delay = config.base_backoff;
                 inner.consecutive_failures = 0;
                 inner.consecutive_successes += 1;
-                
-                let _ = inner.reconnection_stream.sender.send(ReconnectionEvent::Connected { 
-                    attempt_number: attempt, 
-                    duration: Duration::from_millis(0) // TODO: track actual duration
-                });
-                
+
+                let _ = inner
+                    .reconnection_stream
+                    .sender
+                    .send(ReconnectionEvent::Connected {
+                        attempt_number: attempt,
+                        duration: Duration::from_millis(0), // TODO: track actual duration
+                    });
+
                 // Reset circuit breaker on successful reconnection
                 if matches!(inner.circuit_state, CircuitState::HalfOpen) {
                     inner.circuit_state = CircuitState::Closed;
-                    let _ = inner.circuit_breaker_stream.sender.send(CircuitBreakerEvent::StateChanged {
-                        from: CircuitState::HalfOpen,
-                        to: CircuitState::Closed,
-                        reason: "Connection succeeded in half-open state".to_string(),
-                    });
+                    let _ = inner.circuit_breaker_stream.sender.send(
+                        CircuitBreakerEvent::StateChanged {
+                            from: CircuitState::HalfOpen,
+                            to: CircuitState::Closed,
+                            reason: "Connection succeeded in half-open state".to_string(),
+                        },
+                    );
                 }
             }
             Err(e) => {
                 inner.consecutive_successes = 0;
                 inner.consecutive_failures += 1;
-                
-                let _ = inner.reconnection_stream.sender.send(ReconnectionEvent::Failed { 
-                    attempt_number: attempt, 
-                    error: e.clone() 
-                });
-                
+
+                let _ = inner
+                    .reconnection_stream
+                    .sender
+                    .send(ReconnectionEvent::Failed {
+                        attempt_number: attempt,
+                        error: e.clone(),
+                    });
+
                 return Err(e);
             }
         }
-        
+
         Ok(())
     }
 
@@ -1792,22 +1886,34 @@ impl WebSocketClient {
     }
 
     pub fn price_stream(&self) -> PriceStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.price_stream.clone()
     }
 
     pub fn parsing_error_stream(&self) -> ParsingErrorStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.parsing_error_stream.clone()
     }
 
     pub fn validation_error_stream(&self) -> ValidationErrorStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.validation_error_stream.clone()
     }
 
     pub fn type_error_stream(&self) -> TypeErrorStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.type_error_stream.clone()
     }
 
@@ -1830,7 +1936,7 @@ impl WebSocketClient {
         let inner = self.inner.try_lock().unwrap();
         inner.precision_metrics.clone()
     }
-    
+
     pub fn serialize_price(&self, price: &PriceUpdate) -> String {
         // Use original price string if available to preserve precision
         let price_str = if let Some(ref original) = price.original_price_string {
@@ -1838,46 +1944,54 @@ impl WebSocketClient {
         } else {
             price.price.to_string()
         };
-        
+
         // Format as JSON with proper quoting for the price field
-        format!(r#"{{"product_id":"{}","price":"{}"}}"#, price.product_id, price_str)
+        format!(
+            r#"{{"product_id":"{}","price":"{}"}}"#,
+            price.product_id, price_str
+        )
     }
-    
+
     pub fn deserialize_price(&self, serialized: &str) -> Result<PriceUpdate, String> {
         // Parse the serialized JSON and reconstruct the PriceUpdate
         let value: serde_json::Value = serde_json::from_str(serialized)
             .map_err(|e| format!("Failed to deserialize price JSON: {}", e))?;
-        
-        let obj = value.as_object()
+
+        let obj = value
+            .as_object()
             .ok_or_else(|| "Expected JSON object".to_string())?;
-        
+
         // Extract product_id
-        let product_id = obj.get("product_id")
+        let product_id = obj
+            .get("product_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing product_id field".to_string())?
             .to_string();
-        
+
         // Extract price - it can be either a JSON string or a JSON number
-        let price_value = obj.get("price")
+        let price_value = obj
+            .get("price")
             .ok_or_else(|| "Missing price field".to_string())?;
-        
+
         let (price, price_str) = match price_value {
             serde_json::Value::String(s) => {
-                let parsed = s.parse::<f64>()
+                let parsed = s
+                    .parse::<f64>()
                     .map_err(|_| format!("Invalid price value: {}", s))?;
                 (parsed, s.clone())
             }
             serde_json::Value::Number(n) => {
-                let parsed = n.as_f64()
+                let parsed = n
+                    .as_f64()
                     .ok_or_else(|| format!("Invalid price number: {}", n))?;
                 (parsed, n.to_string())
             }
             _ => return Err("Price must be a string or number".to_string()),
         };
-        
+
         // Calculate decimal places from original string
         let decimal_places = Self::calculate_decimal_places(&price_str);
-        
+
         Ok(PriceUpdate {
             product_id,
             price,
@@ -1890,17 +2004,26 @@ impl WebSocketClient {
     }
 
     pub fn reconnection_stream(&self) -> ReconnectionStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.reconnection_stream.clone()
     }
 
     pub fn reconnection_metrics(&self) -> ReconnectionMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.reconnection_metrics.clone()
     }
 
     pub fn last_connection_error(&self) -> Option<String> {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.last_connection_error.clone()
     }
 
@@ -1921,7 +2044,7 @@ impl WebSocketClient {
     pub async fn queue_outbound_message(&self, message: &str) {
         let mut inner = self.inner.lock().await;
         inner.outbound_message_buffer.push(message.to_string());
-        
+
         // For testing, process the message synchronously
         let message_clone = message.to_string();
         drop(inner);
@@ -1954,37 +2077,58 @@ impl WebSocketClient {
     }
 
     pub fn circuit_breaker_stream(&self) -> CircuitBreakerStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.circuit_breaker_stream.clone()
     }
 
     pub fn connection_attempt_stream(&self) -> ConnectionAttemptStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.connection_attempt_stream.clone()
     }
 
     pub fn disconnect_event_stream(&self) -> DisconnectEventStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.disconnect_event_stream.clone()
     }
 
     pub fn state_change_stream(&self) -> StateChangeStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.state_change_stream.clone()
     }
 
     pub fn progress_stream(&self) -> ProgressStream {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.progress_stream.clone()
     }
 
     pub fn circuit_breaker_metrics(&self) -> CircuitBreakerMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.circuit_breaker_metrics.clone()
     }
 
     pub fn timeout_metrics(&self) -> TimeoutMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         let timeout_count = inner.timeout_history.len() as u64;
         let average_duration = if !inner.timeout_history.is_empty() {
             let total: Duration = inner.timeout_history.iter().map(|e| e.duration).sum();
@@ -1992,7 +2136,12 @@ impl WebSocketClient {
         } else {
             Duration::ZERO
         };
-        let max_duration = inner.timeout_history.iter().map(|e| e.duration).max().unwrap_or(Duration::ZERO);
+        let max_duration = inner
+            .timeout_history
+            .iter()
+            .map(|e| e.duration)
+            .max()
+            .unwrap_or(Duration::ZERO);
         let last_timestamp = inner.timeout_history.last().map(|e| SystemTime::now());
 
         TimeoutMetrics {
@@ -2004,14 +2153,21 @@ impl WebSocketClient {
     }
 
     pub fn disconnect_metrics(&self) -> DisconnectMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         let total = inner.failure_history.len() as u64;
         let graceful = 0u64;
         let forced = 0u64;
         let error_count = total;
-        
+
         let average_time = if !inner.failure_history.is_empty() {
-            let total_time: Duration = inner.failure_history.iter().map(|_| Duration::from_millis(50)).sum();
+            let total_time: Duration = inner
+                .failure_history
+                .iter()
+                .map(|_| Duration::from_millis(50))
+                .sum();
             total_time / inner.failure_history.len().max(1) as u32
         } else {
             Duration::ZERO
@@ -2027,7 +2183,10 @@ impl WebSocketClient {
     }
 
     pub fn state_transition_metrics(&self) -> StateTransitionMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         let total = inner.backoff_history.len() as u64;
         let average_duration = if !inner.backoff_history.is_empty() {
             let total_dur: Duration = inner.backoff_history.iter().map(|b| b.delay).sum();
@@ -2050,7 +2209,10 @@ impl WebSocketClient {
     }
 
     pub fn connection_prevention_metrics(&self) -> ConnectionPreventionMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         ConnectionPreventionMetrics {
             duplicate_connection_attempts: inner.duplicate_connection_attempts,
             last_prevention_timestamp: inner.last_prevention_timestamp,
@@ -2061,7 +2223,10 @@ impl WebSocketClient {
     }
 
     pub fn connection_error_metrics(&self) -> ConnectionErrorMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         let total_failures = inner.failure_history.len() as u64;
         let rejection_errors = 0u64;
         let timeout_errors = inner.timeout_history.len() as u64;
@@ -2072,15 +2237,21 @@ impl WebSocketClient {
             timeout_errors,
             dns_resolution_errors: 0,
             handshake_errors: 0,
-            last_error_timestamp: inner.last_connection_error.as_ref().map(|_| SystemTime::now()),
+            last_error_timestamp: inner
+                .last_connection_error
+                .as_ref()
+                .map(|_| SystemTime::now()),
             last_error_message: inner.last_connection_error.clone().unwrap_or_default(),
             error_type_distribution: Default::default(),
         }
     }
 
     pub fn frame_buffer_metrics(&self) -> FrameBufferMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
-        
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
+
         let average_buffer_time = if inner.total_frames_buffered > 0 {
             Duration::from_millis(inner.total_buffer_time_ms / inner.total_frames_buffered)
         } else {
@@ -2101,7 +2272,10 @@ impl WebSocketClient {
     }
 
     pub fn mixed_message_metrics(&self) -> MixedMessageMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         MixedMessageMetrics {
             mixed_message_count: 0,
             separation_success_rate: 100.0,
@@ -2114,7 +2288,10 @@ impl WebSocketClient {
     }
 
     pub fn large_message_metrics(&self) -> LargeMessageMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         LargeMessageMetrics {
             total_large_messages: 0,
             average_size: 0,
@@ -2129,7 +2306,10 @@ impl WebSocketClient {
     }
 
     pub fn message_ordering_metrics(&self) -> MessageOrderingMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         MessageOrderingMetrics {
             total_messages_processed: 0,
             out_of_order_count: 0,
@@ -2144,27 +2324,42 @@ impl WebSocketClient {
     }
 
     pub fn failure_history(&self) -> Vec<FailureEvent> {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.failure_history.clone()
     }
 
     pub fn success_history(&self) -> Vec<SuccessEvent> {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.success_history.clone()
     }
 
     pub fn timeout_history(&self) -> Vec<TimeoutEvent> {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.timeout_history.clone()
     }
 
     pub fn backoff_history(&self) -> Vec<BackoffEvent> {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.backoff_history.clone()
     }
 
     pub fn circuit_breaker_event_history(&self) -> Vec<CircuitEvent> {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.circuit_breaker_event_history.clone()
     }
 
@@ -2189,11 +2384,11 @@ impl WebSocketClient {
         let mut inner = self.inner.lock().await;
         inner.connection_state = ConnectionState::Disconnected;
         inner.websocket_sender = None;
-        
+
         if let Some(handle) = inner.connection_task.take() {
             handle.abort();
         }
-        
+
         let disconnect_event = DisconnectEvent {
             disconnect_type: DisconnectType::Graceful,
             reason: Some("Graceful disconnect initiated".to_string()),
@@ -2201,7 +2396,7 @@ impl WebSocketClient {
             clean_shutdown: true,
             duration: Duration::from_millis(100),
         };
-        
+
         let _ = inner.disconnect_event_stream.sender.send(disconnect_event);
     }
 
@@ -2209,11 +2404,11 @@ impl WebSocketClient {
         let mut inner = self.inner.lock().await;
         inner.connection_state = ConnectionState::Failed;
         inner.websocket_sender = None;
-        
+
         if let Some(handle) = inner.connection_task.take() {
             handle.abort();
         }
-        
+
         let disconnect_event = DisconnectEvent {
             disconnect_type: DisconnectType::Forced,
             reason: Some("Force disconnect".to_string()),
@@ -2221,22 +2416,31 @@ impl WebSocketClient {
             clean_shutdown: false,
             duration: Duration::from_millis(50),
         };
-        
+
         let _ = inner.disconnect_event_stream.sender.send(disconnect_event);
     }
 
     pub fn circuit_state(&self) -> CircuitState {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.circuit_state.clone()
     }
 
     pub fn is_circuit_open(&self) -> bool {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         matches!(inner.circuit_state, CircuitState::Open)
     }
 
     pub fn is_circuit_closed(&self) -> bool {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         matches!(inner.circuit_state, CircuitState::Closed)
     }
 
@@ -2246,31 +2450,40 @@ impl WebSocketClient {
     }
 
     pub fn connection_error_categories(&self) -> HashMap<String, u32> {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         let mut categories = HashMap::new();
-        
+
         // Categorize errors from failure history
         for failure in &inner.failure_history {
             let category = match failure.error_type.as_str() {
                 "connection_timeout" => "timeout",
-                "connection_refused" => "rejection", 
+                "connection_refused" => "rejection",
                 "dns_resolution" => "dns",
                 "handshake_failed" => "handshake",
                 _ => "other",
             };
             *categories.entry(category.to_string()).or_insert(0) += 1;
         }
-        
+
         categories
     }
 
     pub fn error_type_distribution(&self) -> HashMap<String, u64> {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.error_type_distribution.clone()
     }
 
     pub fn failure_mode_metrics(&self) -> FailureModeMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         FailureModeMetrics {
             intermittent_failures: inner.consecutive_failures,
             network_partition_detected: inner.consecutive_failures >= 5,
@@ -2281,10 +2494,17 @@ impl WebSocketClient {
     }
 
     pub fn degraded_mode_metrics(&self) -> DegradedModeMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         DegradedModeMetrics {
             degraded_mode_detected: inner.consecutive_failures >= 3,
-            connection_quality_score: if inner.consecutive_failures > 0 { 0.5 } else { 1.0 },
+            connection_quality_score: if inner.consecutive_failures > 0 {
+                0.5
+            } else {
+                1.0
+            },
             instability_events: inner.consecutive_failures,
         }
     }
@@ -2297,11 +2517,22 @@ impl WebSocketClient {
     }
 
     pub fn adaptive_backoff_metrics(&self) -> AdaptiveBackoffMetrics {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         AdaptiveBackoffMetrics {
-            rapid_failure_sequences: if inner.consecutive_failures >= 3 { 1 } else { 0 },
+            rapid_failure_sequences: if inner.consecutive_failures >= 3 {
+                1
+            } else {
+                0
+            },
             intermittent_success_detected: inner.consecutive_successes > 0,
-            persistent_failure_sequences: if inner.consecutive_failures >= 5 { 1 } else { 0 },
+            persistent_failure_sequences: if inner.consecutive_failures >= 5 {
+                1
+            } else {
+                0
+            },
             backoff_adjustments: inner.reconnection_count,
             max_backoff_reached: inner.backoff_delay >= Duration::from_secs(10),
             backoff_resets: inner.consecutive_successes,
@@ -2310,7 +2541,10 @@ impl WebSocketClient {
     }
 
     pub fn failure_pattern_analysis(&self) -> FailurePatternAnalysis {
-        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
+        let inner = self
+            .inner
+            .try_lock()
+            .unwrap_or_else(|_| panic!("Could not acquire lock"));
         let mut failure_patterns = HashMap::new();
         let mut success_patterns = HashMap::new();
 
@@ -2321,7 +2555,10 @@ impl WebSocketClient {
             failure_patterns.insert("persistent_failure".to_string(), 1);
         }
         if inner.consecutive_successes > 0 {
-            success_patterns.insert("intermittent_recovery".to_string(), inner.consecutive_successes);
+            success_patterns.insert(
+                "intermittent_recovery".to_string(),
+                inner.consecutive_successes,
+            );
         }
 
         FailurePatternAnalysis {
@@ -2344,18 +2581,19 @@ impl WebSocketClient {
         }
         self
     }
-    
-     pub async fn reconnection_monitor(&self) {
-         loop {
-             tokio::time::sleep(Duration::from_millis(100)).await;
-             
-             let should_reconnect = {
-                 let inner = self.inner.lock().await;
-                 matches!(inner.connection_state, ConnectionState::Disconnected) && 
-                 inner.reconnection_config.is_some() &&
-                 inner.current_reconnection_attempt < inner.reconnection_config.as_ref().unwrap().max_retries
+
+    pub async fn reconnection_monitor(&self) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            let should_reconnect = {
+                let inner = self.inner.lock().await;
+                matches!(inner.connection_state, ConnectionState::Disconnected)
+                    && inner.reconnection_config.is_some()
+                    && inner.current_reconnection_attempt
+                        < inner.reconnection_config.as_ref().unwrap().max_retries
             };
-            
+
             if should_reconnect {
                 if let Err(_) = self.reconnect().await {
                     // Reconnection failed, continue monitoring
@@ -2363,11 +2601,11 @@ impl WebSocketClient {
             }
         }
     }
-    
+
     async fn message_processing_loop(&self) {
         // For testing purposes, message processing is done synchronously
         // when messages are queued. This loop just maintains the connection.
-        
+
         loop {
             // Check if we're still connected
             {
@@ -2376,18 +2614,18 @@ impl WebSocketClient {
                     break;
                 }
             }
-            
+
             // Check and flush frame buffer if timeout has passed
             self.check_and_flush_frame_buffer().await;
-            
+
             // Small delay to prevent busy looping
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
-    
+
     async fn check_and_flush_frame_buffer(&self) {
         let mut inner = self.inner.lock().await;
-        
+
         if inner.frame_buffering_enabled && !inner.incoming_frame_buffer.is_empty() {
             let now = Instant::now();
             if let Some(last_arrival) = inner.last_frame_arrival {
@@ -2397,26 +2635,26 @@ impl WebSocketClient {
                     let buffered = inner.incoming_frame_buffer.join("");
                     inner.incoming_frame_buffer.clear();
                     inner.last_frame_arrival = None;
-                    
+
                     // Track metrics
                     inner.total_buffer_time_ms += time_since_last.as_millis() as u64;
                     inner.messages_reassembled += 1;
-                    
+
                     // Send the buffered message
                     let _ = inner.message_stream.sender.send(buffered.clone());
-                    
+
                     // TODO: Handle price parsing for buffered messages if needed
                 }
             }
         }
     }
-    
+
     async fn process_incoming_message(&self, message: &str) {
         let mut inner = self.inner.lock().await;
-        
+
         let message_to_send = if inner.frame_buffering_enabled {
             let now = Instant::now();
-            
+
             match inner.last_frame_arrival {
                 None => {
                     // No active buffering - this is the start of a new message
@@ -2424,32 +2662,35 @@ impl WebSocketClient {
                     inner.incoming_frame_buffer.push(message.to_string());
                     inner.last_frame_arrival = Some(now);
                     inner.total_frames_buffered += 1;
-                    
+
                     // Track buffer utilization
-                    let buffer_utilization = (inner.incoming_frame_buffer.len() as f64 / 10.0).min(1.0);
+                    let buffer_utilization =
+                        (inner.incoming_frame_buffer.len() as f64 / 10.0).min(1.0);
                     if buffer_utilization > inner.max_buffer_utilization {
                         inner.max_buffer_utilization = buffer_utilization;
                     }
-                    
+
                     // Check for overflow on initial message
                     if message.len() > inner.buffer_size {
                         inner.buffer_overflows += 1;
                     }
-                    
+
                     None
                 }
                 Some(last_arrival) => {
                     let time_since_last_frame = now.duration_since(last_arrival);
-                    
+
                     // Track concurrent buffer operations - we have messages arriving while buffer is active
                     inner.concurrent_buffer_operations += 1;
-                    
+
                     // Check if the previous message looks complete (small size) or if too much time has passed
-                    let is_small_message = inner.incoming_frame_buffer.last()
+                    let is_small_message = inner
+                        .incoming_frame_buffer
+                        .last()
                         .map(|m| m.len() < 100)
                         .unwrap_or(false);
                     let sufficient_gap = time_since_last_frame >= Duration::from_millis(10);
-                    
+
                     let should_flush = if time_since_last_frame > inner.frame_buffer_timeout {
                         // Normal timeout - definitely flush
                         true
@@ -2459,22 +2700,23 @@ impl WebSocketClient {
                     } else {
                         false
                     };
-                    
+
                     if should_flush {
                         // Flush the existing buffer and start a new one
                         let buffered = inner.incoming_frame_buffer.join("");
-                        
+
                         // Track buffer utilization before clearing
-                        let buffer_utilization = (inner.incoming_frame_buffer.len() as f64 / 10.0).min(1.0);
+                        let buffer_utilization =
+                            (inner.incoming_frame_buffer.len() as f64 / 10.0).min(1.0);
                         if buffer_utilization > inner.max_buffer_utilization {
                             inner.max_buffer_utilization = buffer_utilization;
                         }
-                        
+
                         // Check for buffer overflow
                         if buffered.len() > inner.buffer_size {
                             inner.buffer_overflows += 1;
                         }
-                        
+
                         // Track metrics
                         inner.total_buffer_time_ms += time_since_last_frame.as_millis() as u64;
                         if is_small_message {
@@ -2482,7 +2724,7 @@ impl WebSocketClient {
                         } else {
                             inner.messages_reassembled += 1;
                         }
-                        
+
                         inner.incoming_frame_buffer.clear();
                         inner.incoming_frame_buffer.push(message.to_string());
                         inner.last_frame_arrival = Some(now);
@@ -2491,13 +2733,14 @@ impl WebSocketClient {
                     } else {
                         // Add to buffer (message is part of same group)
                         inner.incoming_frame_buffer.push(message.to_string());
-                        
+
                         // Track buffer utilization as we accumulate
-                        let buffer_utilization = (inner.incoming_frame_buffer.len() as f64 / 10.0).min(1.0);
+                        let buffer_utilization =
+                            (inner.incoming_frame_buffer.len() as f64 / 10.0).min(1.0);
                         if buffer_utilization > inner.max_buffer_utilization {
                             inner.max_buffer_utilization = buffer_utilization;
                         }
-                        
+
                         inner.last_frame_arrival = Some(now);
                         inner.total_frames_buffered += 1;
                         None
@@ -2507,18 +2750,18 @@ impl WebSocketClient {
         } else {
             Some(message.to_string())
         };
-        
+
         if let Some(msg) = message_to_send {
             // Send to raw message stream
             let _ = inner.message_stream.sender.send(msg.clone());
-            
+
             // Try to parse as price message if parsing is enabled
             if inner.config.price_parsing {
                 let start_time = Instant::now();
                 match Self::parse_price_message(&msg, &inner.config).await {
                     Ok(price_update) => {
                         let parse_time = start_time.elapsed();
-                        
+
                         // Update parsing metrics
                         inner.parsing_metrics.total_messages_parsed += 1;
                         inner.parsing_metrics.successful_parses += 1;
@@ -2526,24 +2769,29 @@ impl WebSocketClient {
                         if parse_time > inner.parsing_metrics.max_parse_time {
                             inner.parsing_metrics.max_parse_time = parse_time;
                         }
-                        
+
                         // Update validation metrics for successful parse
                         inner.validation_metrics.total_validations += 1;
                         inner.validation_metrics.validation_successes += 1;
-                        
+
                         // Update type validation metrics for successful parse
                         inner.type_validation_metrics.total_type_checks += 1;
                         inner.type_validation_metrics.type_validation_successes += 1;
-                        
+
                         // Update precision metrics
                         inner.precision_metrics.total_precision_tests += 1;
                         inner.precision_metrics.precision_preserved_count += 1;
-                        
+
                         // Track decimal places handled
-                        if price_update.decimal_places > inner.precision_metrics.max_decimal_places_handled {
-                            inner.precision_metrics.max_decimal_places_handled = price_update.decimal_places;
+                        if price_update.decimal_places
+                            > inner.precision_metrics.max_decimal_places_handled
+                        {
+                            inner.precision_metrics.max_decimal_places_handled =
+                                price_update.decimal_places;
                         }
-                        if price_update.price < inner.precision_metrics.min_value_handled || inner.precision_metrics.min_value_handled == 0.0 {
+                        if price_update.price < inner.precision_metrics.min_value_handled
+                            || inner.precision_metrics.min_value_handled == 0.0
+                        {
                             if price_update.price > 0.0 {
                                 inner.precision_metrics.min_value_handled = price_update.price;
                             }
@@ -2551,7 +2799,7 @@ impl WebSocketClient {
                         if price_update.price > inner.precision_metrics.max_value_handled {
                             inner.precision_metrics.max_value_handled = price_update.price;
                         }
-                        
+
                         // Send to price stream
                         let _ = inner.price_stream.sender.send(price_update);
                     }
@@ -2559,10 +2807,10 @@ impl WebSocketClient {
                         // Update parsing metrics
                         inner.parsing_metrics.total_messages_parsed += 1;
                         inner.parsing_metrics.parsing_errors += 1;
-                        
+
                         // Increment error recovery count when we encounter and handle parsing errors
                         inner.parsing_metrics.error_recovery_count += 1;
-                        
+
                         // Send to appropriate error stream based on error type
                         match price_parse_error {
                             PriceParseError::Parsing(parsing_error) => {
@@ -2572,29 +2820,49 @@ impl WebSocketClient {
                                 // Update validation metrics for validation errors
                                 inner.validation_metrics.total_validations += 1;
                                 inner.validation_metrics.validation_failures += 1;
-                                
+
                                 // Count specific error types - count individual errors, not error objects
-                                inner.validation_metrics.missing_field_errors += validation_error.missing_fields.len() as u64;
-                                inner.validation_metrics.type_mismatch_errors += validation_error.type_mismatches.len() as u64;
-                                
+                                inner.validation_metrics.missing_field_errors +=
+                                    validation_error.missing_fields.len() as u64;
+                                inner.validation_metrics.type_mismatch_errors +=
+                                    validation_error.type_mismatches.len() as u64;
+
                                 let _ = inner.validation_error_stream.sender.send(validation_error);
                             }
                             PriceParseError::Type(type_error) => {
                                 // Update type validation metrics
                                 inner.type_validation_metrics.total_type_checks += 1;
                                 inner.type_validation_metrics.type_validation_failures += 1;
-                                
+
                                 // Count specific error types
-                                if type_error.raw_value.contains("-") || type_error.raw_value.parse::<f64>().map(|p| p < 0.0).unwrap_or(false) {
+                                if type_error.raw_value.contains("-")
+                                    || type_error
+                                        .raw_value
+                                        .parse::<f64>()
+                                        .map(|p| p < 0.0)
+                                        .unwrap_or(false)
+                                {
                                     inner.type_validation_metrics.negative_price_errors += 1;
                                 }
-                                if type_error.raw_value.parse::<f64>().map(|p| p == 0.0).unwrap_or(false) {
+                                if type_error
+                                    .raw_value
+                                    .parse::<f64>()
+                                    .map(|p| p == 0.0)
+                                    .unwrap_or(false)
+                                {
                                     inner.type_validation_metrics.zero_price_errors += 1;
                                 }
-                                if !type_error.raw_value.chars().all(|c| c.is_numeric() || c == '.' || c == 'e' || c == 'E' || c == '-' || c == '+') {
+                                if !type_error.raw_value.chars().all(|c| {
+                                    c.is_numeric()
+                                        || c == '.'
+                                        || c == 'e'
+                                        || c == 'E'
+                                        || c == '-'
+                                        || c == '+'
+                                }) {
                                     inner.type_validation_metrics.non_numeric_price_errors += 1;
                                 }
-                                
+
                                 let _ = inner.type_error_stream.sender.send(type_error);
                             }
                         }
@@ -2603,10 +2871,13 @@ impl WebSocketClient {
             }
         }
     }
-    
-    async fn parse_price_message(json_str: &str, config: &ClientConfig) -> Result<PriceUpdate, PriceParseError> {
+
+    async fn parse_price_message(
+        json_str: &str,
+        config: &ClientConfig,
+    ) -> Result<PriceUpdate, PriceParseError> {
         let start_time = Instant::now();
-        
+
         // Parse JSON
         let value: serde_json::Value = match serde_json::from_str(json_str) {
             Ok(v) => v,
@@ -2614,7 +2885,7 @@ impl WebSocketClient {
                 // Calculate position information
                 let error_line = e.line() as u32;
                 let error_column = e.column() as u32;
-                
+
                 // This is a parsing error that we recover from by continuing
                 return Err(PriceParseError::Parsing(ParsingError {
                     error_type: ParsingErrorType::JsonSyntaxError,
@@ -2626,7 +2897,7 @@ impl WebSocketClient {
                 }));
             }
         };
-        
+
         // Validate it's an object
         let obj = value.as_object().ok_or_else(|| {
             PriceParseError::Parsing(ParsingError {
@@ -2638,13 +2909,13 @@ impl WebSocketClient {
                 character_position: None,
             })
         })?;
-        
+
         // Comprehensive field validation
         let mut missing_fields = Vec::new();
         let mut null_fields = Vec::new();
         let mut empty_fields = Vec::new();
         let mut type_mismatches = Vec::new();
-        
+
         // Check all required fields
         for required_field in &config.required_fields {
             if let Some(field_value) = obj.get(required_field) {
@@ -2675,33 +2946,42 @@ impl WebSocketClient {
                 missing_fields.push(required_field.clone());
             }
         }
-        
+
         // If any validation errors, return them
-        if !missing_fields.is_empty() || !null_fields.is_empty() || !empty_fields.is_empty() || !type_mismatches.is_empty() {
+        if !missing_fields.is_empty()
+            || !null_fields.is_empty()
+            || !empty_fields.is_empty()
+            || !type_mismatches.is_empty()
+        {
             return Err(PriceParseError::Validation(ValidationError {
                 missing_fields: missing_fields.clone(),
                 null_fields: null_fields.clone(),
                 empty_fields: empty_fields.clone(),
                 type_mismatches: type_mismatches.clone(),
                 raw_message: json_str.to_string(),
-                error_summary: format!("Validation failed: missing={}, null={}, empty={}, type_mismatches={}",
-                    !missing_fields.is_empty(), !null_fields.is_empty(), !empty_fields.is_empty(), !type_mismatches.is_empty()),
+                error_summary: format!(
+                    "Validation failed: missing={}, null={}, empty={}, type_mismatches={}",
+                    !missing_fields.is_empty(),
+                    !null_fields.is_empty(),
+                    !empty_fields.is_empty(),
+                    !type_mismatches.is_empty()
+                ),
                 timestamp: Some(SystemTime::now()),
             }));
         }
-        
+
         // Extract and validate required fields
         let product_id = Self::extract_and_validate_product_id(obj, json_str)?;
         let price = Self::extract_and_validate_price(obj, config, json_str)?;
-        
+
         // Extract optional fields
         let timestamp = Self::extract_timestamp_from_obj(obj);
         let volume = Self::extract_volume(obj);
         let exchange = Self::extract_exchange(obj);
-        
+
         // Calculate decimal places from original string
         let decimal_places = Self::calculate_decimal_places(&price.1);
-        
+
         let price_update = PriceUpdate {
             product_id,
             price: price.0,
@@ -2711,17 +2991,20 @@ impl WebSocketClient {
             original_price_string: Some(price.1),
             decimal_places,
         };
-        
+
         // Update parsing time metrics
         let parse_time = start_time.elapsed();
         // Note: In a real implementation, we'd update metrics here
         // For testing, we'll update the average and max parse time
         // This is a simple implementation that just tracks the last parse time
-        
+
         Ok(price_update)
     }
-    
-    fn extract_and_validate_product_id(obj: &serde_json::Map<String, serde_json::Value>, raw_message: &str) -> Result<String, PriceParseError> {
+
+    fn extract_and_validate_product_id(
+        obj: &serde_json::Map<String, serde_json::Value>,
+        raw_message: &str,
+    ) -> Result<String, PriceParseError> {
         let product_id_value = obj.get("product_id").ok_or_else(|| {
             PriceParseError::Validation(ValidationError {
                 missing_fields: vec!["product_id".to_string()],
@@ -2733,7 +3016,7 @@ impl WebSocketClient {
                 timestamp: Some(SystemTime::now()),
             })
         })?;
-        
+
         // Check for null
         if product_id_value.is_null() {
             return Err(PriceParseError::Validation(ValidationError {
@@ -2746,7 +3029,7 @@ impl WebSocketClient {
                 timestamp: Some(SystemTime::now()),
             }));
         }
-        
+
         let product_id = product_id_value.as_str().ok_or_else(|| {
             PriceParseError::Type(TypeError {
                 field_name: "product_id".to_string(),
@@ -2757,7 +3040,7 @@ impl WebSocketClient {
                 raw_value: product_id_value.to_string(),
             })
         })?;
-        
+
         if product_id.trim().is_empty() {
             return Err(PriceParseError::Validation(ValidationError {
                 missing_fields: vec![],
@@ -2769,11 +3052,15 @@ impl WebSocketClient {
                 timestamp: Some(SystemTime::now()),
             }));
         }
-        
+
         Ok(product_id.to_string())
     }
-    
-    fn extract_and_validate_price(obj: &serde_json::Map<String, serde_json::Value>, config: &ClientConfig, raw_message: &str) -> Result<(f64, String), PriceParseError> {
+
+    fn extract_and_validate_price(
+        obj: &serde_json::Map<String, serde_json::Value>,
+        config: &ClientConfig,
+        raw_message: &str,
+    ) -> Result<(f64, String), PriceParseError> {
         let price_value = obj.get("price").ok_or_else(|| {
             PriceParseError::Validation(ValidationError {
                 missing_fields: vec!["price".to_string()],
@@ -2785,7 +3072,7 @@ impl WebSocketClient {
                 timestamp: Some(SystemTime::now()),
             })
         })?;
-        
+
         let (price_float, price_string) = match price_value {
             serde_json::Value::String(s) => {
                 // Validate that string contains only numeric characters
@@ -2799,7 +3086,7 @@ impl WebSocketClient {
                         raw_value: s.clone(),
                     }));
                 }
-                
+
                 // Try to parse string as number
                 let parsed = s.parse::<f64>().map_err(|_| {
                     PriceParseError::Type(TypeError {
@@ -2839,7 +3126,7 @@ impl WebSocketClient {
                 } else {
                     price_value.to_string()
                 };
-                
+
                 return Err(PriceParseError::Type(TypeError {
                     field_name: "price".to_string(),
                     actual_type: type_name,
@@ -2850,7 +3137,7 @@ impl WebSocketClient {
                 }));
             }
         };
-        
+
         // Validate price constraints if enabled
         if config.numeric_validation {
             if price_float < 0.0 {
@@ -2859,11 +3146,14 @@ impl WebSocketClient {
                     actual_type: "number".to_string(),
                     expected_type: "positive number".to_string(),
                     validation_rule: "positive_price".to_string(),
-                    reason: format!("price must be positive (received negative value {})", price_float),
+                    reason: format!(
+                        "price must be positive (received negative value {})",
+                        price_float
+                    ),
                     raw_value: price_string.clone(),
                 }));
             }
-            
+
             if price_float == 0.0 {
                 return Err(PriceParseError::Type(TypeError {
                     field_name: "price".to_string(),
@@ -2874,7 +3164,7 @@ impl WebSocketClient {
                     raw_value: price_string.clone(),
                 }));
             }
-            
+
             if !price_float.is_finite() {
                 return Err(PriceParseError::Type(TypeError {
                     field_name: "price".to_string(),
@@ -2886,10 +3176,10 @@ impl WebSocketClient {
                 }));
             }
         }
-        
+
         Ok((price_float, price_string))
     }
-    
+
     fn is_valid_numeric_string(s: &str) -> bool {
         // Allow: optional sign, digits, optional decimal point with digits, optional scientific notation
         // Pattern: ^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$
@@ -2897,21 +3187,21 @@ impl WebSocketClient {
         if s.is_empty() {
             return false;
         }
-        
+
         // Check for valid numeric pattern
         let chars: Vec<char> = s.chars().collect();
         let mut i = 0;
-        
+
         // Optional sign
         if chars[i] == '+' || chars[i] == '-' {
             i += 1;
         }
-        
+
         // Must have at least one digit
         let mut has_digits = false;
         let mut has_dot = false;
         let mut has_e = false;
-        
+
         while i < chars.len() {
             match chars[i] {
                 '0'..='9' => {
@@ -2939,32 +3229,34 @@ impl WebSocketClient {
                 _ => return false, // Invalid character
             }
         }
-        
+
         has_digits
     }
-    
-    fn extract_timestamp_from_obj(obj: &serde_json::Map<String, serde_json::Value>) -> Option<SystemTime> {
+
+    fn extract_timestamp_from_obj(
+        obj: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<SystemTime> {
         obj.get("timestamp").and_then(|v| v.as_str()).and_then(|s| {
             // Try to parse ISO 8601 timestamp
             // For simplicity, we'll just return current time if parsing fails
             Some(SystemTime::now())
         })
     }
-    
+
     fn extract_volume(obj: &serde_json::Map<String, serde_json::Value>) -> Option<f64> {
-        obj.get("volume").and_then(|v| {
-            match v {
-                serde_json::Value::Number(n) => n.as_f64(),
-                serde_json::Value::String(s) => s.parse::<f64>().ok(),
-                _ => None,
-            }
+        obj.get("volume").and_then(|v| match v {
+            serde_json::Value::Number(n) => n.as_f64(),
+            serde_json::Value::String(s) => s.parse::<f64>().ok(),
+            _ => None,
         })
     }
-    
+
     fn extract_exchange(obj: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
-        obj.get("exchange").and_then(|v| v.as_str()).map(|s| s.to_string())
+        obj.get("exchange")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
-    
+
     fn calculate_decimal_places(price_string: &str) -> u8 {
         if let Some(dot_pos) = price_string.find('.') {
             let decimals = &price_string[dot_pos + 1..];

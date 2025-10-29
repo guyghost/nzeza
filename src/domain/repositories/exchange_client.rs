@@ -40,9 +40,15 @@ pub enum ExchangeError {
 impl std::fmt::Display for ExchangeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExchangeError::OrderPlacementFailed(msg) => write!(f, "Order placement failed: {}", msg),
-            ExchangeError::OrderCancellationFailed(msg) => write!(f, "Order cancellation failed: {}", msg),
-            ExchangeError::OrderStatusFailed(msg) => write!(f, "Order status query failed: {}", msg),
+            ExchangeError::OrderPlacementFailed(msg) => {
+                write!(f, "Order placement failed: {}", msg)
+            }
+            ExchangeError::OrderCancellationFailed(msg) => {
+                write!(f, "Order cancellation failed: {}", msg)
+            }
+            ExchangeError::OrderStatusFailed(msg) => {
+                write!(f, "Order status query failed: {}", msg)
+            }
             ExchangeError::BalanceQueryFailed(msg) => write!(f, "Balance query failed: {}", msg),
             ExchangeError::AuthenticationError(msg) => write!(f, "Authentication error: {}", msg),
             ExchangeError::NetworkError(msg) => write!(f, "Network error: {}", msg),

@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod concurrency_tests {
-    use std::time::Duration;
     use crate::domain::services::lock_validator::LockValidatorTestHelper;
+    use std::time::Duration;
 
     // ============================================================================
     // DEADLOCK PREVENTION TESTS
@@ -43,9 +43,18 @@ mod concurrency_tests {
 
         // The lock order should form a valid DAG
         let lock_order = vec![
-            "signal_combiner", "strategy_order", "strategy_metrics", "traders",
-            "active_alerts", "candle_builder", "last_signals", "open_positions",
-            "performance_profiler", "system_health", "trade_history", "trading_metrics"
+            "signal_combiner",
+            "strategy_order",
+            "strategy_metrics",
+            "traders",
+            "active_alerts",
+            "candle_builder",
+            "last_signals",
+            "open_positions",
+            "performance_profiler",
+            "system_health",
+            "trade_history",
+            "trading_metrics",
         ];
 
         assert!(helper.validator.validate_lock_order(&lock_order).is_ok());
@@ -365,9 +374,18 @@ mod concurrency_tests {
 
         // Test the documented lock order
         let expected_order = vec![
-            "signal_combiner".to_string(), "strategy_order".to_string(), "strategy_metrics".to_string(), "traders".to_string(),
-            "active_alerts".to_string(), "candle_builder".to_string(), "last_signals".to_string(), "open_positions".to_string(),
-            "performance_profiler".to_string(), "system_health".to_string(), "trade_history".to_string(), "trading_metrics".to_string()
+            "signal_combiner".to_string(),
+            "strategy_order".to_string(),
+            "strategy_metrics".to_string(),
+            "traders".to_string(),
+            "active_alerts".to_string(),
+            "candle_builder".to_string(),
+            "last_signals".to_string(),
+            "open_positions".to_string(),
+            "performance_profiler".to_string(),
+            "system_health".to_string(),
+            "trade_history".to_string(),
+            "trading_metrics".to_string(),
         ];
 
         assert_eq!(helper.validator.get_lock_order(), &expected_order);
@@ -375,7 +393,7 @@ mod concurrency_tests {
         // Test that operations follow this order
         let op = crate::domain::services::lock_validator::ThreadSafeOperation::new(
             "test_operation",
-            vec!["signal_combiner".to_string(), "traders".to_string()]
+            vec!["signal_combiner".to_string(), "traders".to_string()],
         );
 
         assert!(op.validate_lock_order(&expected_order).is_ok());
@@ -388,9 +406,15 @@ mod concurrency_tests {
 
         // Test that we can audit lock orders
         let valid_sequence = vec!["signal_combiner", "strategy_order", "traders"];
-        assert!(helper.validator.validate_lock_order(&valid_sequence).is_ok());
+        assert!(helper
+            .validator
+            .validate_lock_order(&valid_sequence)
+            .is_ok());
 
         let invalid_sequence = vec!["traders", "signal_combiner"];
-        assert!(helper.validator.validate_lock_order(&invalid_sequence).is_err());
+        assert!(helper
+            .validator
+            .validate_lock_order(&invalid_sequence)
+            .is_err());
     }
 }

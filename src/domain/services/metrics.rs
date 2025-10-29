@@ -1,5 +1,5 @@
-use crate::domain::value_objects::price::Price;
 use crate::domain::value_objects::pnl::PnL;
+use crate::domain::value_objects::price::Price;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 

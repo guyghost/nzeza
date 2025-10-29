@@ -24,8 +24,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔍 Testing dYdX v4 API Connection...\n");
 
     // Load mnemonic from environment
-    let mnemonic = env::var("DYDX_MNEMONIC")
-        .expect("DYDX_MNEMONIC not set. Set it with: export DYDX_MNEMONIC='your twelve word phrase here'");
+    let mnemonic = env::var("DYDX_MNEMONIC").expect(
+        "DYDX_MNEMONIC not set. Set it with: export DYDX_MNEMONIC='your twelve word phrase here'",
+    );
 
     println!("✅ Mnemonic loaded:");
     let words: Vec<&str> = mnemonic.split_whitespace().collect();
@@ -34,7 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Last word: {}\n", words.last().unwrap_or(&""));
 
     if words.len() != 12 && words.len() != 24 {
-        eprintln!("❌ Invalid mnemonic: expected 12 or 24 words, got {}", words.len());
+        eprintln!(
+            "❌ Invalid mnemonic: expected 12 or 24 words, got {}",
+            words.len()
+        );
         return Err("Invalid mnemonic length".into());
     }
 

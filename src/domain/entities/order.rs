@@ -1,6 +1,5 @@
 use crate::domain::value_objects::{price::Price, quantity::Quantity};
 
-
 #[derive(Debug, Clone)]
 pub enum OrderSide {
     Buy,
@@ -16,13 +15,11 @@ impl std::fmt::Display for OrderSide {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub enum OrderType {
     Market,
     Limit,
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Order {
@@ -35,7 +32,6 @@ pub struct Order {
 }
 
 impl Order {
-
     pub fn new(
         id: String,
         symbol: String,
@@ -65,7 +61,6 @@ impl Order {
             quantity,
         })
     }
-
 
     pub fn total_value(&self) -> Option<Price> {
         self.price

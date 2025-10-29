@@ -1,7 +1,6 @@
-use crate::domain::value_objects::{price::Price, quantity::Quantity, pnl::PnL};
 use crate::domain::errors::ValidationError;
+use crate::domain::value_objects::{pnl::PnL, price::Price, quantity::Quantity};
 use chrono::{DateTime, Utc};
-
 
 #[derive(Debug, Clone)]
 pub enum PositionSide {
@@ -18,7 +17,6 @@ impl std::fmt::Display for PositionSide {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct Position {
     pub id: String,
@@ -33,7 +31,6 @@ pub struct Position {
 }
 
 impl Position {
-
     pub fn new(
         id: String,
         symbol: String,
@@ -54,7 +51,6 @@ impl Position {
         }
     }
 
-
     pub fn new_with_stops(
         id: String,
         symbol: String,
@@ -68,24 +64,16 @@ impl Position {
 
         if let Some(sl_pct) = stop_loss_percentage {
             let sl_price = match position.side {
-                PositionSide::Long => {
-                    Price::new(position.entry_price.value() * (1.0 - sl_pct))?
-                }
-                PositionSide::Short => {
-                    Price::new(position.entry_price.value() * (1.0 + sl_pct))?
-                }
+                PositionSide::Long => Price::new(position.entry_price.value() * (1.0 - sl_pct))?,
+                PositionSide::Short => Price::new(position.entry_price.value() * (1.0 + sl_pct))?,
             };
             position.stop_loss_price = Some(sl_price);
         }
 
         if let Some(tp_pct) = take_profit_percentage {
             let tp_price = match position.side {
-                PositionSide::Long => {
-                    Price::new(position.entry_price.value() * (1.0 + tp_pct))?
-                }
-                PositionSide::Short => {
-                    Price::new(position.entry_price.value() * (1.0 - tp_pct))?
-                }
+                PositionSide::Long => Price::new(position.entry_price.value() * (1.0 + tp_pct))?,
+                PositionSide::Short => Price::new(position.entry_price.value() * (1.0 - tp_pct))?,
             };
             position.take_profit_price = Some(tp_price);
         }
@@ -93,11 +81,9 @@ impl Position {
         Ok(position)
     }
 
-
     pub fn update_price(&mut self, price: Price) {
         self.current_price = Some(price);
     }
-
 
     /// Calculate unrealized profit/loss for this position
     ///
@@ -114,7 +100,6 @@ impl Position {
         })
     }
 
-
     pub fn should_stop_loss(&self) -> bool {
         if let (Some(current_price), Some(stop_loss)) = (self.current_price, self.stop_loss_price) {
             match self.side {
@@ -125,7 +110,6 @@ impl Position {
             false
         }
     }
-
 
     pub fn should_take_profit(&self) -> bool {
         if let (Some(current_price), Some(take_profit)) =
@@ -140,29 +124,19 @@ impl Position {
         }
     }
 
-
     pub fn set_stop_loss_percentage(&mut self, percentage: f64) -> Result<(), ValidationError> {
         let sl_price = match self.side {
-            PositionSide::Long => {
-                Price::new(self.entry_price.value() * (1.0 - percentage))?
-            }
-            PositionSide::Short => {
-                Price::new(self.entry_price.value() * (1.0 + percentage))?
-            }
+            PositionSide::Long => Price::new(self.entry_price.value() * (1.0 - percentage))?,
+            PositionSide::Short => Price::new(self.entry_price.value() * (1.0 + percentage))?,
         };
         self.stop_loss_price = Some(sl_price);
         Ok(())
     }
 
-
     pub fn set_take_profit_percentage(&mut self, percentage: f64) -> Result<(), ValidationError> {
         let tp_price = match self.side {
-            PositionSide::Long => {
-                Price::new(self.entry_price.value() * (1.0 + percentage))?
-            }
-            PositionSide::Short => {
-                Price::new(self.entry_price.value() * (1.0 - percentage))?
-            }
+            PositionSide::Long => Price::new(self.entry_price.value() * (1.0 + percentage))?,
+            PositionSide::Short => Price::new(self.entry_price.value() * (1.0 - percentage))?,
         };
         self.take_profit_price = Some(tp_price);
         Ok(())

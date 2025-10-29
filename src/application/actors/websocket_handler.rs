@@ -1,9 +1,9 @@
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tracing::debug;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 static CONNECTION_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -167,7 +167,7 @@ impl CircuitBreaker {
             let mut state = self.state.write().await;
             *state = CircuitBreakerState::Open;
             *self.last_state_change.write().await = Instant::now();
-            
+
             self.metrics.state_changes.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -179,7 +179,7 @@ impl CircuitBreaker {
             CircuitBreakerState::Closed => {
                 let mut success_count = self.success_count.write().await;
                 *success_count += 1;
-                
+
                 self.metrics.total_successes.fetch_add(1, Ordering::SeqCst);
             }
             CircuitBreakerState::HalfOpen => {
@@ -193,7 +193,7 @@ impl CircuitBreaker {
                     *self.failure_count.write().await = 0;
                     *self.success_count.write().await = 0;
                     *self.last_state_change.write().await = Instant::now();
-                    
+
                     self.metrics.state_changes.fetch_add(1, Ordering::SeqCst);
                 }
             }
@@ -211,7 +211,7 @@ impl CircuitBreaker {
                 *self.success_count.write().await = 0;
                 *self.failure_count.write().await = 0;
                 *self.last_state_change.write().await = Instant::now();
-                
+
                 self.metrics.state_changes.fetch_add(1, Ordering::SeqCst);
             }
         }

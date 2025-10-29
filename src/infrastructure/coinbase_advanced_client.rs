@@ -24,8 +24,8 @@ use chrono::Utc;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use p256::SecretKey;
-use rand::RngCore;
 use rand::rngs::OsRng;
+use rand::RngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,11 +38,11 @@ const COINBASE_API_BASE: &str = "https://api.coinbase.com";
 /// JWT Claims for Coinbase Advanced Trade API
 #[derive(Debug, Serialize, Deserialize)]
 struct JwtClaims {
-    sub: String,        // API key name
-    iss: String,        // Always "coinbase-cloud"
-    nbf: u64,           // Not before (current time)
-    exp: u64,           // Expiration (current time + 2 minutes)
-    uri: String,        // Request URI (method + path)
+    sub: String, // API key name
+    iss: String, // Always "coinbase-cloud"
+    nbf: u64,    // Not before (current time)
+    exp: u64,    // Expiration (current time + 2 minutes)
+    uri: String, // Request URI (method + path)
 }
 
 /// JWT Header for Coinbase Advanced Trade API
@@ -50,11 +50,11 @@ struct JwtClaims {
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 struct JwtHeader {
-    kid: String,        // API key name
-    nonce: String,      // Random hex string
+    kid: String,   // API key name
+    nonce: String, // Random hex string
     #[serde(rename = "typ")]
-    typ: String,        // "JWT"
-    alg: String,        // "ES256"
+    typ: String, // "JWT"
+    alg: String,   // "ES256"
 }
 
 /// Coinbase Advanced Trade API configuration
@@ -125,12 +125,8 @@ pub struct CoinbaseOrderRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OrderConfiguration {
-    MarketMarketIoc {
-        market_market_ioc: MarketMarketIoc,
-    },
-    LimitLimitGtc {
-        limit_limit_gtc: LimitLimitGtc,
-    },
+    MarketMarketIoc { market_market_ioc: MarketMarketIoc },
+    LimitLimitGtc { limit_limit_gtc: LimitLimitGtc },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -211,9 +207,10 @@ impl CoinbaseAdvancedClient {
         }
 
         // Validate API secret (should be PEM-encoded)
-        if !api_secret.contains("BEGIN EC PRIVATE KEY") && !api_secret.contains("BEGIN PRIVATE KEY") {
+        if !api_secret.contains("BEGIN EC PRIVATE KEY") && !api_secret.contains("BEGIN PRIVATE KEY")
+        {
             return Err(
-                "Invalid API secret format. Expected PEM-encoded EC private key".to_string()
+                "Invalid API secret format. Expected PEM-encoded EC private key".to_string(),
             );
         }
 
@@ -274,7 +271,8 @@ impl CoinbaseAdvancedClient {
             }
         };
 
-        let der_bytes = secret_key.to_pkcs8_der()
+        let der_bytes = secret_key
+            .to_pkcs8_der()
             .map_err(|e| format!("Failed to convert EC key to DER: {}", e))?;
 
         let encoding_key = EncodingKey::from_ec_der(der_bytes.as_bytes());
@@ -427,7 +425,10 @@ impl CoinbaseAdvancedClient {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Order cancellation failed {}: {}", status, error_text));
+            return Err(format!(
+                "Order cancellation failed {}: {}",
+                status, error_text
+            ));
         }
 
         info!("Order cancelled successfully: {}", order_id);
@@ -565,22 +566,16 @@ mod tests {
     #[test]
     fn test_normalize_product_id() {
         let config = CoinbaseAdvancedConfig::default();
-        let client =
-            CoinbaseAdvancedClient::new_with_config("organizations/test/apiKeys/test", "-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----", config)
-                .unwrap();
+        let client = CoinbaseAdvancedClient::new_with_config(
+            "organizations/test/apiKeys/test",
+            "-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----",
+            config,
+        )
+        .unwrap();
 
-        assert_eq!(
-            client.normalize_product_id("BTC-USD").unwrap(),
-            "BTC-USD"
-        );
-        assert_eq!(
-            client.normalize_product_id("BTCUSD").unwrap(),
-            "BTC-USD"
-        );
-        assert_eq!(
-            client.normalize_product_id("ETH-USD").unwrap(),
-            "ETH-USD"
-        );
+        assert_eq!(client.normalize_product_id("BTC-USD").unwrap(), "BTC-USD");
+        assert_eq!(client.normalize_product_id("BTCUSD").unwrap(), "BTC-USD");
+        assert_eq!(client.normalize_product_id("ETH-USD").unwrap(), "ETH-USD");
     }
 
     #[test]
@@ -591,11 +586,12 @@ mod tests {
 
     #[test]
     fn test_invalid_api_key_format() {
-        let result = CoinbaseAdvancedClient::new("invalid_key", "-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----");
+        let result = CoinbaseAdvancedClient::new(
+            "invalid_key",
+            "-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----",
+        );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Invalid API key format"));
+        assert!(result.unwrap_err().contains("Invalid API key format"));
     }
 
     #[test]
@@ -603,20 +599,42 @@ mod tests {
         let result =
             CoinbaseAdvancedClient::new("organizations/test/apiKeys/test", "invalid_secret");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Invalid API secret format"));
+        assert!(result.unwrap_err().contains("Invalid API secret format"));
     }
 
     #[test]
     fn test_parse_order_status() {
-        assert_eq!(CoinbaseAdvancedClient::parse_order_status("PENDING"), OrderStatus::Pending);
-        assert_eq!(CoinbaseAdvancedClient::parse_order_status("OPEN"), OrderStatus::Pending);
-        assert_eq!(CoinbaseAdvancedClient::parse_order_status("FILLED"), OrderStatus::Filled);
-        assert_eq!(CoinbaseAdvancedClient::parse_order_status("DONE"), OrderStatus::Filled);
-        assert_eq!(CoinbaseAdvancedClient::parse_order_status("CANCELLED"), OrderStatus::Cancelled);
-        assert_eq!(CoinbaseAdvancedClient::parse_order_status("REJECTED"), OrderStatus::Rejected);
-        assert_eq!(CoinbaseAdvancedClient::parse_order_status("EXPIRED"), OrderStatus::Expired);
-        assert_eq!(CoinbaseAdvancedClient::parse_order_status("UNKNOWN"), OrderStatus::Unknown);
+        assert_eq!(
+            CoinbaseAdvancedClient::parse_order_status("PENDING"),
+            OrderStatus::Pending
+        );
+        assert_eq!(
+            CoinbaseAdvancedClient::parse_order_status("OPEN"),
+            OrderStatus::Pending
+        );
+        assert_eq!(
+            CoinbaseAdvancedClient::parse_order_status("FILLED"),
+            OrderStatus::Filled
+        );
+        assert_eq!(
+            CoinbaseAdvancedClient::parse_order_status("DONE"),
+            OrderStatus::Filled
+        );
+        assert_eq!(
+            CoinbaseAdvancedClient::parse_order_status("CANCELLED"),
+            OrderStatus::Cancelled
+        );
+        assert_eq!(
+            CoinbaseAdvancedClient::parse_order_status("REJECTED"),
+            OrderStatus::Rejected
+        );
+        assert_eq!(
+            CoinbaseAdvancedClient::parse_order_status("EXPIRED"),
+            OrderStatus::Expired
+        );
+        assert_eq!(
+            CoinbaseAdvancedClient::parse_order_status("UNKNOWN"),
+            OrderStatus::Unknown
+        );
     }
 }

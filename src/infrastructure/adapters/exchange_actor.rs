@@ -1,21 +1,23 @@
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::entities::order::Order;
+use crate::domain::services::circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitState,
+};
 use crate::domain::value_objects::price::Price;
-use crate::domain::services::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 use crate::infrastructure::coinbase_advanced_client::CoinbaseAdvancedClient;
 use crate::infrastructure::coinbase_client::CoinbaseClient;
 use crate::infrastructure::dydx_v4_client::DydxV4Client;
 
+use futures_util::stream::StreamExt;
+use futures_util::SinkExt;
+use rustls;
+use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use futures_util::stream::StreamExt;
-use futures_util::SinkExt;
 use tracing::{debug, error, info, warn};
-use serde_json;
-use rustls;
 
 #[derive(Debug)]
 pub enum SubscriptionCommand {
@@ -109,9 +111,9 @@ impl ExchangeActor {
 
         // Initialize circuit breaker with configuration
         let circuit_breaker_config = CircuitBreakerConfig {
-            failure_threshold: 5,      // Open after 5 failures
-            success_threshold: 3,      // Close after 3 successes in half-open
-            timeout: Duration::from_secs(60), // Wait 60s before trying again
+            failure_threshold: 5,                     // Open after 5 failures
+            success_threshold: 3,                     // Close after 3 successes in half-open
+            timeout: Duration::from_secs(60),         // Wait 60s before trying again
             window_duration: Duration::from_secs(60), // Failure window
         };
         let circuit_breaker = Arc::new(CircuitBreaker::new(circuit_breaker_config));
@@ -155,11 +157,14 @@ impl ExchangeActor {
 
         // Initialize Coinbase clients if this is a Coinbase exchange
         // Try Coinbase Advanced Trade API first (new), fallback to Pro API (old)
-        let (coinbase_client, coinbase_advanced_client) = if matches!(exchange, Exchange::Coinbase) {
+        let (coinbase_client, coinbase_advanced_client) = if matches!(exchange, Exchange::Coinbase)
+        {
             // Try Advanced Trade API first (Cloud API)
             let advanced_client = match (
-                std::env::var("COINBASE_CLOUD_API_KEY").or_else(|_| std::env::var("COINBASE_API_KEY")),
-                std::env::var("COINBASE_CLOUD_API_SECRET").or_else(|_| std::env::var("COINBASE_API_SECRET"))
+                std::env::var("COINBASE_CLOUD_API_KEY")
+                    .or_else(|_| std::env::var("COINBASE_API_KEY")),
+                std::env::var("COINBASE_CLOUD_API_SECRET")
+                    .or_else(|_| std::env::var("COINBASE_API_SECRET")),
             ) {
                 (Ok(api_key), Ok(api_secret)) if api_key.starts_with("organizations/") => {
                     // This looks like a Cloud API key
@@ -181,7 +186,7 @@ impl ExchangeActor {
             let pro_client = if advanced_client.is_none() {
                 match (
                     std::env::var("COINBASE_API_KEY"),
-                    std::env::var("COINBASE_API_SECRET")
+                    std::env::var("COINBASE_API_SECRET"),
                 ) {
                     (Ok(api_key), Ok(api_secret)) if !api_key.starts_with("organizations/") => {
                         // This looks like a Pro API key
@@ -200,7 +205,9 @@ impl ExchangeActor {
                         }
                     }
                     _ => {
-                        warn!("Coinbase API credentials not set, Coinbase trading will be disabled");
+                        warn!(
+                            "Coinbase API credentials not set, Coinbase trading will be disabled"
+                        );
                         warn!("For Advanced Trade: Set COINBASE_CLOUD_API_KEY and COINBASE_CLOUD_API_SECRET");
                         warn!("For Pro API (deprecated): Set COINBASE_API_KEY, COINBASE_API_SECRET, and COINBASE_PASSPHRASE");
                         None
@@ -301,8 +308,8 @@ impl ExchangeActor {
                             .map_err(|e| format!("Failed to send subscription command: {}", e));
 
                         if let Err(e) = reply.send(result).await {
-                        warn!("Failed to send reply: {:?}", e);
-                    }
+                            warn!("Failed to send reply: {:?}", e);
+                        }
                         info!(
                             "Subscribed to {}: {}",
                             Self::get_exchange_name(&self.exchange),
@@ -333,8 +340,8 @@ impl ExchangeActor {
                             .map_err(|e| format!("Failed to send unsubscription command: {}", e));
 
                         if let Err(e) = reply.send(result).await {
-                        warn!("Failed to send reply: {:?}", e);
-                    }
+                            warn!("Failed to send reply: {:?}", e);
+                        }
                         info!(
                             "Unsubscribed from {}: {}",
                             Self::get_exchange_name(&self.exchange),
@@ -459,7 +466,10 @@ impl ExchangeActor {
                                 Err("Coinbase client not initialized - check COINBASE_CLOUD_API_KEY/COINBASE_API_KEY".to_string())
                             }
                         }
-                        _ => Err(format!("Order status not implemented for {:?}", self.exchange)),
+                        _ => Err(format!(
+                            "Order status not implemented for {:?}",
+                            self.exchange
+                        )),
                     };
 
                     if let Err(e) = reply.send(result).await {
@@ -544,13 +554,11 @@ impl ExchangeActor {
         let ws_url = Self::get_websocket_url(exchange);
 
         // Add timeout for WebSocket connection (10 seconds)
-        let (stream, _) = tokio::time::timeout(
-            tokio::time::Duration::from_secs(10),
-            connect_async(&ws_url)
-        )
-        .await
-        .map_err(|_| "WebSocket connection timeout (10s)".to_string())?
-        .map_err(|e| format!("Failed to connect: {}", e))?;
+        let (stream, _) =
+            tokio::time::timeout(tokio::time::Duration::from_secs(10), connect_async(&ws_url))
+                .await
+                .map_err(|_| "WebSocket connection timeout (10s)".to_string())?
+                .map_err(|e| format!("Failed to connect: {}", e))?;
         info!(
             "Successfully connected to {} WebSocket",
             Self::get_exchange_name(exchange)
@@ -760,7 +768,6 @@ impl ExchangeActor {
         }
     }
 
-
     fn parse_price(exchange: &Exchange, data: &serde_json::Value) -> Option<Price> {
         match exchange {
             Exchange::Binance => data["c"]
@@ -807,8 +814,6 @@ impl ExchangeActor {
         Err("dYdX order status should be handled by the actor with client".to_string())
     }
 
-
-
     /// Place order on dYdX v4 using the dYdX v4 client
     async fn place_order_dydx(order: &Order, client: &DydxV4Client) -> Result<String, String> {
         info!(
@@ -829,13 +834,19 @@ impl ExchangeActor {
     }
 
     /// Get order status from dYdX v4 using the dYdX v4 client
-    async fn get_order_status_dydx(order_id: &str, client: &DydxV4Client) -> Result<String, String> {
+    async fn get_order_status_dydx(
+        order_id: &str,
+        client: &DydxV4Client,
+    ) -> Result<String, String> {
         info!("dYdX v4 order status requested: {}", order_id);
         client.get_order_status(order_id).await
     }
 
     /// Place order on Coinbase using the Coinbase client
-    async fn place_order_coinbase(order: &Order, client: &CoinbaseClient) -> Result<String, String> {
+    async fn place_order_coinbase(
+        order: &Order,
+        client: &CoinbaseClient,
+    ) -> Result<String, String> {
         // Convert our order to Coinbase format
         let coinbase_order = client.convert_order(order)?;
 
@@ -857,13 +868,19 @@ impl ExchangeActor {
     }
 
     /// Get order status from Coinbase using the Coinbase client
-    async fn get_order_status_coinbase(order_id: &str, client: &CoinbaseClient) -> Result<String, String> {
+    async fn get_order_status_coinbase(
+        order_id: &str,
+        client: &CoinbaseClient,
+    ) -> Result<String, String> {
         info!("Coinbase order status requested: {}", order_id);
         client.get_order_status(order_id).await
     }
 
     /// Place order on Coinbase using the Coinbase Advanced Trade client
-    async fn place_order_coinbase_advanced(order: &Order, client: &CoinbaseAdvancedClient) -> Result<String, String> {
+    async fn place_order_coinbase_advanced(
+        order: &Order,
+        client: &CoinbaseAdvancedClient,
+    ) -> Result<String, String> {
         // Convert our order to Coinbase Advanced format
         let coinbase_order = client.convert_order(order)?;
 
@@ -879,14 +896,26 @@ impl ExchangeActor {
     }
 
     /// Cancel order on Coinbase using the Coinbase Advanced Trade client
-    async fn cancel_order_coinbase_advanced(order_id: &str, client: &CoinbaseAdvancedClient) -> Result<(), String> {
-        info!("Coinbase Advanced Trade order cancellation requested: {}", order_id);
+    async fn cancel_order_coinbase_advanced(
+        order_id: &str,
+        client: &CoinbaseAdvancedClient,
+    ) -> Result<(), String> {
+        info!(
+            "Coinbase Advanced Trade order cancellation requested: {}",
+            order_id
+        );
         client.cancel_order(order_id).await
     }
 
     /// Get order status from Coinbase using the Coinbase Advanced Trade client
-    async fn get_order_status_coinbase_advanced(order_id: &str, client: &CoinbaseAdvancedClient) -> Result<String, String> {
-        info!("Coinbase Advanced Trade order status requested: {}", order_id);
+    async fn get_order_status_coinbase_advanced(
+        order_id: &str,
+        client: &CoinbaseAdvancedClient,
+    ) -> Result<String, String> {
+        info!(
+            "Coinbase Advanced Trade order status requested: {}",
+            order_id
+        );
         client.get_order_status(order_id).await
     }
 }
@@ -1094,8 +1123,16 @@ mod tests {
     #[tokio::test]
     async fn test_activity_tracker_detects_staleness() {
         let tracker = ActivityTracker::new();
-        assert!(tracker.is_healthy(std::time::Duration::from_millis(50)).await);
+        assert!(
+            tracker
+                .is_healthy(std::time::Duration::from_millis(50))
+                .await
+        );
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-        assert!(!tracker.is_healthy(std::time::Duration::from_millis(50)).await);
+        assert!(
+            !tracker
+                .is_healthy(std::time::Duration::from_millis(50))
+                .await
+        );
     }
 }

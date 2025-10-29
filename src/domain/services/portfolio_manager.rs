@@ -1,7 +1,7 @@
 //! PortfolioManager - ACID-compliant portfolio state management
 
-use std::time::SystemTime;
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 /// Position data
 #[derive(Debug, Clone)]
@@ -47,13 +47,23 @@ impl PortfolioManager {
     ) -> Result<String, String> {
         // Check position count limits
         if self.positions.len() >= self.max_total_positions {
-            return Err(format!("Maximum positions ({}) reached", self.max_total_positions));
+            return Err(format!(
+                "Maximum positions ({}) reached",
+                self.max_total_positions
+            ));
         }
 
         // Check per-symbol limit
-        let symbol_count = self.positions.values().filter(|p| p.symbol == symbol).count();
+        let symbol_count = self
+            .positions
+            .values()
+            .filter(|p| p.symbol == symbol)
+            .count();
         if symbol_count >= self.max_per_symbol {
-            return Err(format!("Maximum positions per symbol ({}) reached for {}", self.max_per_symbol, symbol));
+            return Err(format!(
+                "Maximum positions per symbol ({}) reached for {}",
+                self.max_per_symbol, symbol
+            ));
         }
 
         // Calculate position value
@@ -81,10 +91,14 @@ impl PortfolioManager {
         }
 
         // Generate position ID
-        let position_id = format!("pos_{}_{}", symbol, SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0));
+        let position_id = format!(
+            "pos_{}_{}",
+            symbol,
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
 
         // Create position
         let position = Position {
@@ -166,13 +180,23 @@ impl PortfolioManager {
         if self.positions.len() > self.max_total_positions {
             return Err(format!(
                 "Invariant 3 violated: position count {} > max_total_positions {}",
-                self.positions.len(), self.max_total_positions
+                self.positions.len(),
+                self.max_total_positions
             ));
         }
 
         // Invariant 4: per-symbol position count <= max_per_symbol
-        for symbol in self.positions.values().map(|p| &p.symbol).collect::<std::collections::HashSet<_>>() {
-            let count = self.positions.values().filter(|p| &p.symbol == symbol).count();
+        for symbol in self
+            .positions
+            .values()
+            .map(|p| &p.symbol)
+            .collect::<std::collections::HashSet<_>>()
+        {
+            let count = self
+                .positions
+                .values()
+                .filter(|p| &p.symbol == symbol)
+                .count();
             if count > self.max_per_symbol {
                 return Err(format!(
                     "Invariant 4 violated: symbol {} has {} positions > max_per_symbol {}",
@@ -224,7 +248,8 @@ impl PortfolioManager {
 
     /// Get position value
     pub fn get_position_value(&self) -> f64 {
-        self.positions.values()
+        self.positions
+            .values()
             .map(|p| p.quantity * p.current_price.unwrap_or(p.entry_price))
             .sum()
     }
@@ -256,7 +281,11 @@ impl PortfolioManager {
     }
 
     /// Update position price
-    pub fn update_position_price(&mut self, position_id: &str, new_price: f64) -> Result<(), String> {
+    pub fn update_position_price(
+        &mut self,
+        position_id: &str,
+        new_price: f64,
+    ) -> Result<(), String> {
         if let Some(position) = self.positions.get_mut(position_id) {
             position.current_price = Some(new_price);
             Ok(())

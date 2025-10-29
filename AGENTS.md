@@ -22,14 +22,6 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 ## Vue d'ensemble du projet
 Ce projet implémente un serveur MPC (Multi-Party Computation) connecté à plusieurs échanges de crypto-monnaies : dydx (v4), hyperliquid, coinbase, binance, et kraken. L'architecture suit les principes DDD (Domain-Driven Design) avec des acteurs asynchrones utilisant des WebSockets pour des mises à jour de prix en temps réel.
 
-The OpenCode workflow automates:
-* Test planning (planner)
-* Test creation (test-writer)
-* Code implementation (implementer)
-* Code review and commit (reviewer)
-
-This ensures all new modules follow a Test-Driven Development (TDD) process with minimal manual coordination.
-
 
 ## Fonctionnalités MPC supportées
 Le serveur supporte diverses computations multi-parties :

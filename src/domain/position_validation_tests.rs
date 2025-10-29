@@ -4,8 +4,8 @@
 
 #[cfg(test)]
 mod position_validation_tests {
-    use std::sync::Arc;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     // ============================================================================
     // POSITION MANAGEMENT TEST FIXTURES
@@ -119,10 +119,8 @@ mod position_validation_tests {
             };
 
             // Validate per-symbol limit
-            let symbol_count: u32 = positions
-                .values()
-                .filter(|p| p.symbol == symbol)
-                .count() as u32;
+            let symbol_count: u32 =
+                positions.values().filter(|p| p.symbol == symbol).count() as u32;
 
             if symbol_count >= self.limits.max_per_symbol {
                 return PositionResult {
@@ -194,18 +192,14 @@ mod position_validation_tests {
             let position_id = format!("pos_{}_{}", symbol, id_num);
 
             // Calculate stop-loss and take-profit prices
-            let stop_loss_price = stop_loss_pct.map(|pct| {
-                match side {
-                    PositionSide::Long => entry_price * (1.0 - pct),
-                    PositionSide::Short => entry_price * (1.0 + pct),
-                }
+            let stop_loss_price = stop_loss_pct.map(|pct| match side {
+                PositionSide::Long => entry_price * (1.0 - pct),
+                PositionSide::Short => entry_price * (1.0 + pct),
             });
 
-            let take_profit_price = take_profit_pct.map(|pct| {
-                match side {
-                    PositionSide::Long => entry_price * (1.0 + pct),
-                    PositionSide::Short => entry_price * (1.0 - pct),
-                }
+            let take_profit_price = take_profit_pct.map(|pct| match side {
+                PositionSide::Long => entry_price * (1.0 + pct),
+                PositionSide::Short => entry_price * (1.0 - pct),
             });
 
             // Create and store position
@@ -263,7 +257,11 @@ mod position_validation_tests {
             }
         }
 
-        pub fn update_position_price(&self, position_id: &str, new_price: f64) -> Result<(), String> {
+        pub fn update_position_price(
+            &self,
+            position_id: &str,
+            new_price: f64,
+        ) -> Result<(), String> {
             let mut positions = self
                 .positions
                 .lock()
@@ -312,10 +310,7 @@ mod position_validation_tests {
 
         pub fn get_symbol_position_count(&self, symbol: &str) -> u32 {
             match self.positions.lock() {
-                Ok(positions) => positions
-                    .values()
-                    .filter(|p| p.symbol == symbol)
-                    .count() as u32,
+                Ok(positions) => positions.values().filter(|p| p.symbol == symbol).count() as u32,
                 Err(_) => 0,
             }
         }
@@ -323,10 +318,8 @@ mod position_validation_tests {
         pub fn get_portfolio_exposure(&self) -> f64 {
             match self.positions.lock() {
                 Ok(positions) => {
-                    let total_position_value: f64 = positions
-                        .values()
-                        .map(|p| p.quantity * p.entry_price)
-                        .sum();
+                    let total_position_value: f64 =
+                        positions.values().map(|p| p.quantity * p.entry_price).sum();
                     total_position_value / self.portfolio_value
                 }
                 Err(_) => 0.0,
@@ -465,7 +458,10 @@ mod position_validation_tests {
             result.position_id.is_some(),
             "Should return position ID for successful open"
         );
-        assert!(result.error.is_none(), "Should have no error for valid position");
+        assert!(
+            result.error.is_none(),
+            "Should have no error for valid position"
+        );
     }
 
     // ============================================================================
@@ -484,14 +480,7 @@ mod position_validation_tests {
 
         // Open position at $100, close at $110 -> profit of $10 per share
         // If we buy 10 shares: $1000 * 1.10 = $1100 -> profit $100
-        let result = manager.open_position(
-            "TEST-USD",
-            PositionSide::Long,
-            10.0,
-            100.0,
-            None,
-            None,
-        );
+        let result = manager.open_position("TEST-USD", PositionSide::Long, 10.0, 100.0, None, None);
 
         let position_id = result.position_id.expect("Position should open");
 
@@ -525,14 +514,8 @@ mod position_validation_tests {
         let manager = PositionManager::new(limits, 10000.0);
 
         // Open short position at $100, close at $90 -> profit of $10 per share
-        let result = manager.open_position(
-            "TEST-USD",
-            PositionSide::Short,
-            10.0,
-            100.0,
-            None,
-            None,
-        );
+        let result =
+            manager.open_position("TEST-USD", PositionSide::Short, 10.0, 100.0, None, None);
 
         let position_id = result.position_id.expect("Position should open");
         manager
@@ -576,7 +559,10 @@ mod position_validation_tests {
 
         let close_result = manager.close_position(&position_id);
 
-        assert!(close_result.pnl.is_some(), "Should handle decimal precision");
+        assert!(
+            close_result.pnl.is_some(),
+            "Should handle decimal precision"
+        );
         let pnl = close_result.pnl.unwrap();
         let expected = 0.12345678 * (51000.0 - 50000.0);
         assert!(
@@ -740,8 +726,7 @@ mod position_validation_tests {
             let positions = manager.get_positions();
             assert!(!positions.is_empty(), "Position should be fully created");
             assert!(
-                positions[0].stop_loss_price.is_some()
-                    && positions[0].take_profit_price.is_some(),
+                positions[0].stop_loss_price.is_some() && positions[0].take_profit_price.is_some(),
                 "Position should have all fields set"
             );
         }
@@ -761,10 +746,16 @@ mod position_validation_tests {
         let result = manager.close_position("invalid_position_id");
 
         assert!(!result.success, "Should fail for invalid position");
-        assert!(result.pnl.is_none(), "Should not compute PnL for failed close");
+        assert!(
+            result.pnl.is_none(),
+            "Should not compute PnL for failed close"
+        );
 
         // Verify system state is consistent
         let positions = manager.get_positions();
-        assert!(positions.is_empty(), "No positions should exist after failed close");
+        assert!(
+            positions.is_empty(),
+            "No positions should exist after failed close"
+        );
     }
 }

@@ -1,6 +1,5 @@
 use crate::domain::value_objects::price::Price;
 
-
 #[derive(Debug, Clone)]
 pub struct Candle {
     pub open: Price,
@@ -9,7 +8,6 @@ pub struct Candle {
     pub close: Price,
     pub volume: f64,
 }
-
 
 impl Candle {
     pub fn new(open: f64, high: f64, low: f64, close: f64, volume: f64) -> Result<Self, String> {
@@ -23,16 +21,13 @@ impl Candle {
     }
 }
 
-
 pub trait Indicator {
     fn calculate(&self, candles: &[Candle]) -> Vec<f64>;
 }
 
-
 pub struct EMA {
     pub period: usize,
 }
-
 
 impl EMA {
     pub fn new(period: usize) -> Self {
@@ -89,11 +84,9 @@ impl Indicator for EMA {
     }
 }
 
-
 pub struct RSI {
     pub period: usize,
 }
-
 
 impl RSI {
     pub fn new(period: usize) -> Self {
@@ -143,7 +136,6 @@ impl Indicator for RSI {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct BollingerBandsValues {
     pub upper: Vec<f64>,
@@ -151,12 +143,10 @@ pub struct BollingerBandsValues {
     pub lower: Vec<f64>,
 }
 
-
 pub struct BollingerBands {
     pub period: usize,
     pub std_dev: f64,
 }
-
 
 impl BollingerBands {
     pub fn new(period: usize, std_dev: f64) -> Self {
@@ -229,13 +219,11 @@ impl Indicator for BollingerBands {
     }
 }
 
-
 pub struct MACD {
     pub fast_period: usize,
     pub slow_period: usize,
     pub signal_period: usize,
 }
-
 
 impl MACD {
     pub fn new(fast_period: usize, slow_period: usize, signal_period: usize) -> Self {
@@ -265,12 +253,10 @@ impl Indicator for MACD {
     }
 }
 
-
 pub struct StochasticOscillator {
     pub k_period: usize,
     pub d_period: usize,
 }
-
 
 impl StochasticOscillator {
     pub fn new(k_period: usize, d_period: usize) -> Self {

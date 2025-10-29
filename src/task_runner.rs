@@ -2,7 +2,6 @@
 ///
 /// Provides automatic retry with exponential backoff and failure tracking
 /// to prevent silent task failures in production.
-
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, warn};
@@ -36,10 +35,7 @@ impl CircuitBreakerState {
     fn record_failure(&mut self, max_delay: Duration) {
         self.consecutive_failures += 1;
         // Exponential backoff with cap
-        self.current_retry_delay = std::cmp::min(
-            self.current_retry_delay * 2,
-            max_delay,
-        );
+        self.current_retry_delay = std::cmp::min(self.current_retry_delay * 2, max_delay);
     }
 
     fn reset(&mut self, initial_delay: Duration) {

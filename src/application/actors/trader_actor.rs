@@ -53,9 +53,7 @@ pub enum TraderMessage {
         reply: mpsc::Sender<Result<f64, String>>,
     },
     /// Get trader statistics
-    GetStats {
-        reply: mpsc::Sender<TraderStats>,
-    },
+    GetStats { reply: mpsc::Sender<TraderStats> },
     /// Shutdown the trader
     Shutdown,
 }
@@ -95,13 +93,14 @@ impl TraderActor {
             total_orders: 0,
             successful_orders: 0,
             failed_orders: 0,
-            available_exchanges: trader.get_available_exchanges().into_iter().cloned().collect(),
+            available_exchanges: trader
+                .get_available_exchanges()
+                .into_iter()
+                .cloned()
+                .collect(),
         };
 
-        let actor = Self {
-            trader,
-            stats,
-        };
+        let actor = Self { trader, stats };
 
         tokio::spawn(async move {
             actor.run(rx).await;
@@ -235,10 +234,7 @@ impl TraderActor {
                         "Trader {} getting balance for {:?}",
                         self.stats.id, currency
                     );
-                    let result = self
-                        .trader
-                        .get_balance(currency.as_deref())
-                        .await;
+                    let result = self.trader.get_balance(currency.as_deref()).await;
                     if let Err(e) = reply.send(result).await {
                         error!("Failed to send GetBalance reply: {:?}", e);
                     }

@@ -1,11 +1,9 @@
 use crate::domain::errors::ValidationError;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Quantity(f64);
 
 impl Quantity {
-
     pub fn new(value: f64) -> Result<Self, ValidationError> {
         if !value.is_finite() {
             return Err(ValidationError::MustBeFinite);
@@ -16,22 +14,18 @@ impl Quantity {
         Ok(Quantity(value))
     }
 
-
     pub fn value(&self) -> f64 {
         self.0
     }
-
 
     pub fn add(&self, other: Quantity) -> Result<Quantity, ValidationError> {
         Quantity::new(self.0 + other.0)
     }
 
-
     pub fn subtract(&self, other: Quantity) -> Result<Quantity, ValidationError> {
         let result = self.0 - other.0;
         Quantity::new(result)
     }
-
 
     pub fn multiply(&self, factor: f64) -> Result<Quantity, ValidationError> {
         if !factor.is_finite() {

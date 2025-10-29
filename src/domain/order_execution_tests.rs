@@ -3,7 +3,9 @@
 
 #[cfg(test)]
 mod order_execution_tests {
-    use crate::domain::services::order_executor::{OrderExecutor, OrderExecutorConfig, TradingSignal, Signal};
+    use crate::domain::services::order_executor::{
+        OrderExecutor, OrderExecutorConfig, Signal, TradingSignal,
+    };
 
     /// Test complete order execution flow: signal → validation → execution → position
     #[test]
@@ -19,7 +21,11 @@ mod order_execution_tests {
 
         let config = OrderExecutorConfig {
             confidence_threshold: 0.5,
-            symbols: vec!["BTC-USD".to_string(), "ETH-USD".to_string(), "SOL-USD".to_string()],
+            symbols: vec![
+                "BTC-USD".to_string(),
+                "ETH-USD".to_string(),
+                "SOL-USD".to_string(),
+            ],
             traders: vec!["trader1".to_string()],
             max_per_hour: 10,
             max_per_day: 50,
@@ -461,7 +467,11 @@ mod order_execution_tests {
 
         let config = OrderExecutorConfig {
             confidence_threshold: 0.5,
-            symbols: vec!["BTC-USD".to_string(), "ETH-USD".to_string(), "SOL-USD".to_string()],
+            symbols: vec![
+                "BTC-USD".to_string(),
+                "ETH-USD".to_string(),
+                "SOL-USD".to_string(),
+            ],
             traders: vec!["trader1".to_string()],
             max_per_hour: 10,
             max_per_day: 50,
@@ -475,9 +485,27 @@ mod order_execution_tests {
         let mut executor = OrderExecutor::new_with_config(config);
 
         let signals = vec![
-            ("BTC-USD".to_string(), TradingSignal { signal: Signal::Buy, confidence: 0.8 }),
-            ("ETH-USD".to_string(), TradingSignal { signal: Signal::Buy, confidence: 0.8 }),
-            ("SOL-USD".to_string(), TradingSignal { signal: Signal::Buy, confidence: 0.8 }),
+            (
+                "BTC-USD".to_string(),
+                TradingSignal {
+                    signal: Signal::Buy,
+                    confidence: 0.8,
+                },
+            ),
+            (
+                "ETH-USD".to_string(),
+                TradingSignal {
+                    signal: Signal::Buy,
+                    confidence: 0.8,
+                },
+            ),
+            (
+                "SOL-USD".to_string(),
+                TradingSignal {
+                    signal: Signal::Buy,
+                    confidence: 0.8,
+                },
+            ),
         ];
 
         // Execute signals sequentially (simulating concurrent execution)
@@ -519,7 +547,12 @@ mod order_execution_tests {
         // Execute 2 trades (at limit)
         for i in 0..2 {
             let result = executor.execute_order_from_signal("BTC-USD", &signal);
-            assert!(result.is_ok(), "Trade {} failed with error: {:?}", i+1, result);
+            assert!(
+                result.is_ok(),
+                "Trade {} failed with error: {:?}",
+                i + 1,
+                result
+            );
             // Clear signal cache to allow the same signal to be executed again
             executor.clear_signal_cache("BTC-USD");
         }
@@ -560,7 +593,12 @@ mod order_execution_tests {
         // Execute 2 trades (at limit)
         for i in 0..2 {
             let result = executor.execute_order_from_signal("BTC-USD", &signal);
-            assert!(result.is_ok(), "Trade {} failed with error: {:?}", i+1, result);
+            assert!(
+                result.is_ok(),
+                "Trade {} failed with error: {:?}",
+                i + 1,
+                result
+            );
             // Clear signal cache to allow the same signal to be executed again
             executor.clear_signal_cache("BTC-USD");
         }
@@ -731,7 +769,11 @@ mod order_execution_tests {
 
         let config = OrderExecutorConfig {
             confidence_threshold: 0.5,
-            symbols: vec!["BTC-USD".to_string(), "ETH-USD".to_string(), "SOL-USD".to_string()],
+            symbols: vec![
+                "BTC-USD".to_string(),
+                "ETH-USD".to_string(),
+                "SOL-USD".to_string(),
+            ],
             traders: vec!["trader1".to_string()],
             max_per_hour: 10,
             max_per_day: 50,
@@ -745,21 +787,33 @@ mod order_execution_tests {
         let mut executor = OrderExecutor::new_with_config(config);
 
         // Execute successful trades
-        let btc_signal = TradingSignal { signal: Signal::Buy, confidence: 0.8 };
+        let btc_signal = TradingSignal {
+            signal: Signal::Buy,
+            confidence: 0.8,
+        };
         let result1 = executor.execute_order_from_signal("BTC-USD", &btc_signal);
         assert!(result1.is_ok());
 
-        let eth_signal = TradingSignal { signal: Signal::Buy, confidence: 0.8 };
+        let eth_signal = TradingSignal {
+            signal: Signal::Buy,
+            confidence: 0.8,
+        };
         let result2 = executor.execute_order_from_signal("ETH-USD", &eth_signal);
         assert!(result2.is_ok());
 
         // Try to execute invalid symbol - should fail but not affect others
-        let invalid_signal = TradingSignal { signal: Signal::Buy, confidence: 0.8 };
+        let invalid_signal = TradingSignal {
+            signal: Signal::Buy,
+            confidence: 0.8,
+        };
         let result3 = executor.execute_order_from_signal("INVALID", &invalid_signal);
         assert!(result3.is_err());
 
         // Valid symbols should still work
-        let sol_signal = TradingSignal { signal: Signal::Buy, confidence: 0.8 };
+        let sol_signal = TradingSignal {
+            signal: Signal::Buy,
+            confidence: 0.8,
+        };
         let result4 = executor.execute_order_from_signal("SOL-USD", &sol_signal);
         assert!(result4.is_ok());
     }
@@ -785,7 +839,9 @@ mod order_execution_tests {
         };
 
         let executor = OrderExecutor::new_with_config(config);
-        let size = executor.calculate_position_size(10000.0, 50000.0, 0.05).unwrap();
+        let size = executor
+            .calculate_position_size(10000.0, 50000.0, 0.05)
+            .unwrap();
 
         // 10000 * 0.05 / 50000 = 0.01
         assert_eq!(size, 0.01);
@@ -955,5 +1011,3 @@ mod order_execution_tests {
         assert!(error.contains("No active exchange configured"));
     }
 }
-
-

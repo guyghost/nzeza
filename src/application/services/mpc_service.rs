@@ -10,9 +10,9 @@ use crate::domain::services::metrics::{
     TradingMetrics,
 };
 use crate::domain::services::strategies::{SignalCombiner, TradingSignal};
+use crate::domain::value_objects::pnl::PnL;
 use crate::domain::value_objects::price::Price;
 use crate::domain::value_objects::quantity::Quantity;
-use crate::domain::value_objects::pnl::PnL;
 use crate::infrastructure::adapters::exchange_actor::ExchangeMessage;
 use lru::LruCache;
 use std::collections::HashMap;
@@ -188,8 +188,11 @@ impl MpcService {
     ///
     /// # Important
     /// This must be called during initialization before the service is wrapped in Arc and shared
-    pub fn add_actor(&mut self, exchange: Exchange, sender: mpsc::Sender<ExchangeMessage>)
-        -> Result<(), String> {
+    pub fn add_actor(
+        &mut self,
+        exchange: Exchange,
+        sender: mpsc::Sender<ExchangeMessage>,
+    ) -> Result<(), String> {
         // Get mutable access to the inner HashMap via Arc::get_mut
         // This only succeeds if there's exactly one Arc reference (during initialization)
         Arc::get_mut(&mut self.senders)
@@ -283,7 +286,6 @@ impl MpcService {
         debug!("All actors shutdown complete");
     }
 
-
     pub async fn get_price(&self, exchange: &Exchange, symbol: &str) -> Result<Price, MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
@@ -301,7 +303,6 @@ impl MpcService {
             Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
-
 
     pub async fn subscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
@@ -321,7 +322,6 @@ impl MpcService {
         }
     }
 
-
     pub async fn unsubscribe(&self, exchange: &Exchange, symbol: &str) -> Result<(), MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
             let (reply_tx, mut reply_rx) = mpsc::channel(1);
@@ -339,7 +339,6 @@ impl MpcService {
             Err(MpcError::ActorNotFound(exchange.clone()))
         }
     }
-
 
     pub async fn get_subscriptions(&self, exchange: &Exchange) -> Result<Vec<String>, MpcError> {
         if let Some(sender) = self.senders.as_ref().get(exchange) {
@@ -389,18 +388,22 @@ impl MpcService {
     ) -> Result<TradingSignal, MpcError> {
         let candles = self.get_candles(symbol).await;
         let candle_count = candles.len();
-        debug!("Symbol {}: {} candles available for signal generation", symbol, candle_count);
+        debug!(
+            "Symbol {}: {} candles available for signal generation",
+            symbol, candle_count
+        );
 
         if candle_count >= MIN_CANDLES_FOR_SIGNAL {
             let signal = self.generate_trading_signal(&candles).await?;
-            debug!("Signal generated for {}: {:?} (confidence: {:.3})", symbol, signal.signal, signal.confidence);
+            debug!(
+                "Signal generated for {}: {:?} (confidence: {:.3})",
+                symbol, signal.signal, signal.confidence
+            );
             Ok(signal)
         } else {
             debug!(
                 "Not enough candles for {}: need {}, have {} - signal generation skipped",
-                symbol,
-                MIN_CANDLES_FOR_SIGNAL,
-                candle_count
+                symbol, MIN_CANDLES_FOR_SIGNAL, candle_count
             );
             Err(MpcError::NoSignalsAvailable)
         }
@@ -624,9 +627,7 @@ impl MpcService {
             self.config.stop_loss_percentage,
             self.config.take_profit_percentage,
         )
-        .map_err(|e| {
-            MpcError::InvalidConfiguration(format!("Failed to create position: {}", e))
-        })?;
+        .map_err(|e| MpcError::InvalidConfiguration(format!("Failed to create position: {}", e)))?;
 
         let mut positions = self.open_positions.lock().await;
         positions.insert(position_id.clone(), position);
@@ -659,17 +660,14 @@ impl MpcService {
             let pnl = position.unrealized_pnl().unwrap_or(PnL::zero());
             let entry_value = position.quantity.value() * position.entry_price.value();
 
-            info!(
-                "Closed position: {} (PnL: {:?})",
-                position_id,
-                pnl
-            );
+            info!("Closed position: {} (PnL: {:?})", position_id, pnl);
 
             // Release lock before updating portfolio
             drop(positions);
 
             // Update portfolio after closing position
-            self.update_portfolio_after_position_close(entry_value, pnl.value()).await;
+            self.update_portfolio_after_position_close(entry_value, pnl.value())
+                .await;
 
             Ok(())
         } else {
@@ -790,7 +788,9 @@ impl MpcService {
         let traders = self.traders.lock().await;
 
         if traders.is_empty() {
-            return Err(MpcError::InvalidConfiguration("No traders available".to_string()));
+            return Err(MpcError::InvalidConfiguration(
+                "No traders available".to_string(),
+            ));
         }
 
         let trader_info: Vec<(String, mpsc::Sender<TraderMessage>)> = traders
@@ -870,7 +870,10 @@ impl MpcService {
     /// Fetch portfolio value from Coinbase only (deprecated, use fetch_and_update_portfolio_from_exchanges)
     ///
     /// This method is kept for backward compatibility but delegates to the multi-exchange version.
-    #[deprecated(since = "0.2.0", note = "Use fetch_and_update_portfolio_from_exchanges instead")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use fetch_and_update_portfolio_from_exchanges instead"
+    )]
     pub async fn fetch_and_update_portfolio_from_coinbase(&self) -> Result<f64, MpcError> {
         self.fetch_and_update_portfolio_from_exchanges().await
     }
@@ -911,7 +914,11 @@ impl MpcService {
     /// Update portfolio after position is closed
     ///
     /// This releases the position value back to available cash, adjusted by PnL.
-    pub async fn update_portfolio_after_position_close(&self, position_value: f64, realized_pnl: f64) {
+    pub async fn update_portfolio_after_position_close(
+        &self,
+        position_value: f64,
+        realized_pnl: f64,
+    ) {
         let mut portfolio_state = self.portfolio_state.lock().await;
         portfolio_state.available_cash += position_value + realized_pnl;
         portfolio_state.position_value -= position_value;
@@ -955,7 +962,7 @@ impl MpcService {
         // Ensure we have positive portfolio value
         if portfolio_value <= 0.0 {
             return Err(MpcError::InvalidInput(
-                "Portfolio value is zero or negative. Cannot calculate position size.".to_string()
+                "Portfolio value is zero or negative. Cannot calculate position size.".to_string(),
             ));
         }
 
@@ -1053,7 +1060,8 @@ impl MpcService {
         let normalized_symbol = crate::config::TradingConfig::normalize_symbol(symbol);
         let is_whitelisted = self.config.symbols.values().any(|symbols| {
             symbols.iter().any(|whitelisted_symbol| {
-                crate::config::TradingConfig::normalize_symbol(whitelisted_symbol) == normalized_symbol
+                crate::config::TradingConfig::normalize_symbol(whitelisted_symbol)
+                    == normalized_symbol
             })
         });
 
@@ -1072,20 +1080,20 @@ impl MpcService {
 
         // Check if automated trading is enabled
         if !self.config.enable_automated_trading {
-            return Err(MpcError::InvalidConfiguration("Automated trading is disabled".to_string()));
+            return Err(MpcError::InvalidConfiguration(
+                "Automated trading is disabled".to_string(),
+            ));
         }
 
         // SPEC REQUIREMENT: Check trader availability FIRST (before any calculations)
         // This prevents wasting CPU time if no traders are available
-        let (trader_id, trader_sender) = self
-            .select_trader_sender()
-            .await
-            .ok_or_else(|| {
-                error!("No trader available to execute orders - trading should be disabled");
-                MpcError::InvalidConfiguration(
-                    "No trader available to execute orders. Ensure traders are initialized.".to_string(),
-                )
-            })?;
+        let (trader_id, trader_sender) = self.select_trader_sender().await.ok_or_else(|| {
+            error!("No trader available to execute orders - trading should be disabled");
+            MpcError::InvalidConfiguration(
+                "No trader available to execute orders. Ensure traders are initialized."
+                    .to_string(),
+            )
+        })?;
 
         debug!("✓ Trader '{}' is available for order execution", trader_id);
 
@@ -1135,7 +1143,8 @@ impl MpcService {
         // This prevents TOCTOU race conditions where multiple threads could exceed limits
         let position_id = {
             let mut positions = self.open_positions.lock().await;
-            let symbol_positions: Vec<_> = positions.values().filter(|p| p.symbol == symbol).collect();
+            let symbol_positions: Vec<_> =
+                positions.values().filter(|p| p.symbol == symbol).collect();
 
             if symbol_positions.len() >= self.config.max_positions_per_symbol {
                 return Ok(format!(
@@ -1198,8 +1207,9 @@ impl MpcService {
             }
         };
 
-        let limit_price = Price::new(slippage_protected_price)
-            .map_err(|e| MpcError::InvalidConfiguration(format!("Invalid slippage price: {}", e)))?;
+        let limit_price = Price::new(slippage_protected_price).map_err(|e| {
+            MpcError::InvalidConfiguration(format!("Invalid slippage price: {}", e))
+        })?;
 
         // Create limit order with slippage protection instead of market order
         let order = Order::new(
@@ -1212,7 +1222,10 @@ impl MpcService {
         )
         .map_err(|e| MpcError::InvalidConfiguration(format!("Failed to create order: {}", e)))?;
 
-        debug!("Dispatching order to trader '{}' for execution on {}", trader_id, symbol);
+        debug!(
+            "Dispatching order to trader '{}' for execution on {}",
+            trader_id, symbol
+        );
 
         let (reply_tx, mut reply_rx) = mpsc::channel(1);
         trader_sender
@@ -1231,7 +1244,10 @@ impl MpcService {
         match timeout(CHANNEL_REPLY_TIMEOUT, reply_rx.recv())
             .await
             .map_err(|_| {
-                error!("Timeout waiting for order response from trader {} for symbol {}", trader_id, symbol);
+                error!(
+                    "Timeout waiting for order response from trader {} for symbol {}",
+                    trader_id, symbol
+                );
                 MpcError::Timeout
             })?
             .ok_or(MpcError::NoResponse)?
@@ -1264,7 +1280,8 @@ impl MpcService {
                     // Calculate proportional PnL based on strategy weight
                     // For simplicity, assume equal contribution for now
                     // Safe: 0.0 is always a valid price
-                    let proportional_pnl = Price::new(0.0).expect("Zero price should always be valid");
+                    let proportional_pnl =
+                        Price::new(0.0).expect("Zero price should always be valid");
                     self.record_strategy_execution(&strategy_name, proportional_pnl)
                         .await;
                 }
@@ -1273,12 +1290,15 @@ impl MpcService {
                 let position_value = quantity.value() * current_price.value();
 
                 // Update portfolio after opening position
-                self.update_portfolio_after_position_open(position_value).await;
+                self.update_portfolio_after_position_open(position_value)
+                    .await;
 
                 info!("ORDER EXECUTED & POSITION OPENED via trader {}: {:?} {} {} (confidence: {:.2}) - Order ID: {}, Position ID: {}, Position Value: ${:.2}",
                       trader_id, order_side, quantity, symbol, signal.confidence, order_id, position_id, position_value);
-                Ok(format!("Order executed by trader {}: {:?} {} {} - Order ID: {}, Position ID: {}",
-                          trader_id, order_side, quantity, symbol, order_id, position_id))
+                Ok(format!(
+                    "Order executed by trader {}: {:?} {} {} - Order ID: {}, Position ID: {}",
+                    trader_id, order_side, quantity, symbol, order_id, position_id
+                ))
             }
             Err(e) => {
                 // Rollback: Remove the reserved position slot since order execution failed
@@ -1298,9 +1318,7 @@ impl MpcService {
     /// # Lock Ordering
     /// 1. strategy_order (clone and release)
     /// 2. traders (use cloned strategy_order)
-    async fn select_trader_sender(
-        &self,
-    ) -> Option<(String, mpsc::Sender<TraderMessage>)> {
+    async fn select_trader_sender(&self) -> Option<(String, mpsc::Sender<TraderMessage>)> {
         // Acquire strategy_order lock, clone, and release immediately
         let strategy_names = {
             let guard = self.strategy_order.lock().await;
@@ -1331,7 +1349,10 @@ impl MpcService {
         let last_signals = self.get_all_last_signals().await;
         let signal_count = last_signals.len();
 
-        debug!("🔍 Starting order execution check - {} signals available", signal_count);
+        debug!(
+            "🔍 Starting order execution check - {} signals available",
+            signal_count
+        );
 
         if signal_count == 0 {
             debug!("No signals available for execution");
@@ -1347,7 +1368,10 @@ impl MpcService {
         }
 
         // Verify signal storage integrity
-        debug!("✓ Signal storage verification: {} signals retrieved from LRU cache", signal_count);
+        debug!(
+            "✓ Signal storage verification: {} signals retrieved from LRU cache",
+            signal_count
+        );
 
         let mut results = Vec::new();
         let mut successful_executions = 0;
@@ -1356,7 +1380,10 @@ impl MpcService {
         let mut retry_later = Vec::new(); // Signals that should be retried later
 
         for (symbol, signal) in last_signals {
-            debug!("⚡ Attempting order execution for {} with confidence {:.3}", symbol, signal.confidence);
+            debug!(
+                "⚡ Attempting order execution for {} with confidence {:.3}",
+                symbol, signal.confidence
+            );
 
             match self.execute_order_from_signal(&symbol, &signal).await {
                 Ok(msg) => {
@@ -1375,8 +1402,10 @@ impl MpcService {
                     results.push(Ok(msg));
                 }
                 Err(e) => {
-                    let error_context = format!("Order execution failed for {} (signal: {:?}, confidence: {:.3}): {}",
-                                               symbol, signal.signal, signal.confidence, e);
+                    let error_context = format!(
+                        "Order execution failed for {} (signal: {:?}, confidence: {:.3}): {}",
+                        symbol, signal.signal, signal.confidence, e
+                    );
                     error!("❌ {}", error_context);
                     failed_executions += 1;
 
@@ -1436,10 +1465,13 @@ impl MpcService {
         // Health check: Alert if failure rate is too high
         if signal_count > 0 {
             let failure_rate = failed_executions as f64 / signal_count as f64;
-            if failure_rate > 0.5 { // More than 50% failures
+            if failure_rate > 0.5 {
+                // More than 50% failures
                 let alert_message = format!(
                     "High order execution failure rate: {:.1}% ({} failed out of {})",
-                    failure_rate * 100.0, failed_executions, signal_count
+                    failure_rate * 100.0,
+                    failed_executions,
+                    signal_count
                 );
                 warn!("⚠️  {}", alert_message);
 
@@ -1459,7 +1491,10 @@ impl MpcService {
                 // Record this as a health issue
                 self.record_error().await;
             } else if successful_executions > 0 {
-                debug!("✓ Order execution health: {:.1}% success rate", (1.0 - failure_rate) * 100.0);
+                debug!(
+                    "✓ Order execution health: {:.1}% success rate",
+                    (1.0 - failure_rate) * 100.0
+                );
             }
         }
 
@@ -1706,7 +1741,9 @@ impl MpcService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::services::strategies::{ConservativeScalping, FastScalping, MomentumScalping, Strategy};
+    use crate::domain::services::strategies::{
+        ConservativeScalping, FastScalping, MomentumScalping, Strategy,
+    };
 
     #[test]
     fn test_mpc_service_new() {
@@ -1794,7 +1831,8 @@ mod tests {
             crate::domain::entities::exchange::Exchange::Binance,
             mock_price.clone(),
         );
-        service.add_actor(crate::domain::entities::exchange::Exchange::Binance, sender)
+        service
+            .add_actor(crate::domain::entities::exchange::Exchange::Binance, sender)
             .expect("Failed to add actor");
 
         // Get price from mock actor
@@ -1818,7 +1856,8 @@ mod tests {
             crate::domain::entities::exchange::Exchange::Binance,
             mock_price,
         );
-        service.add_actor(crate::domain::entities::exchange::Exchange::Binance, sender)
+        service
+            .add_actor(crate::domain::entities::exchange::Exchange::Binance, sender)
             .expect("Failed to add actor");
 
         // Test subscribe
@@ -1850,7 +1889,8 @@ mod tests {
             crate::domain::entities::exchange::Exchange::Binance,
             mock_price,
         );
-        service.add_actor(crate::domain::entities::exchange::Exchange::Binance, sender)
+        service
+            .add_actor(crate::domain::entities::exchange::Exchange::Binance, sender)
             .expect("Failed to add actor");
 
         // Get subscriptions

@@ -29,7 +29,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("COINBASE_CLOUD_API_SECRET or COINBASE_API_SECRET not set. Set it with:\n   export COINBASE_CLOUD_API_SECRET='-----BEGIN EC PRIVATE KEY-----\\n...\\n-----END EC PRIVATE KEY-----'");
 
     println!("✅ Credentials loaded:");
-    println!("   API Key: {}", if api_key.len() > 20 { &api_key[..20] } else { &api_key });
+    println!(
+        "   API Key: {}",
+        if api_key.len() > 20 {
+            &api_key[..20]
+        } else {
+            &api_key
+        }
+    );
     println!("   API Secret: {} characters\n", api_secret.len());
 
     // Validate API key format
@@ -71,9 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  UUID: {}", account.uuid);
                 println!("  Name: {}", account.name);
                 println!("  Currency: {}", account.currency);
-                println!("  Available Balance: {} {}",
-                    account.available_balance.value,
-                    account.available_balance.currency
+                println!(
+                    "  Available Balance: {} {}",
+                    account.available_balance.value, account.available_balance.currency
                 );
                 println!();
             }

@@ -46,7 +46,8 @@ impl CandleBuilder {
             timestamp: SystemTime::now(),
         };
 
-        let updates = self.price_updates
+        let updates = self
+            .price_updates
             .entry(symbol.clone())
             .or_insert_with(VecDeque::new);
 
@@ -189,8 +190,10 @@ impl CandleBuilder {
             .cloned()
             .collect();
 
-        self.price_updates.retain(|symbol, _| active_symbols.contains(symbol));
-        self.candles.retain(|symbol, candles| !candles.is_empty() && active_symbols.contains(symbol));
+        self.price_updates
+            .retain(|symbol, _| active_symbols.contains(symbol));
+        self.candles
+            .retain(|symbol, candles| !candles.is_empty() && active_symbols.contains(symbol));
     }
 }
 
@@ -287,7 +290,11 @@ mod tests {
         builder.cleanup_old_updates(Duration::from_millis(50));
 
         // All old updates should be removed
-        assert!(builder.price_updates.get("BTC-USD").map(|u| u.is_empty()).unwrap_or(true));
+        assert!(builder
+            .price_updates
+            .get("BTC-USD")
+            .map(|u| u.is_empty())
+            .unwrap_or(true));
     }
 
     #[test]

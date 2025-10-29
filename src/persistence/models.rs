@@ -58,22 +58,22 @@ pub struct AuditLogRecord {
 /// dYdX order metadata record in database
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct DydxOrderMetadataRecord {
-    pub order_id: String,           // Our internal order ID string
-    pub dydx_order_id: String,      // Full OrderId protobuf encoded (base64)
-    pub good_until_block: i64,      // Block height when order expires
-    pub client_id: i64,             // Client ID used for order
-    pub subaccount_number: i32,     // Subaccount that placed the order
-    pub order_flags: i32,           // Order flags (short-term, long-term, conditional)
-    pub clob_pair_id: i32,          // Market identifier
-    pub symbol: String,             // Trading pair (e.g., "BTC-USD")
-    pub side: String,               // "buy" or "sell"
-    pub quantity: String,           // Order quantity as string
-    pub price: Option<String>,      // Order price as string (null for market)
-    pub order_type: String,         // "market" or "limit"
-    pub placed_at: DateTime<Utc>,   // When order was placed
+    pub order_id: String,                    // Our internal order ID string
+    pub dydx_order_id: String,               // Full OrderId protobuf encoded (base64)
+    pub good_until_block: i64,               // Block height when order expires
+    pub client_id: i64,                      // Client ID used for order
+    pub subaccount_number: i32,              // Subaccount that placed the order
+    pub order_flags: i32,                    // Order flags (short-term, long-term, conditional)
+    pub clob_pair_id: i32,                   // Market identifier
+    pub symbol: String,                      // Trading pair (e.g., "BTC-USD")
+    pub side: String,                        // "buy" or "sell"
+    pub quantity: String,                    // Order quantity as string
+    pub price: Option<String>,               // Order price as string (null for market)
+    pub order_type: String,                  // "market" or "limit"
+    pub placed_at: DateTime<Utc>,            // When order was placed
     pub cancelled_at: Option<DateTime<Utc>>, // When order was cancelled (null if active)
-    pub tx_hash: Option<String>,    // dYdX transaction hash
-    pub status: String,             // 'active', 'cancelled', 'expired', 'filled'
+    pub tx_hash: Option<String>,             // dYdX transaction hash
+    pub status: String,                      // 'active', 'cancelled', 'expired', 'filled'
 }
 
 /// Create position input

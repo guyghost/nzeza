@@ -1,11 +1,11 @@
 mod application;
 mod auth;
-mod task_runner;
 mod config;
 mod domain;
 mod infrastructure;
 mod persistence;
 mod rate_limit;
+mod task_runner;
 use crate::application::actors::trader_actor::TraderActor;
 use crate::application::services::mpc_service::MpcService;
 use crate::domain::entities::exchange::Exchange;
@@ -15,8 +15,8 @@ use crate::domain::services::strategies::{
 };
 use crate::infrastructure::adapters::exchange_actor::ExchangeActor;
 use crate::infrastructure::exchange_client_factory::ExchangeClientFactory;
-use crate::persistence::{DatabaseConfig, init_database};
 use crate::persistence::repository::DydxOrderMetadataRepository;
+use crate::persistence::{init_database, DatabaseConfig};
 use axum::extract::ws::{Message, WebSocket};
 use axum::response::Response;
 use axum::{
@@ -26,10 +26,10 @@ use axum::{
     Json, Router,
 };
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::io::ErrorKind;
-use std::time::Duration;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -111,22 +111,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let coinbase_sender = ExchangeActor::spawn(Exchange::Coinbase);
     let kraken_sender = ExchangeActor::spawn(Exchange::Kraken);
 
-     info!("Configuration chargée depuis l'environnement:");
-     info!(
-         "  Seuil de confiance minimum: {:.2}",
-         config.min_confidence_threshold
-     );
-     info!(
-         "  Trading automatisé activé: {}",
-         config.enable_automated_trading
-     );
+    info!("Configuration chargée depuis l'environnement:");
+    info!(
+        "  Seuil de confiance minimum: {:.2}",
+        config.min_confidence_threshold
+    );
+    info!(
+        "  Trading automatisé activé: {}",
+        config.enable_automated_trading
+    );
 
-     // Validate confidence threshold configuration
-     if config.min_confidence_threshold < 0.0 || config.min_confidence_threshold > 1.0 {
-         warn!("⚠️  Invalid confidence threshold {:.2} - should be between 0.0 and 1.0", config.min_confidence_threshold);
-     } else {
-         info!("✓ Confidence threshold configuration valid: {:.2}", config.min_confidence_threshold);
-     }
+    // Validate confidence threshold configuration
+    if config.min_confidence_threshold < 0.0 || config.min_confidence_threshold > 1.0 {
+        warn!(
+            "⚠️  Invalid confidence threshold {:.2} - should be between 0.0 and 1.0",
+            config.min_confidence_threshold
+        );
+    } else {
+        info!(
+            "✓ Confidence threshold configuration valid: {:.2}",
+            config.min_confidence_threshold
+        );
+    }
     info!(
         "  Taille de position par défaut: {}",
         config.default_position_size
@@ -200,7 +206,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (exchange, client) in &exchange_clients {
             if let Ok(balances) = client.get_balance(None).await {
                 for balance in balances {
-                    if balance.available > 10.0 { // Minimum threshold for trading
+                    if balance.available > 10.0 {
+                        // Minimum threshold for trading
                         has_sufficient_balance = true;
                         break;
                     }
@@ -247,9 +254,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Create one trader per strategy for now
         let trader_strategies = vec![
-            ("FastScalping", Box::new(FastScalping::new()) as Box<dyn Strategy + Send + Sync>),
-            ("MomentumScalping", Box::new(MomentumScalping::new()) as Box<dyn Strategy + Send + Sync>),
-            ("ConservativeScalping", Box::new(ConservativeScalping::new()) as Box<dyn Strategy + Send + Sync>),
+            (
+                "FastScalping",
+                Box::new(FastScalping::new()) as Box<dyn Strategy + Send + Sync>,
+            ),
+            (
+                "MomentumScalping",
+                Box::new(MomentumScalping::new()) as Box<dyn Strategy + Send + Sync>,
+            ),
+            (
+                "ConservativeScalping",
+                Box::new(ConservativeScalping::new()) as Box<dyn Strategy + Send + Sync>,
+            ),
         ];
 
         for (strategy_name, strategy) in trader_strategies {
@@ -276,15 +292,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // dYdX v4 has known issues with order execution (Ethereum signing vs Cosmos SDK)
                     if exchange_clients.contains_key(&Exchange::Coinbase) {
                         if let Err(e) = trader.set_active_exchange(Exchange::Coinbase) {
-                            warn!("Failed to set Coinbase as active exchange for {}: {}", trader_id, e);
+                            warn!(
+                                "Failed to set Coinbase as active exchange for {}: {}",
+                                trader_id, e
+                            );
                         } else {
-                            info!("  ✓ Trader '{}' using Coinbase as primary exchange", trader_id);
+                            info!(
+                                "  ✓ Trader '{}' using Coinbase as primary exchange",
+                                trader_id
+                            );
                         }
                     }
 
                     // Spawn trader actor
                     let trader_sender = TraderActor::spawn(trader);
-                    mpc_service.add_trader(trader_id.clone(), trader_sender).await;
+                    mpc_service
+                        .add_trader(trader_id.clone(), trader_sender)
+                        .await;
 
                     info!("✓ Trader '{}' spawned and ready", trader_id);
                 }
@@ -334,14 +358,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match selected_trader {
                 Some(selected_id) => {
-                    info!("✅ Trader selection check passed (selected: {})", selected_id);
+                    info!(
+                        "✅ Trader selection check passed (selected: {})",
+                        selected_id
+                    );
                 }
                 None => {
                     warn!("✗ No trader available for order execution - selection check failed");
                 }
             }
 
-            info!("✅ Trader setup validation complete - {} trader(s) ready", trader_count);
+            info!(
+                "✅ Trader setup validation complete - {} trader(s) ready",
+                trader_count
+            );
         }
     } else {
         // No exchange clients means no traders can be created
@@ -360,7 +390,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warn!("⚠️  Check your exchange credentials and restart the server");
         config.enable_automated_trading = false;
     } else {
-        info!("✓ {} trader(s) available for order execution", final_trader_count);
+        info!(
+            "✓ {} trader(s) available for order execution",
+            final_trader_count
+        );
     }
 
     // Log final trading status
@@ -431,7 +464,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         run_with_circuit_breaker("order_execution_task", config, || async {
             order_execution_task_iteration(app_state_clone.clone()).await
-        }).await;
+        })
+        .await;
     });
 
     // Spawn alerting task
@@ -481,9 +515,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/orders/:symbol/execute", post(execute_symbol_order))
         .route("/orders/place", post(place_manual_order))
         .route("/orders/cancel/:order_id", delete(cancel_order))
-        .route("/orders/cancel/:exchange/:order_id", delete(cancel_order_with_exchange))
+        .route(
+            "/orders/cancel/:exchange/:order_id",
+            delete(cancel_order_with_exchange),
+        )
         .route("/orders/status/:order_id", get(get_order_status))
-        .route("/orders/status/:exchange/:order_id", get(get_order_status_with_exchange))
+        .route(
+            "/orders/status/:exchange/:order_id",
+            get(get_order_status_with_exchange),
+        )
         .route("/positions", get(get_positions))
         .route("/positions/pnl", get(get_total_pnl))
         .route("/portfolio", get(get_portfolio))
@@ -498,9 +538,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_state(app_state.clone());
 
     // Combine public and protected routes
-    let app = Router::new()
-        .merge(public_routes)
-        .merge(protected_routes);
+    let app = Router::new().merge(public_routes).merge(protected_routes);
 
     let preferred_addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     let listener = match tokio::net::TcpListener::bind(preferred_addr).await {
@@ -666,20 +704,24 @@ async fn signal_generation_task(app_state: AppState) {
                 .get_aggregated_price(&normalized_symbol)
                 .await
             {
-                 info!(
-                     "Prix agrégé pour {}: {:.2}",
-                     normalized_symbol,
-                     aggregated_price.value()
-                 );
-                 // Update candle builder
-                 app_state
-                     .mpc_service
-                     .update_candle(normalized_symbol.clone(), aggregated_price)
-                     .await;
+                info!(
+                    "Prix agrégé pour {}: {:.2}",
+                    normalized_symbol,
+                    aggregated_price.value()
+                );
+                // Update candle builder
+                app_state
+                    .mpc_service
+                    .update_candle(normalized_symbol.clone(), aggregated_price)
+                    .await;
 
-                 // Log candle collection status
-                 let current_candles = app_state.mpc_service.get_candles(&normalized_symbol).await;
-                 debug!("✓ Candle updated for {}: now {} candles in collection", normalized_symbol, current_candles.len());
+                // Log candle collection status
+                let current_candles = app_state.mpc_service.get_candles(&normalized_symbol).await;
+                debug!(
+                    "✓ Candle updated for {}: now {} candles in collection",
+                    normalized_symbol,
+                    current_candles.len()
+                );
 
                 // Try to generate signal
                 if let Ok(signal) = app_state
@@ -692,13 +734,13 @@ async fn signal_generation_task(app_state: AppState) {
                         normalized_symbol, signal.signal, signal.confidence
                     );
 
-                     // Store the signal for automated execution
-                     app_state
-                         .mpc_service
-                         .store_signal(normalized_symbol.clone(), signal)
-                         .await;
+                    // Store the signal for automated execution
+                    app_state
+                        .mpc_service
+                        .store_signal(normalized_symbol.clone(), signal)
+                        .await;
 
-                     debug!("✓ Signal stored for {} in LRU cache", normalized_symbol);
+                    debug!("✓ Signal stored for {} in LRU cache", normalized_symbol);
                 }
 
                 // Update position prices and metrics
@@ -1040,20 +1082,22 @@ async fn place_manual_order(
         .and_then(|v| v.as_str())
         .unwrap_or("market");
     let price = payload.get("price").and_then(|v| v.as_f64());
-    
+
     // Parse exchange (default to dYdX for backward compatibility)
     let exchange_str = payload
         .get("exchange")
         .and_then(|v| v.as_str())
         .unwrap_or("dydx");
-    
+
     let exchange = match exchange_str.to_lowercase().as_str() {
         "dydx" => crate::domain::entities::exchange::Exchange::Dydx,
         "coinbase" => crate::domain::entities::exchange::Exchange::Coinbase,
         _ => {
             return Err((
                 axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid exchange. Must be 'dydx' or 'coinbase'"})),
+                Json(
+                    serde_json::json!({"error": "Invalid exchange. Must be 'dydx' or 'coinbase'"}),
+                ),
             ))
         }
     };
@@ -1112,11 +1156,7 @@ async fn place_manual_order(
     };
 
     // Place order on the selected exchange
-    match app_state
-        .mpc_service
-        .place_order(&exchange, order)
-        .await
-    {
+    match app_state.mpc_service.place_order(&exchange, order).await {
         Ok(order_id) => Ok(Json(serde_json::json!({
             "success": true,
             "order_id": order_id,
@@ -1138,10 +1178,7 @@ async fn cancel_order(
     State(app_state): State<AppState>,
     Path(order_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    cancel_order_with_exchange(
-        State(app_state),
-        Path(("dydx".to_string(), order_id)),
-    ).await
+    cancel_order_with_exchange(State(app_state), Path(("dydx".to_string(), order_id))).await
 }
 
 /// Cancel an order with exchange specification
@@ -1181,10 +1218,7 @@ async fn get_order_status(
     State(app_state): State<AppState>,
     Path(order_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    get_order_status_with_exchange(
-        State(app_state),
-        Path(("dydx".to_string(), order_id)),
-    ).await
+    get_order_status_with_exchange(State(app_state), Path(("dydx".to_string(), order_id))).await
 }
 
 /// Get order status with exchange specification
@@ -1318,7 +1352,11 @@ async fn get_portfolio(State(app_state): State<AppState>) -> Json<serde_json::Va
 
 /// Manually trigger portfolio refresh from all exchanges
 async fn refresh_portfolio(State(app_state): State<AppState>) -> Json<serde_json::Value> {
-    match app_state.mpc_service.fetch_and_update_portfolio_from_exchanges().await {
+    match app_state
+        .mpc_service
+        .fetch_and_update_portfolio_from_exchanges()
+        .await
+    {
         Ok(portfolio_value) => Json(serde_json::json!({
             "success": true,
             "portfolio_value": portfolio_value,
@@ -1584,7 +1622,11 @@ async fn portfolio_refresh_task(app_state: AppState, interval_duration: Duration
         interval.tick().await;
 
         info!("💰 Refreshing portfolio value from all exchanges...");
-        match app_state.mpc_service.fetch_and_update_portfolio_from_exchanges().await {
+        match app_state
+            .mpc_service
+            .fetch_and_update_portfolio_from_exchanges()
+            .await
+        {
             Ok(portfolio_value) => {
                 info!("✓ Portfolio updated: ${:.2}", portfolio_value);
             }

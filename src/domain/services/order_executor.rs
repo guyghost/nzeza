@@ -11,7 +11,7 @@ use crate::domain::entities::order::{Order, OrderSide, OrderType};
 use crate::domain::entities::position::{Position, PositionSide};
 use crate::domain::repositories::exchange_client::{ExchangeClient, ExchangeError, ExchangeResult};
 use crate::domain::services::metrics::{PerformanceProfiler, TradingMetrics};
-use crate::domain::services::position_manager::{PositionManager, PositionLimits, PositionResult};
+use crate::domain::services::position_manager::{PositionLimits, PositionManager, PositionResult};
 use crate::domain::value_objects::{price::Price, quantity::Quantity};
 
 /// Order execution configuration
@@ -105,8 +105,8 @@ impl OrderExecutor {
 
     /// Create a new OrderExecutor with default dependencies (for testing)
     pub fn new_with_config(config: OrderExecutorConfig) -> Self {
-        use crate::domain::services::position_manager::PositionLimits;
         use crate::domain::services::metrics::TradingMetrics;
+        use crate::domain::services::position_manager::PositionLimits;
 
         let position_limits = PositionLimits {
             max_per_symbol: 3,
@@ -115,22 +115,28 @@ impl OrderExecutor {
         };
 
         let position_manager = Arc::new(Mutex::new(PositionManager::new(position_limits, 10000.0)));
-        
+
         // Create a mock exchange client for testing
         let mut exchange_clients = HashMap::new();
         let mock_client: Arc<dyn ExchangeClient> = Arc::new(MockExchangeClient);
         exchange_clients.insert(Exchange::Coinbase, mock_client);
-        
+
         let metrics = Arc::new(Mutex::new(TradingMetrics::new()));
         let portfolio_value = 10000.0;
 
-        Self::new(config, position_manager, exchange_clients, metrics, portfolio_value)
+        Self::new(
+            config,
+            position_manager,
+            exchange_clients,
+            metrics,
+            portfolio_value,
+        )
     }
 
     /// Create a new OrderExecutor WITHOUT exchange clients (for testing error cases)
     pub fn new_with_config_no_exchange(config: OrderExecutorConfig) -> Self {
-        use crate::domain::services::position_manager::PositionLimits;
         use crate::domain::services::metrics::TradingMetrics;
+        use crate::domain::services::position_manager::PositionLimits;
 
         let position_limits = PositionLimits {
             max_per_symbol: 3,
@@ -143,7 +149,13 @@ impl OrderExecutor {
         let metrics = Arc::new(Mutex::new(TradingMetrics::new()));
         let portfolio_value = 10000.0;
 
-        Self::new(config, position_manager, exchange_clients, metrics, portfolio_value)
+        Self::new(
+            config,
+            position_manager,
+            exchange_clients,
+            metrics,
+            portfolio_value,
+        )
     }
 
     /// Execute order based on trading signal - main entry point
@@ -154,14 +166,14 @@ impl OrderExecutor {
     ) -> Result<String, String> {
         // Start profiling
         let _timer = self.profiler.start_operation("execute_signal");
-        
+
         let result = self.execute_order_from_signal_internal(symbol, signal);
-        
+
         // Record the operation execution time (the timer is dropped at the end of scope,
         // but we need to explicitly record it because we're not using Drop)
         let elapsed = _timer.elapsed_ms();
         self.profiler.record_operation("execute_signal", elapsed);
-        
+
         result
     }
 
@@ -201,7 +213,11 @@ impl OrderExecutor {
         let current_price = self.get_current_price(symbol)?;
 
         // Calculate position size
-        let position_size = self.calculate_position_size(self.portfolio_value, current_price.value(), self.config.portfolio_percentage)?;
+        let position_size = self.calculate_position_size(
+            self.portfolio_value,
+            current_price.value(),
+            self.config.portfolio_percentage,
+        )?;
 
         // Check minimum quantity
         if position_size < self.config.min_quantity {
@@ -215,7 +231,8 @@ impl OrderExecutor {
         self.validate_execution_constraints_sync(symbol, position_size, current_price.value())?;
 
         // Execute order (simplified for sync interface)
-        let execution_result = self.execute_single_order_sync(symbol, signal, position_size, current_price.value());
+        let execution_result =
+            self.execute_single_order_sync(symbol, signal, position_size, current_price.value());
 
         match execution_result {
             Ok(order_id) => {
@@ -272,7 +289,8 @@ impl OrderExecutor {
 
         // Count trades in last hour
         let one_hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap_or(now);
-        let trades_last_hour = self.trade_history
+        let trades_last_hour = self
+            .trade_history
             .iter()
             .filter(|entry| entry.timestamp >= one_hour_ago)
             .count() as u32;
@@ -286,7 +304,8 @@ impl OrderExecutor {
 
         // Count trades in last 24 hours
         let one_day_ago = now.checked_sub(Duration::from_secs(86400)).unwrap_or(now);
-        let trades_last_day = self.trade_history
+        let trades_last_day = self
+            .trade_history
             .iter()
             .filter(|entry| entry.timestamp >= one_day_ago)
             .count() as u32;
@@ -310,7 +329,8 @@ impl OrderExecutor {
             "ETH-USD" => Price::new(3000.0),
             "SOL-USD" => Price::new(100.0),
             _ => Price::new(100.0),
-        }.map_err(|e| format!("Invalid price: {}", e))
+        }
+        .map_err(|e| format!("Invalid price: {}", e))
     }
 
     /// Calculate position size based on portfolio percentage
@@ -383,7 +403,8 @@ impl OrderExecutor {
         quantity: f64,
         price: f64,
     ) -> Result<String, String> {
-        let exchange = self.active_exchange
+        let exchange = self
+            .active_exchange
             .as_ref()
             .ok_or("No active exchange configured")?;
 
@@ -395,21 +416,31 @@ impl OrderExecutor {
         };
 
         // Apply slippage protection
-        let limit_price = self.apply_slippage_protection(price, matches!(order_side, crate::domain::entities::order::OrderSide::Buy), self.config.slippage_pct);
+        let limit_price = self.apply_slippage_protection(
+            price,
+            matches!(order_side, crate::domain::entities::order::OrderSide::Buy),
+            self.config.slippage_pct,
+        );
 
         // Create order
-        let quantity_obj = Quantity::new(quantity)
-            .map_err(|e| format!("Invalid quantity: {}", e))?;
+        let quantity_obj =
+            Quantity::new(quantity).map_err(|e| format!("Invalid quantity: {}", e))?;
 
         let order = Order::new(
-            format!("order_{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default().as_millis()),
+            format!(
+                "order_{}",
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            ),
             symbol.to_string(),
             order_side,
             OrderType::Limit,
             Some(limit_price),
             quantity,
-        ).map_err(|e| format!("Failed to create order: {}", e))?;
+        )
+        .map_err(|e| format!("Failed to create order: {}", e))?;
 
         // In a real implementation, this would call the exchange client
         // For testing, we'll simulate success if exchange is configured
@@ -458,31 +489,36 @@ impl OrderExecutor {
             .checked_sub(Duration::from_secs(86400))
             .unwrap_or(SystemTime::now());
 
-        self.trade_history.retain(|entry| entry.timestamp >= one_day_ago);
+        self.trade_history
+            .retain(|entry| entry.timestamp >= one_day_ago);
     }
 
     /// Cache signal to prevent re-execution
     fn cache_signal(&mut self, symbol: &str, signal: TradingSignal) {
-        self.signal_cache.insert(symbol.to_string(), CachedSignal {
-            signal,
-            timestamp: SystemTime::now(),
-        });
+        self.signal_cache.insert(
+            symbol.to_string(),
+            CachedSignal {
+                signal,
+                timestamp: SystemTime::now(),
+            },
+        );
 
         // Simple LRU: keep only recent signals (cleanup old ones)
         let five_minutes_ago = SystemTime::now()
             .checked_sub(Duration::from_secs(300))
             .unwrap_or(SystemTime::now());
 
-        self.signal_cache.retain(|_, cached| cached.timestamp >= five_minutes_ago);
+        self.signal_cache
+            .retain(|_, cached| cached.timestamp >= five_minutes_ago);
     }
 
     /// Check if error is permanent (should not retry)
     fn is_permanent_error(&self, error: &str) -> bool {
         // Permanent errors that should not be retried
-        error.contains("whitelist") ||
-        error.contains("balance") ||
-        error.contains("limit") ||
-        error.contains("validation")
+        error.contains("whitelist")
+            || error.contains("balance")
+            || error.contains("limit")
+            || error.contains("validation")
     }
 
     /// Validate symbol is in whitelist
@@ -520,9 +556,7 @@ impl OrderExecutor {
     /// Get current trade count in last hour
     pub fn get_trades_last_hour(&self) -> u32 {
         let now = SystemTime::now();
-        let one_hour_ago = now
-            .checked_sub(Duration::from_secs(3600))
-            .unwrap_or(now);
+        let one_hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap_or(now);
 
         self.trade_history
             .iter()
@@ -533,9 +567,7 @@ impl OrderExecutor {
     /// Get current trade count in last day
     pub fn get_trades_last_day(&self) -> u32 {
         let now = SystemTime::now();
-        let one_day_ago = now
-            .checked_sub(Duration::from_secs(86400))
-            .unwrap_or(now);
+        let one_day_ago = now.checked_sub(Duration::from_secs(86400)).unwrap_or(now);
 
         self.trade_history
             .iter()
@@ -581,16 +613,24 @@ impl ExchangeClient for MockExchangeClient {
         Ok(())
     }
 
-    async fn get_order_status(&self, _order_id: &str) -> ExchangeResult<crate::domain::repositories::exchange_client::OrderStatus> {
+    async fn get_order_status(
+        &self,
+        _order_id: &str,
+    ) -> ExchangeResult<crate::domain::repositories::exchange_client::OrderStatus> {
         Ok(crate::domain::repositories::exchange_client::OrderStatus::Filled)
     }
 
-    async fn get_balance(&self, _currency: Option<&str>) -> ExchangeResult<Vec<crate::domain::repositories::exchange_client::Balance>> {
-        Ok(vec![crate::domain::repositories::exchange_client::Balance {
-            currency: "USD".to_string(),
-            available: 10000.0,
-            total: 10000.0,
-        }])
+    async fn get_balance(
+        &self,
+        _currency: Option<&str>,
+    ) -> ExchangeResult<Vec<crate::domain::repositories::exchange_client::Balance>> {
+        Ok(vec![
+            crate::domain::repositories::exchange_client::Balance {
+                currency: "USD".to_string(),
+                available: 10000.0,
+                total: 10000.0,
+            },
+        ])
     }
 }
 

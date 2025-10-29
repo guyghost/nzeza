@@ -8,10 +8,7 @@ use crate::domain::entities::exchange::Exchange;
 #[derive(Debug, Clone)]
 pub enum DetailedMpcError {
     /// Order validation failed with specific context
-    OrderValidationFailed {
-        symbol: String,
-        reason: String,
-    },
+    OrderValidationFailed { symbol: String, reason: String },
     /// Insufficient balance to execute order
     InsufficientBalance {
         required: f64,

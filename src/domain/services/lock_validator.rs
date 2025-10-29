@@ -92,10 +92,13 @@ impl LockValidator {
         let mut prev_index = -1i32;
 
         for lock in locks {
-            let current_index = self.config.lock_order
+            let current_index = self
+                .config
+                .lock_order
                 .iter()
                 .position(|l| l == lock)
-                .ok_or_else(|| format!("Lock {} not found in global order", lock))? as i32;
+                .ok_or_else(|| format!("Lock {} not found in global order", lock))?
+                as i32;
 
             if current_index <= prev_index {
                 return Err(format!(
@@ -125,13 +128,15 @@ impl LockValidator {
         // Build dependency graph
         for tracker in trackers.iter() {
             if let Some(waiting_lock) = &tracker.waiting_for {
-                graph.dependencies
+                graph
+                    .dependencies
                     .entry(waiting_lock.clone())
                     .or_insert_with(HashSet::new)
                     .insert(tracker.thread_id.clone());
             }
 
-            graph.thread_holds
+            graph
+                .thread_holds
                 .entry(tracker.thread_id.clone())
                 .or_insert_with(HashSet::new)
                 .extend(tracker.acquired_locks.iter().cloned());
@@ -142,7 +147,10 @@ impl LockValidator {
         let mut recursion_stack = HashSet::new();
 
         for thread_id in graph.thread_holds.keys() {
-            if self.has_cycle(thread_id, &graph, &mut visited, &mut recursion_stack).await {
+            if self
+                .has_cycle(thread_id, &graph, &mut visited, &mut recursion_stack)
+                .await
+            {
                 return Err(format!("Deadlock detected involving thread {}", thread_id));
             }
         }
@@ -151,7 +159,13 @@ impl LockValidator {
     }
 
     /// Helper for cycle detection in dependency graph (simplified non-recursive version)
-    async fn has_cycle(&self, start_thread: &str, graph: &LockGraph, visited: &mut HashSet<String>, recursion_stack: &mut HashSet<String>) -> bool {
+    async fn has_cycle(
+        &self,
+        start_thread: &str,
+        graph: &LockGraph,
+        visited: &mut HashSet<String>,
+        recursion_stack: &mut HashSet<String>,
+    ) -> bool {
         // For simplicity, just check if any thread is waiting for a lock held by another thread
         // that is also waiting (basic cycle detection)
         for tracker in graph.thread_holds.keys() {
@@ -160,7 +174,11 @@ impl LockValidator {
                     if other_thread != tracker && held_locks.contains(&waiting_lock) {
                         if let Some(other_waiting) = self.get_waiting_lock(other_thread).await {
                             // Check if other_thread is waiting for a lock held by the original thread
-                            if graph.thread_holds.get(tracker).map_or(false, |locks| locks.contains(&other_waiting)) {
+                            if graph
+                                .thread_holds
+                                .get(tracker)
+                                .map_or(false, |locks| locks.contains(&other_waiting))
+                            {
                                 return true; // Found a cycle
                             }
                         }
@@ -174,14 +192,19 @@ impl LockValidator {
     /// Get the lock a thread is currently waiting for
     async fn get_waiting_lock(&self, thread_id: &str) -> Option<String> {
         let trackers = self.trackers.lock().await;
-        trackers.iter()
+        trackers
+            .iter()
             .find(|t| t.thread_id == thread_id)?
             .waiting_for
             .clone()
     }
 
     /// Validate RwLock semantics
-    pub async fn validate_rwlock_semantics(&self, lock: &str, is_write: bool) -> Result<(), String> {
+    pub async fn validate_rwlock_semantics(
+        &self,
+        lock: &str,
+        is_write: bool,
+    ) -> Result<(), String> {
         let readers = self.rwlock_readers.lock().await;
         let writers = self.rwlock_writers.lock().await;
 
@@ -204,7 +227,12 @@ impl LockValidator {
     }
 
     /// Record lock acquisition
-    pub async fn record_lock_acquisition(&mut self, lock: &str, thread_id: &str, is_write: bool) -> Result<(), String> {
+    pub async fn record_lock_acquisition(
+        &mut self,
+        lock: &str,
+        thread_id: &str,
+        is_write: bool,
+    ) -> Result<(), String> {
         let mut trackers = self.trackers.lock().await;
         let mut stats = self.lock_stats.lock().await;
         let mut readers = self.rwlock_readers.lock().await;
@@ -222,7 +250,10 @@ impl LockValidator {
             });
         }
 
-        let tracker = trackers.iter_mut().find(|t| t.thread_id == thread_id).unwrap();
+        let tracker = trackers
+            .iter_mut()
+            .find(|t| t.thread_id == thread_id)
+            .unwrap();
 
         // Clear waiting state
         tracker.waiting_for = None;
@@ -230,14 +261,22 @@ impl LockValidator {
 
         // Record acquisition
         tracker.acquired_locks.push(lock.to_string());
-        tracker.lock_times.insert(lock.to_string(), SystemTime::now());
+        tracker
+            .lock_times
+            .insert(lock.to_string(), SystemTime::now());
         tracker.is_writer.insert(lock.to_string(), is_write);
 
         // Update RwLock tracking
         if is_write {
-            writers.entry(lock.to_string()).or_insert_with(HashSet::new).insert(thread_id.to_string());
+            writers
+                .entry(lock.to_string())
+                .or_insert_with(HashSet::new)
+                .insert(thread_id.to_string());
         } else {
-            readers.entry(lock.to_string()).or_insert_with(HashSet::new).insert(thread_id.to_string());
+            readers
+                .entry(lock.to_string())
+                .or_insert_with(HashSet::new)
+                .insert(thread_id.to_string());
         }
 
         // Update stats
@@ -261,7 +300,9 @@ impl LockValidator {
         let mut readers = self.rwlock_readers.lock().await;
         let mut writers = self.rwlock_writers.lock().await;
 
-        let tracker = trackers.iter_mut().find(|t| t.thread_id == thread_id)
+        let tracker = trackers
+            .iter_mut()
+            .find(|t| t.thread_id == thread_id)
             .ok_or_else(|| format!("No tracker found for thread {}", thread_id))?;
 
         // Verify LIFO release order
@@ -276,7 +317,8 @@ impl LockValidator {
 
         // Calculate hold time
         if let Some(acquire_time) = tracker.lock_times.get(lock) {
-            let hold_duration = SystemTime::now().duration_since(*acquire_time)
+            let hold_duration = SystemTime::now()
+                .duration_since(*acquire_time)
                 .unwrap_or_default();
             let hold_ms = hold_duration.as_millis() as u64;
 
@@ -326,8 +368,11 @@ impl LockValidator {
         let mut result = Vec::new();
 
         for tracker in trackers.iter() {
-            if let (Some(waiting_lock), Some(wait_start)) = (&tracker.waiting_for, &tracker.wait_start_time) {
-                let wait_duration = SystemTime::now().duration_since(*wait_start)
+            if let (Some(waiting_lock), Some(wait_start)) =
+                (&tracker.waiting_for, &tracker.wait_start_time)
+            {
+                let wait_duration = SystemTime::now()
+                    .duration_since(*wait_start)
                     .unwrap_or_default();
 
                 result.push(ThreadWaitInfo {
@@ -352,13 +397,15 @@ impl LockValidator {
 
         for tracker in trackers.iter() {
             if let Some(waiting_lock) = &tracker.waiting_for {
-                graph.dependencies
+                graph
+                    .dependencies
                     .entry(waiting_lock.clone())
                     .or_insert_with(HashSet::new)
                     .insert(tracker.thread_id.clone());
             }
 
-            graph.thread_holds
+            graph
+                .thread_holds
                 .entry(tracker.thread_id.clone())
                 .or_insert_with(HashSet::new)
                 .extend(tracker.acquired_locks.iter().cloned());
@@ -379,14 +426,14 @@ impl LockValidator {
 
         for tracker in trackers.iter() {
             for (lock_name, acquire_time) in &tracker.lock_times {
-                let hold_duration = SystemTime::now().duration_since(*acquire_time)
+                let hold_duration = SystemTime::now()
+                    .duration_since(*acquire_time)
                     .unwrap_or_default();
                 let hold_ms = hold_duration.as_millis() as u64;
 
-                analysis.lock_hold_times.insert(
-                    format!("{}:{}", tracker.thread_id, lock_name),
-                    hold_ms
-                );
+                analysis
+                    .lock_hold_times
+                    .insert(format!("{}:{}", tracker.thread_id, lock_name), hold_ms);
 
                 if hold_ms > self.config.max_hold_ms {
                     analysis.violations.push(format!(
@@ -401,7 +448,11 @@ impl LockValidator {
     }
 
     /// Register that a thread is waiting for a lock
-    pub async fn record_thread_waiting(&mut self, lock: &str, thread_id: &str) -> Result<(), String> {
+    pub async fn record_thread_waiting(
+        &mut self,
+        lock: &str,
+        thread_id: &str,
+    ) -> Result<(), String> {
         let mut trackers = self.trackers.lock().await;
         let mut queue = self.waiting_queue.lock().await;
 
@@ -417,14 +468,20 @@ impl LockValidator {
             });
         }
 
-        let tracker = trackers.iter_mut().find(|t| t.thread_id == thread_id).unwrap();
+        let tracker = trackers
+            .iter_mut()
+            .find(|t| t.thread_id == thread_id)
+            .unwrap();
 
         // Record waiting state
         tracker.waiting_for = Some(lock.to_string());
         tracker.wait_start_time = Some(SystemTime::now());
 
         // Add to waiting queue (FIFO)
-        queue.entry(lock.to_string()).or_insert_with(VecDeque::new).push_back(thread_id.to_string());
+        queue
+            .entry(lock.to_string())
+            .or_insert_with(VecDeque::new)
+            .push_back(thread_id.to_string());
 
         // Update contention stats
         let mut stats = self.lock_stats.lock().await;
@@ -473,7 +530,10 @@ impl LockValidator {
 
         for lock_name in &self.config.lock_order {
             if !seen.insert(lock_name) {
-                return Err(format!("Circular dependency: {} appears multiple times", lock_name));
+                return Err(format!(
+                    "Circular dependency: {} appears multiple times",
+                    lock_name
+                ));
             }
         }
 
@@ -542,7 +602,8 @@ impl ThreadSafeOperation {
             let current_index = lock_order
                 .iter()
                 .position(|l| l == lock)
-                .ok_or_else(|| format!("Lock {} not found in global order", lock))? as i32;
+                .ok_or_else(|| format!("Lock {} not found in global order", lock))?
+                as i32;
 
             if current_index <= prev_index {
                 return Err(format!(
@@ -592,18 +653,29 @@ impl LockValidatorTestHelper {
     }
 
     /// Simulate a lock acquisition sequence for a thread
-    pub async fn simulate_lock_sequence(&mut self, thread_id: &str, locks: &[(&str, bool)]) -> Result<(), String> {
+    pub async fn simulate_lock_sequence(
+        &mut self,
+        thread_id: &str,
+        locks: &[(&str, bool)],
+    ) -> Result<(), String> {
         for (lock, is_write) in locks {
             // Record waiting first
-            self.validator.record_thread_waiting(lock, thread_id).await?;
+            self.validator
+                .record_thread_waiting(lock, thread_id)
+                .await?;
 
             // Check if can acquire
             if !self.validator.can_acquire_lock(lock, thread_id).await {
-                return Err(format!("Thread {} cannot acquire lock {} (fairness violation)", thread_id, lock));
+                return Err(format!(
+                    "Thread {} cannot acquire lock {} (fairness violation)",
+                    thread_id, lock
+                ));
             }
 
             // Record acquisition
-            self.validator.record_lock_acquisition(lock, thread_id, *is_write).await?;
+            self.validator
+                .record_lock_acquisition(lock, thread_id, *is_write)
+                .await?;
             self.validator.remove_from_wait_queue(lock, thread_id).await;
         }
 
@@ -613,7 +685,8 @@ impl LockValidatorTestHelper {
     /// Simulate releasing all locks for a thread (in reverse order)
     pub async fn simulate_release_all(&mut self, thread_id: &str) -> Result<(), String> {
         let trackers = self.validator.trackers.lock().await;
-        let acquired_locks = trackers.iter()
+        let acquired_locks = trackers
+            .iter()
             .find(|t| t.thread_id == thread_id)
             .map(|t| t.acquired_locks.clone())
             .unwrap_or_default();
@@ -642,15 +715,21 @@ impl LockValidatorTestHelper {
         }
 
         for wait_info in waiting {
-            summary.push_str(&format!("  Thread {} waiting for {} ({}ms)\n",
-                wait_info.thread_id, wait_info.waiting_for_lock, wait_info.wait_duration_ms));
+            summary.push_str(&format!(
+                "  Thread {} waiting for {} ({}ms)\n",
+                wait_info.thread_id, wait_info.waiting_for_lock, wait_info.wait_duration_ms
+            ));
         }
 
         Ok(summary)
     }
 
     /// Record that a thread is waiting for a lock
-    pub async fn record_thread_waiting(&mut self, lock: &str, thread_id: &str) -> Result<(), String> {
+    pub async fn record_thread_waiting(
+        &mut self,
+        lock: &str,
+        thread_id: &str,
+    ) -> Result<(), String> {
         self.validator.record_thread_waiting(lock, thread_id).await
     }
 
@@ -667,10 +746,7 @@ mod tests {
     #[test]
     fn test_validator_creation() {
         let config = LockOrderingConfig {
-            lock_order: vec![
-                "signal_combiner".to_string(),
-                "traders".to_string(),
-            ],
+            lock_order: vec!["signal_combiner".to_string(), "traders".to_string()],
             timeout_ms: 5000,
             max_hold_ms: 100,
             deadlock_detection_enabled: true,
@@ -734,7 +810,10 @@ mod tests {
         let mut helper = LockValidatorTestHelper::new();
 
         // Simulate thread acquiring locks
-        assert!(helper.simulate_lock_sequence("thread1", &[("signal_combiner", false), ("traders", true)]).await.is_ok());
+        assert!(helper
+            .simulate_lock_sequence("thread1", &[("signal_combiner", false), ("traders", true)])
+            .await
+            .is_ok());
 
         // Check state
         let summary = helper.get_state_summary().await.unwrap();
@@ -758,8 +837,14 @@ mod tests {
         });
 
         // Initially should allow both read and write
-        assert!(validator.validate_rwlock_semantics("test_lock", false).await.is_ok());
-        assert!(validator.validate_rwlock_semantics("test_lock", true).await.is_ok());
+        assert!(validator
+            .validate_rwlock_semantics("test_lock", false)
+            .await
+            .is_ok());
+        assert!(validator
+            .validate_rwlock_semantics("test_lock", true)
+            .await
+            .is_ok());
     }
 
     #[test]

@@ -1,11 +1,11 @@
+use futures_util::sink::SinkExt;
+use futures_util::stream::StreamExt;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, mpsc};
-use std::collections::VecDeque;
+use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::accept_async;
-use futures_util::stream::StreamExt;
-use futures_util::sink::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Clone)]
@@ -101,7 +101,12 @@ impl MockWebSocketServer {
                     break;
                 }
 
-                match tokio::time::timeout(std::time::Duration::from_millis(100), listener_clone.accept()).await {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(100),
+                    listener_clone.accept(),
+                )
+                .await
+                {
                     Ok(Ok((stream, _peer_addr))) => {
                         let reject = *reject_connections_clone.lock().await;
                         if reject {
@@ -118,16 +123,16 @@ impl MockWebSocketServer {
                                 Ok(ws_stream) => {
                                     let (mut write, mut read) = ws_stream.split();
                                     let mut conn = MockWebSocketConnection::new();
-                                    
+
                                     // Send any queued messages to the new connection
                                     let mut queue = msgs.lock().await;
                                     let queued_msgs: Vec<String> = queue.drain(..).collect();
                                     drop(queue);
-                                    
+
                                     for msg in queued_msgs {
                                         let _ = write.send(Message::Text(msg)).await;
                                     }
-                                    
+
                                     // Store connection
                                     let mut conns = conns.lock().await;
                                     conns.push_back(conn);
@@ -193,7 +198,10 @@ impl MockWebSocketServer {
     }
 
     pub async fn send_price(&mut self, product_id: &str, price: &str) -> Result<(), String> {
-        let message = format!(r#"{{"product_id":"{}","price":"{}","timestamp":"2025-10-28T12:00:00Z"}}"#, product_id, price);
+        let message = format!(
+            r#"{{"product_id":"{}","price":"{}","timestamp":"2025-10-28T12:00:00Z"}}"#,
+            product_id, price
+        );
         if let Some(tx) = self.message_tx.lock().await.as_ref() {
             let _ = tx.send(message);
         } else {

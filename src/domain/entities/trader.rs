@@ -67,7 +67,10 @@ impl Trader {
             return Err("Trader ID too long (max 100 characters)".to_string());
         }
 
-        if !trimmed_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        if !trimmed_id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
             return Err(
                 "Trader ID must contain only alphanumeric characters, underscores, or hyphens"
                     .to_string(),
@@ -109,11 +112,19 @@ impl Trader {
         // Set as active if this is the first exchange
         if self.active_exchange.is_none() {
             self.active_exchange = Some(exchange.clone());
-            info!("✓ Trader '{}' set active_exchange to {}", self.id, exchange.name());
+            info!(
+                "✓ Trader '{}' set active_exchange to {}",
+                self.id,
+                exchange.name()
+            );
         }
 
         self.exchange_clients.insert(exchange, client);
-        info!("✓ Trader '{}' now has {} exchange client(s)", self.id, self.exchange_clients.len());
+        info!(
+            "✓ Trader '{}' now has {} exchange client(s)",
+            self.id,
+            self.exchange_clients.len()
+        );
     }
 
     /// Remove an exchange client from this trader
@@ -129,7 +140,10 @@ impl Trader {
     /// Set the active exchange for trading
     pub fn set_active_exchange(&mut self, exchange: Exchange) -> Result<(), String> {
         if !self.exchange_clients.contains_key(&exchange) {
-            return Err(format!("Exchange {} not available to this trader", exchange.name()));
+            return Err(format!(
+                "Exchange {} not available to this trader",
+                exchange.name()
+            ));
         }
 
         self.active_exchange = Some(exchange);
@@ -170,10 +184,14 @@ impl Trader {
         }
 
         // Check if we have an active exchange
-        let exchange = self.active_exchange.as_ref()
+        let exchange = self
+            .active_exchange
+            .as_ref()
             .ok_or("No active exchange set for trader")?;
 
-        let client = self.exchange_clients.get(exchange)
+        let client = self
+            .exchange_clients
+            .get(exchange)
             .ok_or_else(|| format!("Exchange client not found for {:?}", exchange))?;
 
         // Determine order side and quantity based on signal
@@ -206,17 +224,27 @@ impl Trader {
 
         info!(
             "Trader {} executing {:?} order on {} for {} with confidence {:.2}",
-            self.id, signal.signal, exchange.name(), symbol, signal.confidence
+            self.id,
+            signal.signal,
+            exchange.name(),
+            symbol,
+            signal.confidence
         );
 
         // Execute order through exchange client
-        client.place_order(&order).await.map(|id| Some(id)).map_err(|e| {
-            warn!(
-                "Trader {} failed to place order on {}: {}",
-                self.id, exchange.name(), e
-            );
-            format!("Failed to place order: {}", e)
-        })
+        client
+            .place_order(&order)
+            .await
+            .map(|id| Some(id))
+            .map_err(|e| {
+                warn!(
+                    "Trader {} failed to place order on {}: {}",
+                    self.id,
+                    exchange.name(),
+                    e
+                );
+                format!("Failed to place order: {}", e)
+            })
     }
 
     /// Route order to the best exchange based on criteria
@@ -231,35 +259,38 @@ impl Trader {
         );
         info!(
             "Trader {} has {} exchange clients available",
-            self.id, self.exchange_clients.len()
+            self.id,
+            self.exchange_clients.len()
         );
 
-        let exchange = self.active_exchange.as_ref()
-            .ok_or_else(|| {
-                let error_msg = format!(
-                    "No active exchange set for trader '{}'. Available exchanges: {:?}",
-                    self.id,
-                    self.exchange_clients.keys().collect::<Vec<_>>()
-                );
-                error!("{}", error_msg);
-                error_msg
-            })?;
+        let exchange = self.active_exchange.as_ref().ok_or_else(|| {
+            let error_msg = format!(
+                "No active exchange set for trader '{}'. Available exchanges: {:?}",
+                self.id,
+                self.exchange_clients.keys().collect::<Vec<_>>()
+            );
+            error!("{}", error_msg);
+            error_msg
+        })?;
 
         info!("Trader {} active exchange: {}", self.id, exchange.name());
 
-        let client = self.exchange_clients.get(exchange)
-            .ok_or_else(|| {
-                let error_msg = format!(
-                    "Exchange client not found for {:?} in trader '{}'",
-                    exchange, self.id
-                );
-                error!("{}", error_msg);
-                error_msg
-            })?;
+        let client = self.exchange_clients.get(exchange).ok_or_else(|| {
+            let error_msg = format!(
+                "Exchange client not found for {:?} in trader '{}'",
+                exchange, self.id
+            );
+            error!("{}", error_msg);
+            error_msg
+        })?;
 
         info!(
             "Trader {} routing order to {} - Order details: {:?} {} @ {:?}",
-            self.id, exchange.name(), order.side, order.symbol, order.order_type
+            self.id,
+            exchange.name(),
+            order.side,
+            order.symbol,
+            order.order_type
         );
 
         client.place_order(order).await.map_err(|e| {
@@ -283,19 +314,23 @@ impl Trader {
 
     /// Get balance from the active exchange
     pub async fn get_balance(&self, currency: Option<&str>) -> Result<f64, String> {
-        let exchange = self.active_exchange.as_ref()
+        let exchange = self
+            .active_exchange
+            .as_ref()
             .ok_or("No active exchange set for trader")?;
 
-        let client = self.exchange_clients.get(exchange)
+        let client = self
+            .exchange_clients
+            .get(exchange)
             .ok_or_else(|| format!("Exchange client not found for {:?}", exchange))?;
 
-        let balances = client.get_balance(currency).await
+        let balances = client
+            .get_balance(currency)
+            .await
             .map_err(|e| format!("Failed to get balance: {}", e))?;
 
         // Sum up available balance for requested currency
-        let total_available = balances.iter()
-            .map(|b| b.available)
-            .sum();
+        let total_available = balances.iter().map(|b| b.available).sum();
 
         Ok(total_available)
     }
@@ -304,9 +339,11 @@ impl Trader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::repositories::exchange_client::{Balance, ExchangeError, ExchangeResult, OrderStatus};
-    use async_trait::async_trait;
+    use crate::domain::repositories::exchange_client::{
+        Balance, ExchangeError, ExchangeResult, OrderStatus,
+    };
     use crate::domain::services::strategies::FastScalping;
+    use async_trait::async_trait;
 
     // Mock ExchangeClient for testing
     struct MockExchangeClient {
@@ -322,7 +359,9 @@ mod tests {
 
         async fn place_order(&self, _order: &Order) -> ExchangeResult<String> {
             if self.should_fail {
-                Err(ExchangeError::OrderPlacementFailed("Mock error".to_string()))
+                Err(ExchangeError::OrderPlacementFailed(
+                    "Mock error".to_string(),
+                ))
             } else {
                 Ok("mock_order_id".to_string())
             }

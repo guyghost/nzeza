@@ -10,7 +10,6 @@ pub enum Exchange {
 }
 
 impl Exchange {
-
     pub fn name(&self) -> &str {
         match self {
             Exchange::Dydx => "dydx",

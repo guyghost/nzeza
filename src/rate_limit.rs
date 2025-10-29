@@ -32,8 +32,7 @@ pub type GlobalRateLimiter = Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClo
 /// Create a new rate limiter
 pub fn create_rate_limiter(config: RateLimiterConfig) -> GlobalRateLimiter {
     let quota = Quota::per_minute(
-        NonZeroU32::new(config.requests_per_minute)
-            .expect("Requests per minute must be non-zero"),
+        NonZeroU32::new(config.requests_per_minute).expect("Requests per minute must be non-zero"),
     );
     Arc::new(RateLimiter::direct(quota))
 }

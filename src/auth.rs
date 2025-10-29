@@ -1,9 +1,4 @@
-use axum::{
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::StatusCode, middleware::Next, response::Response};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
@@ -24,10 +19,11 @@ pub fn init_api_keys() {
     let mut keys = HashSet::new();
 
     // Load from environment variable (REQUIRED)
-    let keys_env = std::env::var("API_KEYS")
-        .expect("SECURITY ERROR: API_KEYS environment variable is not set. \
+    let keys_env = std::env::var("API_KEYS").expect(
+        "SECURITY ERROR: API_KEYS environment variable is not set. \
                  Set API_KEYS to a comma-separated list of secure API keys. \
-                 Example: API_KEYS=your_secure_key_here,another_key");
+                 Example: API_KEYS=your_secure_key_here,another_key",
+    );
 
     // Minimum required key length for security (256 bits = 32 bytes)
     const MIN_KEY_LENGTH: usize = 32;
@@ -56,15 +52,21 @@ pub fn init_api_keys() {
 
     // Fail if no valid keys were loaded
     if keys.is_empty() {
-        panic!("SECURITY ERROR: No valid API keys found in API_KEYS environment variable. \
+        panic!(
+            "SECURITY ERROR: No valid API keys found in API_KEYS environment variable. \
                 At least one API key with length >= {} characters is required. \
                 Generate a secure key with: openssl rand -base64 32",
-                MIN_KEY_LENGTH);
+            MIN_KEY_LENGTH
+        );
     }
 
-    VALID_API_KEYS.set(keys).expect("API keys already initialized");
-    tracing::info!("✓ API authentication initialized with {} valid key(s)",
-        VALID_API_KEYS.get().unwrap().len());
+    VALID_API_KEYS
+        .set(keys)
+        .expect("API keys already initialized");
+    tracing::info!(
+        "✓ API authentication initialized with {} valid key(s)",
+        VALID_API_KEYS.get().unwrap().len()
+    );
 }
 
 /// Check if an API key is valid
@@ -76,10 +78,7 @@ fn is_valid_api_key(key: &str) -> bool {
 }
 
 /// Middleware to require authentication for protected endpoints
-pub async fn require_auth(
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
+pub async fn require_auth(request: Request, next: Next) -> Result<Response, StatusCode> {
     // Extract Authorization header
     let auth_header = request
         .headers()

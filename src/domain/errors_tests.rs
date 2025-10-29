@@ -6,7 +6,7 @@
 mod error_handling_tests {
     use std::time::Duration;
 
-    use crate::domain::errors::{DetailedMpcError, PositionLimitType, ErrorSeverity};
+    use crate::domain::errors::{DetailedMpcError, ErrorSeverity, PositionLimitType};
 
     // ============================================================================
     // ORDER VALIDATION ERROR TESTS
@@ -217,10 +217,7 @@ mod error_handling_tests {
         };
 
         let error_msg = error.to_string();
-        assert!(
-            error_msg.contains("BTC-USD"),
-            "Error should include symbol"
-        );
+        assert!(error_msg.contains("BTC-USD"), "Error should include symbol");
         assert!(
             error_msg.contains("20") && error_msg.contains("5"),
             "Error should show both required and current candle count"
@@ -335,10 +332,7 @@ mod error_handling_tests {
     /// Test creating trader unavailable error
     #[test]
     fn test_create_trader_unavailable_error() {
-        let available_traders = vec![
-            "trader_fast".to_string(),
-            "trader_momentum".to_string(),
-        ];
+        let available_traders = vec!["trader_fast".to_string(), "trader_momentum".to_string()];
 
         let error = DetailedMpcError::TraderUnavailable {
             reason: "All traders at maximum concurrent orders".to_string(),

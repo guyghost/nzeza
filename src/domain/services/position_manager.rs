@@ -1,8 +1,8 @@
 //! PositionManager service - manages opening, closing, and tracking positions
 //! with proper validation and ACID properties
 
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 /// Position representation with all metadata
@@ -120,10 +120,7 @@ impl PositionManager {
         };
 
         // Validate per-symbol limit
-        let symbol_count: u32 = positions
-            .values()
-            .filter(|p| p.symbol == symbol)
-            .count() as u32;
+        let symbol_count: u32 = positions.values().filter(|p| p.symbol == symbol).count() as u32;
 
         if symbol_count >= self.limits.max_per_symbol {
             return PositionResult {
@@ -193,18 +190,14 @@ impl PositionManager {
         let position_id = format!("pos_{}_{}", symbol, timestamp);
 
         // Calculate stop-loss and take-profit prices
-        let stop_loss_price = stop_loss_pct.map(|pct| {
-            match side {
-                PositionSide::Long => entry_price * (1.0 - pct),
-                PositionSide::Short => entry_price * (1.0 + pct),
-            }
+        let stop_loss_price = stop_loss_pct.map(|pct| match side {
+            PositionSide::Long => entry_price * (1.0 - pct),
+            PositionSide::Short => entry_price * (1.0 + pct),
         });
 
-        let take_profit_price = take_profit_pct.map(|pct| {
-            match side {
-                PositionSide::Long => entry_price * (1.0 + pct),
-                PositionSide::Short => entry_price * (1.0 - pct),
-            }
+        let take_profit_price = take_profit_pct.map(|pct| match side {
+            PositionSide::Long => entry_price * (1.0 + pct),
+            PositionSide::Short => entry_price * (1.0 - pct),
         });
 
         // Create and store position
@@ -317,10 +310,7 @@ impl PositionManager {
     /// Get number of open positions for a specific symbol
     pub fn get_symbol_position_count(&self, symbol: &str) -> u32 {
         match self.positions.lock() {
-            Ok(positions) => positions
-                .values()
-                .filter(|p| p.symbol == symbol)
-                .count() as u32,
+            Ok(positions) => positions.values().filter(|p| p.symbol == symbol).count() as u32,
             Err(_) => 0,
         }
     }
@@ -329,10 +319,8 @@ impl PositionManager {
     pub fn get_portfolio_exposure(&self) -> f64 {
         match self.positions.lock() {
             Ok(positions) => {
-                let total_position_value: f64 = positions
-                    .values()
-                    .map(|p| p.quantity * p.entry_price)
-                    .sum();
+                let total_position_value: f64 =
+                    positions.values().map(|p| p.quantity * p.entry_price).sum();
                 total_position_value / self.portfolio_value
             }
             Err(_) => 0.0,

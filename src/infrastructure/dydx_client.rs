@@ -25,7 +25,7 @@
 //! **DO NOT USE THIS CODE FOR REAL TRADING WITHOUT FIXING THE SIGNING MECHANISM**
 
 use crate::domain::entities::order::{Order, OrderSide, OrderType};
-use ethers::signers::{LocalWallet, MnemonicBuilder, coins_bip39::English, Signer};
+use ethers::signers::{coins_bip39::English, LocalWallet, MnemonicBuilder, Signer};
 use ethers::types::{Address, Signature, H256};
 use ethers::utils::keccak256;
 use reqwest::Client;
@@ -148,7 +148,10 @@ impl DydxClient {
     pub async fn update_sequence_number(&self) -> Result<(), String> {
         let account_info = self.get_account_info().await?;
         let mut seq = self.sequence_number.lock().await;
-        *seq = account_info.account.subaccounts.first()
+        *seq = account_info
+            .account
+            .subaccounts
+            .first()
             .map(|sub| sub.subaccount_number as u64)
             .unwrap_or(0);
         Ok(())
@@ -164,9 +167,14 @@ impl DydxClient {
 
     /// Get account information from dYdX API
     pub async fn get_account_info(&self) -> Result<DydxAccount, String> {
-        let url = format!("{}/v4/accounts/{}", self.config.api_base, self.wallet.address());
+        let url = format!(
+            "{}/v4/accounts/{}",
+            self.config.api_base,
+            self.wallet.address()
+        );
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .send()
             .await
@@ -190,13 +198,15 @@ impl DydxClient {
         let side = match order.side {
             OrderSide::Buy => "BUY",
             OrderSide::Sell => "SELL",
-        }.to_string();
+        }
+        .to_string();
 
         let size = order.quantity.value().to_string();
 
         let price = match order.order_type {
             OrderType::Market => "0".to_string(),
-            OrderType::Limit => order.price
+            OrderType::Limit => order
+                .price
                 .map(|p| p.value().to_string())
                 .ok_or("Limit order must have price")?,
         };
@@ -204,7 +214,8 @@ impl DydxClient {
         let order_type = match order.order_type {
             OrderType::Market => "MARKET",
             OrderType::Limit => "LIMIT",
-        }.to_string();
+        }
+        .to_string();
 
         let client_id = format!("client_{}", chrono::Utc::now().timestamp_millis());
 
@@ -246,7 +257,14 @@ impl DydxClient {
     /// 3. Use the official v4-client-rs when dependency issues are resolved
     ///
     /// Current status: Orders placed through this client WILL BE REJECTED by dYdX v4 API.
-    fn create_order_hash(&self, market: &str, side: &str, size: &str, price: &str, client_id: &str) -> Result<H256, String> {
+    fn create_order_hash(
+        &self,
+        market: &str,
+        side: &str,
+        size: &str,
+        price: &str,
+        client_id: &str,
+    ) -> Result<H256, String> {
         // ⚠️ PLACEHOLDER ONLY - NOT VALID FOR dYdX v4
         let message = format!("{}:{}:{}:{}:{}", market, side, size, price, client_id);
         let hash = keccak256(message.as_bytes());
@@ -255,7 +273,8 @@ impl DydxClient {
 
     /// Sign order hash with wallet
     async fn sign_order(&self, hash: &H256) -> Result<Signature, String> {
-        self.wallet.sign_hash(*hash)
+        self.wallet
+            .sign_hash(*hash)
             .map_err(|e| format!("Failed to sign order: {}", e))
     }
 
@@ -273,7 +292,8 @@ impl DydxClient {
     pub async fn place_order(&self, order: DydxOrder) -> Result<String, String> {
         let url = format!("{}/v4/orders", self.config.api_base);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .json(&order)
             .send()
@@ -283,7 +303,10 @@ impl DydxClient {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Order placement failed: {} - {}", status, error_text));
+            return Err(format!(
+                "Order placement failed: {} - {}",
+                status, error_text
+            ));
         }
 
         let order_response: DydxOrderResponse = response
@@ -303,7 +326,8 @@ impl DydxClient {
             "order_id": order_id
         });
 
-        let response = self.client
+        let response = self
+            .client
             .delete(&url)
             .json(&cancel_payload)
             .send()
@@ -313,7 +337,10 @@ impl DydxClient {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Order cancellation failed: {} - {}", status, error_text));
+            return Err(format!(
+                "Order cancellation failed: {} - {}",
+                status, error_text
+            ));
         }
 
         info!("Order cancelled successfully: {}", order_id);
@@ -324,7 +351,8 @@ impl DydxClient {
     pub async fn get_order_status(&self, order_id: &str) -> Result<String, String> {
         let url = format!("{}/v4/orders/{}", self.config.api_base, order_id);
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .send()
             .await
@@ -336,7 +364,10 @@ impl DydxClient {
             }
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to get order status: {} - {}", status, error_text));
+            return Err(format!(
+                "Failed to get order status: {} - {}",
+                status, error_text
+            ));
         }
 
         let order_response: DydxOrderResponse = response
@@ -376,7 +407,9 @@ mod tests {
         let config = DydxConfig::default();
         let client = DydxClient::new("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", config).unwrap();
 
-        let hash = client.create_order_hash("BTC-USD", "BUY", "0.01", "50000", "client_123").unwrap();
+        let hash = client
+            .create_order_hash("BTC-USD", "BUY", "0.01", "50000", "client_123")
+            .unwrap();
         assert!(!hash.is_zero());
     }
 
@@ -392,7 +425,8 @@ mod tests {
             OrderType::Market,
             None,
             0.01,
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = client.convert_order(&order).await;
         assert!(result.is_ok());
@@ -418,7 +452,8 @@ mod tests {
             OrderType::Limit,
             Some(3000.0),
             0.5,
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = client.convert_order(&order).await;
         assert!(result.is_ok());

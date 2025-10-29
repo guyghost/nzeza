@@ -28,21 +28,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let passphrase = env::var("COINBASE_PASSPHRASE").ok();
 
     println!("✅ Credentials loaded:");
-    println!("   API Key: {}...{}", &api_key[..8.min(api_key.len())],
-             if api_key.len() > 8 { &api_key[api_key.len()-4..] } else { "" });
-    println!("   API Secret: {}...", &api_secret[..8.min(api_secret.len())]);
-    println!("   Passphrase: {}\n", if passphrase.is_some() { "Set" } else { "Not set" });
+    println!(
+        "   API Key: {}...{}",
+        &api_key[..8.min(api_key.len())],
+        if api_key.len() > 8 {
+            &api_key[api_key.len() - 4..]
+        } else {
+            ""
+        }
+    );
+    println!(
+        "   API Secret: {}...",
+        &api_secret[..8.min(api_secret.len())]
+    );
+    println!(
+        "   Passphrase: {}\n",
+        if passphrase.is_some() {
+            "Set"
+        } else {
+            "Not set"
+        }
+    );
 
     // Import after we know env is set up
     use nzeza::infrastructure::coinbase_client::CoinbaseClient;
 
     // Create client
     println!("🔌 Creating Coinbase client...");
-    let client = CoinbaseClient::new(
-        &api_key,
-        &api_secret,
-        passphrase.as_deref()
-    )?;
+    let client = CoinbaseClient::new(&api_key, &api_secret, passphrase.as_deref())?;
     println!("✅ Client created successfully\n");
 
     // Test connection by fetching accounts

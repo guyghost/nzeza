@@ -25,7 +25,11 @@ pub struct CoinbaseConfig {
 impl CoinbaseConfig {
     pub fn new(api_key: &str, api_secret: &str, passphrase: Option<&str>, sandbox: bool) -> Self {
         Self {
-            api_base: if sandbox { COINBASE_SANDBOX_BASE.to_string() } else { COINBASE_API_BASE.to_string() },
+            api_base: if sandbox {
+                COINBASE_SANDBOX_BASE.to_string()
+            } else {
+                COINBASE_API_BASE.to_string()
+            },
             api_key: api_key.to_string(),
             api_secret: api_secret.to_string(),
             passphrase: passphrase.map(|s| s.to_string()),
@@ -92,7 +96,11 @@ impl CoinbaseClient {
     }
 
     /// Create a sandbox Coinbase client for testing
-    pub fn new_sandbox(api_key: &str, api_secret: &str, passphrase: Option<&str>) -> Result<Self, String> {
+    pub fn new_sandbox(
+        api_key: &str,
+        api_secret: &str,
+        passphrase: Option<&str>,
+    ) -> Result<Self, String> {
         let config = CoinbaseConfig::new(api_key, api_secret, passphrase, true);
 
         Ok(Self {
@@ -102,7 +110,12 @@ impl CoinbaseClient {
     }
 
     /// Generate authentication headers for Coinbase API
-    fn generate_auth_headers(&self, method: &str, path: &str, body: &str) -> Result<HashMap<String, String>, String> {
+    fn generate_auth_headers(
+        &self,
+        method: &str,
+        path: &str,
+        body: &str,
+    ) -> Result<HashMap<String, String>, String> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| format!("Time error: {}", e))?
@@ -111,9 +124,9 @@ impl CoinbaseClient {
         let message = format!("{}{}{}{}", timestamp, method, path, body);
 
         // Create HMAC-SHA256 signature
+        use base64::{engine::general_purpose, Engine as _};
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
-        use base64::{Engine as _, engine::general_purpose};
 
         type HmacSha256 = Hmac<Sha256>;
         let mut mac = HmacSha256::new_from_slice(self.config.api_secret.as_bytes())
@@ -126,12 +139,12 @@ impl CoinbaseClient {
         headers.insert("CB-ACCESS-KEY".to_string(), self.config.api_key.clone());
         headers.insert("CB-ACCESS-SIGN".to_string(), signature);
         headers.insert("CB-ACCESS-TIMESTAMP".to_string(), timestamp.to_string());
-        
+
         // Only include passphrase if it exists
         if let Some(ref passphrase) = self.config.passphrase {
             headers.insert("CB-ACCESS-PASSPHRASE".to_string(), passphrase.clone());
         }
-        
+
         headers.insert("Content-Type".to_string(), "application/json".to_string());
 
         Ok(headers)
@@ -176,14 +189,16 @@ impl CoinbaseClient {
         let side = match order.side {
             OrderSide::Buy => "buy",
             OrderSide::Sell => "sell",
-        }.to_string();
+        }
+        .to_string();
 
         let size = order.quantity.value().to_string();
 
         let (order_type, price) = match order.order_type {
             OrderType::Market => ("market".to_string(), None),
             OrderType::Limit => {
-                let price_str = order.price
+                let price_str = order
+                    .price
                     .map(|p| p.value().to_string())
                     .ok_or("Limit order must have price")?;
                 ("limit".to_string(), Some(price_str))
@@ -236,7 +251,10 @@ impl CoinbaseClient {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Order placement failed: {} - {}", status, error_text));
+            return Err(format!(
+                "Order placement failed: {} - {}",
+                status, error_text
+            ));
         }
 
         let order_response: CoinbaseOrderResponse = response
@@ -268,7 +286,10 @@ impl CoinbaseClient {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Order cancellation failed: {} - {}", status, error_text));
+            return Err(format!(
+                "Order cancellation failed: {} - {}",
+                status, error_text
+            ));
         }
 
         info!("Order cancelled successfully: {}", order_id);
@@ -298,7 +319,10 @@ impl CoinbaseClient {
             }
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to get order status: {} - {}", status, error_text));
+            return Err(format!(
+                "Failed to get order status: {} - {}",
+                status, error_text
+            ));
         }
 
         let order_response: CoinbaseOrderResponse = response
@@ -409,7 +433,10 @@ mod tests {
     #[test]
     fn test_normalize_product_id() {
         let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
-        let client = CoinbaseClient { client: Client::new(), config };
+        let client = CoinbaseClient {
+            client: Client::new(),
+            config,
+        };
 
         assert_eq!(client.normalize_product_id("BTC-USD").unwrap(), "BTC-USD");
         assert_eq!(client.normalize_product_id("ETH-USD").unwrap(), "ETH-USD");
@@ -419,7 +446,10 @@ mod tests {
     #[test]
     fn test_convert_market_order() {
         let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
-        let client = CoinbaseClient { client: Client::new(), config };
+        let client = CoinbaseClient {
+            client: Client::new(),
+            config,
+        };
 
         let order = Order::new(
             "test_order".to_string(),
@@ -428,7 +458,8 @@ mod tests {
             OrderType::Market,
             None,
             0.01,
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = client.convert_order(&order);
         assert!(result.is_ok());
@@ -444,7 +475,10 @@ mod tests {
     #[test]
     fn test_convert_limit_order() {
         let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
-        let client = CoinbaseClient { client: Client::new(), config };
+        let client = CoinbaseClient {
+            client: Client::new(),
+            config,
+        };
 
         let order = Order::new(
             "test_order".to_string(),
@@ -453,7 +487,8 @@ mod tests {
             OrderType::Limit,
             Some(3000.0),
             0.5,
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = client.convert_order(&order);
         assert!(result.is_ok());
@@ -479,13 +514,19 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Limit orders must have a price"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Limit orders must have a price"));
     }
 
     #[test]
     fn test_generate_auth_headers() {
         let config = CoinbaseConfig::new("test_key", "test_secret", Some("test_passphrase"), false);
-        let client = CoinbaseClient { client: Client::new(), config };
+        let client = CoinbaseClient {
+            client: Client::new(),
+            config,
+        };
 
         let headers = client.generate_auth_headers("GET", "/test", "").unwrap();
 
@@ -496,7 +537,10 @@ mod tests {
         assert!(headers.contains_key("Content-Type"));
 
         assert_eq!(headers.get("CB-ACCESS-KEY").unwrap(), "test_key");
-        assert_eq!(headers.get("CB-ACCESS-PASSPHRASE").unwrap(), "test_passphrase");
+        assert_eq!(
+            headers.get("CB-ACCESS-PASSPHRASE").unwrap(),
+            "test_passphrase"
+        );
         assert_eq!(headers.get("Content-Type").unwrap(), "application/json");
     }
 
@@ -536,18 +580,23 @@ mod tests {
     #[test]
     fn test_normalize_product_id_unsupported() {
         let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
-        let client = CoinbaseClient { client: Client::new(), config };
+        let client = CoinbaseClient {
+            client: Client::new(),
+            config,
+        };
 
         let result = client.normalize_product_id("UNSUPPORTED");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unsupported product"));
     }
 
-
     #[test]
     fn test_convert_order_sell_side() {
         let config = CoinbaseConfig::new("key", "secret", Some("passphrase"), false);
-        let client = CoinbaseClient { client: Client::new(), config };
+        let client = CoinbaseClient {
+            client: Client::new(),
+            config,
+        };
 
         let order = Order::new(
             "test_order".to_string(),
@@ -556,7 +605,8 @@ mod tests {
             OrderType::Market,
             None,
             0.5,
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = client.convert_order(&order);
         assert!(result.is_ok());
@@ -634,8 +684,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_accounts_with_invalid_credentials() {
-        let client = CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase")).unwrap();
-        
+        let client =
+            CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase"))
+                .unwrap();
+
         // This will fail with authentication error, but tests that the method exists and can be called
         let result = client.get_accounts().await;
         assert!(result.is_err());
@@ -643,8 +695,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_place_order_with_invalid_credentials() {
-        let client = CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase")).unwrap();
-        
+        let client =
+            CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase"))
+                .unwrap();
+
         let order = CoinbaseOrder {
             product_id: "BTC-USD".to_string(),
             side: "buy".to_string(),
@@ -655,22 +709,26 @@ mod tests {
             cancel_after: None,
             post_only: Some(false),
         };
-        
+
         let result = client.place_order(order).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_cancel_order_with_invalid_credentials() {
-        let client = CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase")).unwrap();
-        
+        let client =
+            CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase"))
+                .unwrap();
+
         let result = client.cancel_order("invalid-order-id").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_get_order_status_with_invalid_credentials() {
-        let client = CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase")).unwrap();
+        let client =
+            CoinbaseClient::new("invalid_key", "invalid_secret", Some("invalid_passphrase"))
+                .unwrap();
 
         let result = client.get_order_status("invalid-order-id").await;
         assert!(result.is_err());
@@ -678,13 +736,37 @@ mod tests {
 
     #[test]
     fn test_parse_order_status() {
-        assert_eq!(CoinbaseClient::parse_order_status("pending"), OrderStatus::Pending);
-        assert_eq!(CoinbaseClient::parse_order_status("OPEN"), OrderStatus::Pending);
-        assert_eq!(CoinbaseClient::parse_order_status("active"), OrderStatus::Pending);
-        assert_eq!(CoinbaseClient::parse_order_status("filled"), OrderStatus::Filled);
-        assert_eq!(CoinbaseClient::parse_order_status("DONE"), OrderStatus::Filled);
-        assert_eq!(CoinbaseClient::parse_order_status("cancelled"), OrderStatus::Cancelled);
-        assert_eq!(CoinbaseClient::parse_order_status("rejected"), OrderStatus::Rejected);
-        assert_eq!(CoinbaseClient::parse_order_status("unknown_status"), OrderStatus::Unknown);
+        assert_eq!(
+            CoinbaseClient::parse_order_status("pending"),
+            OrderStatus::Pending
+        );
+        assert_eq!(
+            CoinbaseClient::parse_order_status("OPEN"),
+            OrderStatus::Pending
+        );
+        assert_eq!(
+            CoinbaseClient::parse_order_status("active"),
+            OrderStatus::Pending
+        );
+        assert_eq!(
+            CoinbaseClient::parse_order_status("filled"),
+            OrderStatus::Filled
+        );
+        assert_eq!(
+            CoinbaseClient::parse_order_status("DONE"),
+            OrderStatus::Filled
+        );
+        assert_eq!(
+            CoinbaseClient::parse_order_status("cancelled"),
+            OrderStatus::Cancelled
+        );
+        assert_eq!(
+            CoinbaseClient::parse_order_status("rejected"),
+            OrderStatus::Rejected
+        );
+        assert_eq!(
+            CoinbaseClient::parse_order_status("unknown_status"),
+            OrderStatus::Unknown
+        );
     }
 }

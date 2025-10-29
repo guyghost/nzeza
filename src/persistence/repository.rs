@@ -54,16 +54,14 @@ impl PositionRepository {
 
     /// Get position by ID
     pub async fn get(&self, id: &str) -> Result<Option<PositionRecord>, DatabaseError> {
-        let record = sqlx::query_as::<_, PositionRecord>(
-            "SELECT * FROM positions WHERE id = ?1"
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| {
-            error!("Failed to get position {}: {}", id, e);
-            DatabaseError::QueryError(format!("Failed to get position: {}", e))
-        })?;
+        let record = sqlx::query_as::<_, PositionRecord>("SELECT * FROM positions WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| {
+                error!("Failed to get position {}: {}", id, e);
+                DatabaseError::QueryError(format!("Failed to get position: {}", e))
+            })?;
 
         Ok(record)
     }
@@ -102,7 +100,12 @@ impl PositionRepository {
     }
 
     /// Close a position
-    pub async fn close(&self, id: &str, final_price: f64, realized_pnl: f64) -> Result<(), DatabaseError> {
+    pub async fn close(
+        &self,
+        id: &str,
+        final_price: f64,
+        realized_pnl: f64,
+    ) -> Result<(), DatabaseError> {
         let now = Utc::now();
         let rows_affected = sqlx::query(
             r#"
@@ -138,7 +141,7 @@ impl PositionRepository {
     /// Get all open positions
     pub async fn get_open_positions(&self) -> Result<Vec<PositionRecord>, DatabaseError> {
         let records = sqlx::query_as::<_, PositionRecord>(
-            "SELECT * FROM positions WHERE status = 'open' ORDER BY opened_at DESC"
+            "SELECT * FROM positions WHERE status = 'open' ORDER BY opened_at DESC",
         )
         .fetch_all(&self.pool)
         .await
@@ -153,7 +156,7 @@ impl PositionRepository {
     /// Get positions by symbol
     pub async fn get_by_symbol(&self, symbol: &str) -> Result<Vec<PositionRecord>, DatabaseError> {
         let records = sqlx::query_as::<_, PositionRecord>(
-            "SELECT * FROM positions WHERE symbol = ?1 ORDER BY opened_at DESC"
+            "SELECT * FROM positions WHERE symbol = ?1 ORDER BY opened_at DESC",
         )
         .bind(symbol)
         .fetch_all(&self.pool)
@@ -169,7 +172,7 @@ impl PositionRepository {
     /// Get open positions count by symbol
     pub async fn count_open_by_symbol(&self, symbol: &str) -> Result<i64, DatabaseError> {
         let row = sqlx::query(
-            "SELECT COUNT(*) as count FROM positions WHERE symbol = ?1 AND status = 'open'"
+            "SELECT COUNT(*) as count FROM positions WHERE symbol = ?1 AND status = 'open'",
         )
         .bind(symbol)
         .fetch_one(&self.pool)
@@ -232,24 +235,25 @@ impl TradeRepository {
 
     /// Get trade by ID
     pub async fn get(&self, id: &str) -> Result<Option<TradeRecord>, DatabaseError> {
-        let record = sqlx::query_as::<_, TradeRecord>(
-            "SELECT * FROM trades WHERE id = ?1"
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| {
-            error!("Failed to get trade {}: {}", id, e);
-            DatabaseError::QueryError(format!("Failed to get trade: {}", e))
-        })?;
+        let record = sqlx::query_as::<_, TradeRecord>("SELECT * FROM trades WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| {
+                error!("Failed to get trade {}: {}", id, e);
+                DatabaseError::QueryError(format!("Failed to get trade: {}", e))
+            })?;
 
         Ok(record)
     }
 
     /// Get trades by position ID
-    pub async fn get_by_position(&self, position_id: &str) -> Result<Vec<TradeRecord>, DatabaseError> {
+    pub async fn get_by_position(
+        &self,
+        position_id: &str,
+    ) -> Result<Vec<TradeRecord>, DatabaseError> {
         let records = sqlx::query_as::<_, TradeRecord>(
-            "SELECT * FROM trades WHERE position_id = ?1 ORDER BY executed_at DESC"
+            "SELECT * FROM trades WHERE position_id = ?1 ORDER BY executed_at DESC",
         )
         .bind(position_id)
         .fetch_all(&self.pool)
@@ -265,7 +269,7 @@ impl TradeRepository {
     /// Get recent trades (last N)
     pub async fn get_recent(&self, limit: i64) -> Result<Vec<TradeRecord>, DatabaseError> {
         let records = sqlx::query_as::<_, TradeRecord>(
-            "SELECT * FROM trades ORDER BY executed_at DESC LIMIT ?1"
+            "SELECT * FROM trades ORDER BY executed_at DESC LIMIT ?1",
         )
         .bind(limit)
         .fetch_all(&self.pool)
@@ -290,7 +294,7 @@ impl TradeRepository {
             SELECT * FROM trades
             WHERE symbol = ?1 AND executed_at >= ?2 AND executed_at <= ?3
             ORDER BY executed_at DESC
-            "#
+            "#,
         )
         .bind(symbol)
         .bind(start)
@@ -319,8 +323,9 @@ impl AuditLogRepository {
     /// Create a new audit log entry
     pub async fn create(&self, log: CreateAuditLog) -> Result<AuditLogRecord, DatabaseError> {
         let now = Utc::now();
-        let details_json = serde_json::to_string(&log.details)
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to serialize details: {}", e)))?;
+        let details_json = serde_json::to_string(&log.details).map_err(|e| {
+            DatabaseError::QueryError(format!("Failed to serialize details: {}", e))
+        })?;
 
         let record = sqlx::query_as::<_, AuditLogRecord>(
             r#"
@@ -341,14 +346,17 @@ impl AuditLogRepository {
             DatabaseError::QueryError(format!("Failed to create audit log: {}", e))
         })?;
 
-        debug!("Created audit log: {} for {}", record.event_type, record.exchange);
+        debug!(
+            "Created audit log: {} for {}",
+            record.event_type, record.exchange
+        );
         Ok(record)
     }
 
     /// Get recent audit logs
     pub async fn get_recent(&self, limit: i64) -> Result<Vec<AuditLogRecord>, DatabaseError> {
         let records = sqlx::query_as::<_, AuditLogRecord>(
-            "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?1"
+            "SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?1",
         )
         .bind(limit)
         .fetch_all(&self.pool)
@@ -362,16 +370,23 @@ impl AuditLogRepository {
     }
 
     /// Get audit logs by event type
-    pub async fn get_by_event_type(&self, event_type: &str, limit: i64) -> Result<Vec<AuditLogRecord>, DatabaseError> {
+    pub async fn get_by_event_type(
+        &self,
+        event_type: &str,
+        limit: i64,
+    ) -> Result<Vec<AuditLogRecord>, DatabaseError> {
         let records = sqlx::query_as::<_, AuditLogRecord>(
-            "SELECT * FROM audit_log WHERE event_type = ?1 ORDER BY timestamp DESC LIMIT ?2"
+            "SELECT * FROM audit_log WHERE event_type = ?1 ORDER BY timestamp DESC LIMIT ?2",
         )
         .bind(event_type)
         .bind(limit)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| {
-            error!("Failed to get audit logs for event type {}: {}", event_type, e);
+            error!(
+                "Failed to get audit logs for event type {}: {}",
+                event_type, e
+            );
             DatabaseError::QueryError(format!("Failed to get audit logs: {}", e))
         })?;
 
@@ -390,7 +405,10 @@ impl DydxOrderMetadataRepository {
     }
 
     /// Create new dYdX order metadata
-    pub async fn create(&self, metadata: CreateDydxOrderMetadata) -> Result<DydxOrderMetadataRecord, DatabaseError> {
+    pub async fn create(
+        &self,
+        metadata: CreateDydxOrderMetadata,
+    ) -> Result<DydxOrderMetadataRecord, DatabaseError> {
         let now = Utc::now();
         let record = sqlx::query_as::<_, DydxOrderMetadataRecord>(
             r#"
@@ -422,14 +440,20 @@ impl DydxOrderMetadataRepository {
             DatabaseError::QueryError(format!("Failed to create dYdX order metadata: {}", e))
         })?;
 
-        debug!("Created dYdX order metadata: {} for {}", record.order_id, record.symbol);
+        debug!(
+            "Created dYdX order metadata: {} for {}",
+            record.order_id, record.symbol
+        );
         Ok(record)
     }
 
     /// Get metadata by order ID
-    pub async fn get_by_order_id(&self, order_id: &str) -> Result<Option<DydxOrderMetadataRecord>, DatabaseError> {
+    pub async fn get_by_order_id(
+        &self,
+        order_id: &str,
+    ) -> Result<Option<DydxOrderMetadataRecord>, DatabaseError> {
         let record = sqlx::query_as::<_, DydxOrderMetadataRecord>(
-            "SELECT * FROM dydx_order_metadata WHERE order_id = ?1"
+            "SELECT * FROM dydx_order_metadata WHERE order_id = ?1",
         )
         .bind(order_id)
         .fetch_optional(&self.pool)
@@ -443,7 +467,11 @@ impl DydxOrderMetadataRepository {
     }
 
     /// Update order status to cancelled
-    pub async fn update_cancelled(&self, order_id: &str, tx_hash: &str) -> Result<(), DatabaseError> {
+    pub async fn update_cancelled(
+        &self,
+        order_id: &str,
+        tx_hash: &str,
+    ) -> Result<(), DatabaseError> {
         let now = Utc::now();
         let rows_affected = sqlx::query(
             r#"
@@ -458,7 +486,10 @@ impl DydxOrderMetadataRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            error!("Failed to update cancelled status for order {}: {}", order_id, e);
+            error!(
+                "Failed to update cancelled status for order {}: {}",
+                order_id, e
+            );
             DatabaseError::QueryError(format!("Failed to update cancelled status: {}", e))
         })?
         .rows_affected();
@@ -487,7 +518,10 @@ impl DydxOrderMetadataRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            error!("Failed to update expired status for order {}: {}", order_id, e);
+            error!(
+                "Failed to update expired status for order {}: {}",
+                order_id, e
+            );
             DatabaseError::QueryError(format!("Failed to update expired status: {}", e))
         })?
         .rows_affected();
@@ -506,7 +540,7 @@ impl DydxOrderMetadataRepository {
     /// Get active orders that may have expired
     pub async fn get_active_orders(&self) -> Result<Vec<DydxOrderMetadataRecord>, DatabaseError> {
         let records = sqlx::query_as::<_, DydxOrderMetadataRecord>(
-            "SELECT * FROM dydx_order_metadata WHERE status = 'active' ORDER BY placed_at ASC"
+            "SELECT * FROM dydx_order_metadata WHERE status = 'active' ORDER BY placed_at ASC",
         )
         .fetch_all(&self.pool)
         .await
@@ -589,20 +623,34 @@ mod tests {
         assert_eq!(created.status, "active");
 
         // Get by order ID
-        let fetched = repo.get_by_order_id("test_order_123").await.unwrap().unwrap();
+        let fetched = repo
+            .get_by_order_id("test_order_123")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(fetched.order_id, "test_order_123");
         assert_eq!(fetched.good_until_block, 1000);
 
         // Update to cancelled
-        repo.update_cancelled("test_order_123", "tx_hash_789").await.unwrap();
-        let updated = repo.get_by_order_id("test_order_123").await.unwrap().unwrap();
+        repo.update_cancelled("test_order_123", "tx_hash_789")
+            .await
+            .unwrap();
+        let updated = repo
+            .get_by_order_id("test_order_123")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.status, "cancelled");
         assert_eq!(updated.tx_hash, Some("tx_hash_789".to_string()));
         assert!(updated.cancelled_at.is_some());
 
         // Update to expired
         repo.update_expired("test_order_123").await.unwrap();
-        let expired = repo.get_by_order_id("test_order_123").await.unwrap().unwrap();
+        let expired = repo
+            .get_by_order_id("test_order_123")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(expired.status, "expired");
 
         // Get active orders
