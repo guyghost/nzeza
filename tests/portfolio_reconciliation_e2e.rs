@@ -18,12 +18,15 @@ use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
 // Import real types from domain layer
+use nzeza::application::actors::reconciliation_actor::{
+    ReconciliationActor, ReconciliationMessage,
+};
 use nzeza::domain::entities::exchange::Exchange;
 use nzeza::domain::services::portfolio_reconciliation::{
     Balance, BalanceDiscrepancy, ConcretePortfolioReconciliationService, DiscrepancySeverity,
-    ExchangeBalances, Portfolio, PortfolioReconciliationService, ReconciliationError, ReconciliationReport, ReconciliationStatus,
+    ExchangeBalances, Portfolio, PortfolioReconciliationService, ReconciliationError,
+    ReconciliationReport, ReconciliationStatus,
 };
-use nzeza::application::actors::reconciliation_actor::{ReconciliationActor, ReconciliationMessage};
 
 // Mock Exchange Client for testing
 #[derive(Clone)]
@@ -191,7 +194,11 @@ async fn test_should_fetch_multiple_currencies_from_exchange() {
     assert!(result.is_ok());
     let balances = result.unwrap();
     let all_balances = balances.all_balances();
-    assert_eq!(all_balances.len(), 2, "Should fetch 2 currencies from Coinbase");
+    assert_eq!(
+        all_balances.len(),
+        2,
+        "Should fetch 2 currencies from Coinbase"
+    );
 
     // Verify each currency is present
     let btc_balance = all_balances.iter().find(|b| b.currency == "BTC").unwrap();
@@ -222,11 +229,14 @@ async fn test_should_handle_api_errors_from_exchange() {
     let result = service.fetch_exchange_balances(&Exchange::Binance).await;
 
     // Then: Should return validation error gracefully
-    assert!(result.is_err(), "Should return error for unsupported exchange");
+    assert!(
+        result.is_err(),
+        "Should return error for unsupported exchange"
+    );
     match result.err().unwrap() {
         ReconciliationError::ValidationError(msg) => {
             assert_eq!(msg, "Unsupported exchange");
-        },
+        }
         _ => panic!("Should be ValidationError"),
     }
 }
@@ -254,7 +264,10 @@ async fn test_should_detect_missing_currency_in_exchange() {
     local_portfolio.add_balance("BTC".to_string(), 1.0);
     local_portfolio.add_balance("ETH".to_string(), 2.0);
 
-    let mut exchange_balances = nzeza::domain::services::portfolio_reconciliation::ExchangeBalances::new(Exchange::Coinbase);
+    let mut exchange_balances =
+        nzeza::domain::services::portfolio_reconciliation::ExchangeBalances::new(
+            Exchange::Coinbase,
+        );
     exchange_balances.add_balance("BTC".to_string(), 1.0);
     // ETH is missing from exchange
 
@@ -268,7 +281,7 @@ async fn test_should_detect_missing_currency_in_exchange() {
         BalanceDiscrepancy::Missing { currency, amount } => {
             assert_eq!(currency, "ETH");
             assert_eq!(*amount, 2.0);
-        },
+        }
         _ => panic!("Should detect missing currency"),
     }
 }
@@ -289,12 +302,17 @@ async fn test_should_detect_balance_mismatch_above_threshold() {
     // Then: Should detect critical mismatch (50% difference)
     assert_eq!(discrepancies.len(), 1);
     match &discrepancies[0] {
-        BalanceDiscrepancy::Mismatch { currency, local, exchange, diff } => {
+        BalanceDiscrepancy::Mismatch {
+            currency,
+            local,
+            exchange,
+            diff,
+        } => {
             assert_eq!(currency, "BTC");
             assert_eq!(*local, 1.0);
             assert_eq!(*exchange, 0.5);
             assert_eq!(*diff, 0.5);
-        },
+        }
         _ => panic!("Should detect mismatch"),
     }
 
@@ -317,11 +335,15 @@ async fn test_should_ignore_balance_mismatch_below_threshold() {
     let discrepancies = service.detect_discrepancies(&local_portfolio, &exchange_balances);
 
     // Then: Should detect the small difference (current implementation detects any diff > 0)
-    assert_eq!(discrepancies.len(), 1, "Current implementation detects any difference");
+    assert_eq!(
+        discrepancies.len(),
+        1,
+        "Current implementation detects any difference"
+    );
     match &discrepancies[0] {
         BalanceDiscrepancy::Mismatch { diff, .. } => {
             assert!((diff - 0.01).abs() < 1e-10); // Use approximate equality for floating point
-        },
+        }
         _ => panic!("Should detect mismatch"),
     }
 }
@@ -340,11 +362,15 @@ async fn test_should_handle_precision_and_rounding() {
     let discrepancies = service.detect_discrepancies(&local_portfolio, &exchange_balances);
 
     // Then: Should detect the tiny difference (basic implementation doesn't filter by precision)
-    assert_eq!(discrepancies.len(), 1, "Basic service detects any difference");
+    assert_eq!(
+        discrepancies.len(),
+        1,
+        "Basic service detects any difference"
+    );
     match &discrepancies[0] {
         BalanceDiscrepancy::Mismatch { diff, .. } => {
             assert!(*diff < 0.0000001); // Very small difference
-        },
+        }
         _ => panic!("Should detect mismatch"),
     }
 }
@@ -365,12 +391,17 @@ async fn test_should_detect_zero_value_balance_changes() {
     // Then: Should detect complete liquidation
     assert_eq!(discrepancies.len(), 1);
     match &discrepancies[0] {
-        BalanceDiscrepancy::Mismatch { currency, local, exchange, diff } => {
+        BalanceDiscrepancy::Mismatch {
+            currency,
+            local,
+            exchange,
+            diff,
+        } => {
             assert_eq!(currency, "BTC");
             assert_eq!(*local, 1.0);
             assert_eq!(*exchange, 0.0);
             assert_eq!(*diff, 1.0);
-        },
+        }
         _ => panic!("Should detect zero balance change"),
     }
 }
@@ -471,28 +502,40 @@ async fn test_should_handle_multiple_concurrent_discrepancies() {
 async fn test_should_classify_discrepancy_severity() {
     // Given: Different levels of discrepancies (using absolute diff, not percentage)
     let test_cases = vec![
-        (BalanceDiscrepancy::Mismatch {
-            currency: "BTC".to_string(),
-            local: 1.0,
-            exchange: 0.999,
-            diff: 0.001,
-        }, DiscrepancySeverity::Minor), // diff < 10 = MINOR
-        (BalanceDiscrepancy::Mismatch {
-            currency: "BTC".to_string(),
-            local: 1.0,
-            exchange: 0.9,
-            diff: 0.1,
-        }, DiscrepancySeverity::Minor), // diff < 10 = MINOR
-        (BalanceDiscrepancy::Mismatch {
-            currency: "BTC".to_string(),
-            local: 1.0,
-            exchange: 0.0,
-            diff: 1.0,
-        }, DiscrepancySeverity::Minor), // diff < 10 = MINOR
-        (BalanceDiscrepancy::Missing {
-            currency: "BTC".to_string(),
-            amount: 1.0,
-        }, DiscrepancySeverity::Critical), // Missing is always CRITICAL
+        (
+            BalanceDiscrepancy::Mismatch {
+                currency: "BTC".to_string(),
+                local: 1.0,
+                exchange: 0.999,
+                diff: 0.001,
+            },
+            DiscrepancySeverity::Minor,
+        ), // diff < 10 = MINOR
+        (
+            BalanceDiscrepancy::Mismatch {
+                currency: "BTC".to_string(),
+                local: 1.0,
+                exchange: 0.9,
+                diff: 0.1,
+            },
+            DiscrepancySeverity::Minor,
+        ), // diff < 10 = MINOR
+        (
+            BalanceDiscrepancy::Mismatch {
+                currency: "BTC".to_string(),
+                local: 1.0,
+                exchange: 0.0,
+                diff: 1.0,
+            },
+            DiscrepancySeverity::Minor,
+        ), // diff < 10 = MINOR
+        (
+            BalanceDiscrepancy::Missing {
+                currency: "BTC".to_string(),
+                amount: 1.0,
+            },
+            DiscrepancySeverity::Critical,
+        ), // Missing is always CRITICAL
     ];
 
     let service = ConcretePortfolioReconciliationService::new();
@@ -535,7 +578,7 @@ async fn test_should_handle_rate_limiting() {
     match result.err().unwrap() {
         ReconciliationError::ValidationError(msg) => {
             assert_eq!(msg, "Unsupported exchange");
-        },
+        }
         _ => panic!("Expected validation error"),
     }
 }
@@ -648,13 +691,9 @@ async fn test_concurrent_reconciliations_should_be_isolated() {
     let service1 = ConcretePortfolioReconciliationService::new();
     let service2 = ConcretePortfolioReconciliationService::new();
 
-    let task1 = tokio::spawn(async move {
-        service1.reconcile(Exchange::Coinbase).await
-    });
+    let task1 = tokio::spawn(async move { service1.reconcile(Exchange::Coinbase).await });
 
-    let task2 = tokio::spawn(async move {
-        service2.reconcile(Exchange::Dydx).await
-    });
+    let task2 = tokio::spawn(async move { service2.reconcile(Exchange::Dydx).await });
 
     // When: Running tasks concurrently
     let (result1, result2) = tokio::join!(task1, task2);
@@ -675,11 +714,20 @@ async fn test_portfolio_reconciliation_service_compilation_check() {
 
     // Expected interface validation
     let service = ConcretePortfolioReconciliationService::new();
-    let _: Result<nzeza::domain::services::portfolio_reconciliation::ExchangeBalances, ReconciliationError> = service.fetch_exchange_balances(&Exchange::Coinbase).await;
+    let _: Result<
+        nzeza::domain::services::portfolio_reconciliation::ExchangeBalances,
+        ReconciliationError,
+    > = service.fetch_exchange_balances(&Exchange::Coinbase).await;
     let local = nzeza::domain::services::portfolio_reconciliation::Portfolio::new();
-    let exchange = nzeza::domain::services::portfolio_reconciliation::ExchangeBalances::new(Exchange::Coinbase);
+    let exchange = nzeza::domain::services::portfolio_reconciliation::ExchangeBalances::new(
+        Exchange::Coinbase,
+    );
     let _: Vec<BalanceDiscrepancy> = service.detect_discrepancies(&local, &exchange);
-    let _: Result<ReconciliationReport, ReconciliationError> = service.reconcile(Exchange::Coinbase).await;
-    let discrepancy = BalanceDiscrepancy::Missing { currency: "BTC".to_string(), amount: 1.0 };
+    let _: Result<ReconciliationReport, ReconciliationError> =
+        service.reconcile(Exchange::Coinbase).await;
+    let discrepancy = BalanceDiscrepancy::Missing {
+        currency: "BTC".to_string(),
+        amount: 1.0,
+    };
     let _: DiscrepancySeverity = service.classify_discrepancy_severity(&discrepancy);
 }
