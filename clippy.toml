@@ -1,0 +1,48 @@
+# Clippy configuration
+# https://doc.rust-lang.org/clippy/
+
+# Lint groups to deny
+# These will cause compilation to fail if triggered
+deny = [
+    "clippy::all",
+    "clippy::correctness",
+    "clippy::suspicious",
+    "clippy::complexity",
+    "clippy::perf",
+    "clippy::style",
+]
+
+# Additional lints to warn on
+warn = [
+    "clippy::pedantic",
+    "clippy::nursery",
+    "clippy::cargo",
+]
+
+# Lints to allow (override defaults)
+allow = [
+    # Sometimes we want to be explicit
+    "clippy::module_name_repetitions",
+    # Not always necessary
+    "clippy::must_use_candidate",
+    # Too restrictive for practical use
+    "clippy::missing_errors_doc",
+    "clippy::missing_panics_doc",
+    # Allow wildcard imports in specific cases
+    "clippy::wildcard_imports",
+    # Allow similar names when they make sense
+    "clippy::similar_names",
+    # Allow default trait access when clearer
+    "clippy::default_trait_access",
+    # Multiple versions are sometimes unavoidable
+    "clippy::multiple_crate_versions",
+]
+
+# Specific pedantic lints to deny
+pedantic-deny = [
+    "clippy::unwrap_used",
+    "clippy::expect_used",
+    "clippy::panic",
+    "clippy::todo",
+    "clippy::unimplemented",
+]

@@ -1,0 +1,142 @@
+# Rust formatter configuration
+# https://rust-lang.github.io/rustfmt/
+
+# Edition to use
+edition = "2021"
+
+# Maximum width of each line
+max_width = 100
+
+# Number of spaces per tab
+tab_spaces = 4
+
+# Use spaces instead of tabs
+hard_tabs = false
+
+# Maximum width of the args of a function call before falling back to vertical formatting
+fn_call_width = 80
+
+# Maximum width of a chain to fit on a single line
+chain_width = 60
+
+# Maximum length of an array element before falling back to vertical formatting
+array_width = 80
+
+# Maximum width of the args of a function-like attributes before falling back to vertical formatting
+attr_fn_like_width = 80
+
+# Brace style for items
+brace_style = "SameLineWhere"
+
+# Where to put a binary operator when a binary expression goes multiline
+binop_separator = "Front"
+
+# Control brace style for control flow constructs
+control_brace_style = "AlwaysSameLine"
+
+# Indent on expressions or items
+indent_style = "Block"
+
+# Number of spaces to indent a continued line
+single_line_if_else_max_width = 50
+
+# Reorder imports
+reorder_imports = true
+
+# Reorder modules
+reorder_modules = true
+
+# Group imports
+imports_granularity = "Crate"
+
+# Reorder impl items
+reorder_impl_items = false
+
+# Use field init shorthand if possible
+use_field_init_shorthand = true
+
+# Use try shorthand
+use_try_shorthand = true
+
+# Format strings
+format_strings = true
+
+# Format code in doc comments
+format_code_in_doc_comments = true
+
+# Normalize comments
+normalize_comments = true
+
+# Normalize doc attributes
+normalize_doc_attributes = true
+
+# Wrap comments at max_width
+wrap_comments = true
+
+# Break assignments into multiple lines
+format_macro_matchers = true
+
+# Format macro bodies
+format_macro_bodies = true
+
+# Combine control expressions with function calls
+combine_control_expr = true
+
+# Overflow in literal
+overflow_delimited_expr = true
+
+# Struct literal style
+struct_lit_single_line = true
+
+# Report fixme/todo
+report_todo = "Always"
+report_fixme = "Always"
+
+# Trailing comma
+trailing_comma = "Vertical"
+
+# Match block trailing comma
+match_block_trailing_comma = true
+
+# Blank lines upper bound
+blank_lines_upper_bound = 1
+
+# Blank lines lower bound
+blank_lines_lower_bound = 0
+
+# Merge derives
+merge_derives = true
+
+# Use small heuristics
+use_small_heuristics = "Default"
+
+# Newline style
+newline_style = "Auto"
+
+# Remove nested parens
+remove_nested_parens = true
+
+# Space after colon
+space_after_colon = true
+
+# Space before colon
+space_before_colon = false
+
+# Spaces around ranges
+spaces_around_ranges = false
+
+# Type punctuation density
+type_punctuation_density = "Wide"
+
+# Unstable features
+unstable_features = false
+
+# Condense wildcard suffixes
+condense_wildcard_suffixes = true
+
+# Color output
+color = "Auto"
+
+# Required version (helps ensure all contributors use the same rustfmt version)
+# Uncomment and update as needed
+# required_version = "1.7.0"

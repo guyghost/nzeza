@@ -1,0 +1,25 @@
+# CODEOWNERS file
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+* @guyghost
+
+# CI/CD workflows
+/.github/ @guyghost
+
+# Documentation
+/docs/ @guyghost
+*.md @guyghost
+
+# Configuration files
+*.toml @guyghost
+*.yml @guyghost
+*.yaml @guyghost
+
+# Security-sensitive files
+/src/auth.rs @guyghost
+/src/persistence/ @guyghost
+
+# Exchange integrations
+/src/infrastructure/websocket/ @guyghost
+/src/application/exchanges/ @guyghost
