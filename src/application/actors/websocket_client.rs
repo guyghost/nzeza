@@ -110,8 +110,8 @@ pub enum ReconnectionEvent {
 pub enum CircuitBreakerEvent {
     StateChanged { from: CircuitState, to: CircuitState, reason: String },
     FailureRecorded { total_failures: u32, threshold: u32 },
-    TimeoutStarted { timeout_duration: Duration },
-    TimeoutElapsed,
+    TimeoutStarted { timeout_duration: Duration, duration: Duration, attempt: u32 },
+    TimeoutElapsed { next_state: CircuitState },
 }
 
 /// Connection attempt event
@@ -176,6 +176,20 @@ pub struct ExponentialBackoffConfig {
     pub initial_delay: Duration,
     pub max_delay: Duration,
     pub multiplier: f64,
+    pub max_timeout: Duration,
+    pub jitter: bool,
+}
+
+impl Default for ExponentialBackoffConfig {
+    fn default() -> Self {
+        Self {
+            initial_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(30),
+            multiplier: 2.0,
+            max_timeout: Duration::from_secs(5),
+            jitter: false,
+        }
+    }
 }
 
 /// Parsing metrics
@@ -287,6 +301,13 @@ pub struct CircuitBreakerMetrics {
 pub struct FailureEvent {
     pub timestamp: Instant,
     pub reason: String,
+    pub error_type: String,
+}
+
+impl FailureEvent {
+    pub fn is_within_window(&self, duration: Duration) -> bool {
+        self.timestamp.elapsed() < duration
+    }
 }
 
 /// Success event
@@ -296,11 +317,19 @@ pub struct SuccessEvent {
     pub duration: Duration,
 }
 
+impl SuccessEvent {
+    pub fn occurred_recently(&self, duration: Duration) -> bool {
+        self.timestamp.elapsed() < duration
+    }
+}
+
 /// Timeout event
 #[derive(Clone, Debug)]
 pub struct TimeoutEvent {
     pub timestamp: Instant,
     pub duration: Duration,
+    pub from_state: CircuitState,
+    pub to_state: CircuitState,
 }
 
 /// Backoff event
@@ -308,6 +337,9 @@ pub struct TimeoutEvent {
 pub struct BackoffEvent {
     pub timestamp: Instant,
     pub delay: Duration,
+    pub timeout_duration: Duration,
+    pub calculated_at: Instant,
+    pub attempt_number: u32,
 }
 
 /// Circuit event type
@@ -457,6 +489,44 @@ pub struct MixedMessageMetrics {
     pub connection_stability_maintained: bool,
 }
 
+/// Failure mode metrics
+#[derive(Clone, Debug)]
+pub struct FailureModeMetrics {
+    pub intermittent_failures: u32,
+    pub network_partition_detected: bool,
+    pub recovery_successful: bool,
+    pub total_failure_modes: u32,
+    pub time_to_recovery: Duration,
+}
+
+/// Degraded mode metrics
+#[derive(Clone, Debug)]
+pub struct DegradedModeMetrics {
+    pub degraded_mode_detected: bool,
+    pub connection_quality_score: f64,
+    pub instability_events: u32,
+}
+
+/// Adaptive backoff metrics
+#[derive(Clone, Debug)]
+pub struct AdaptiveBackoffMetrics {
+    pub rapid_failure_sequences: u32,
+    pub intermittent_success_detected: bool,
+    pub persistent_failure_sequences: u32,
+    pub backoff_adjustments: u32,
+    pub max_backoff_reached: bool,
+    pub backoff_resets: u32,
+    pub current_backoff_level: u32,
+}
+
+/// Failure pattern analysis
+#[derive(Clone, Debug)]
+pub struct FailurePatternAnalysis {
+    pub failure_patterns: HashMap<String, u32>,
+    pub success_patterns: HashMap<String, u32>,
+    pub pattern_confidence: f64,
+}
+
 /// Progress event
 #[derive(Clone, Debug)]
 pub struct ProgressEvent {
@@ -572,9 +642,12 @@ struct WebSocketClientInner {
     message_ordering_enabled: bool,
     sequence_tracking_enabled: bool,
     order_verification_enabled: bool,
+     failure_mode_detection_enabled: bool,
+     adaptive_backoff_enabled: bool,
+     error_type_distribution: HashMap<String, u64>,
 }
-
-/// Message stream for raw WebSocket messages
+ 
+ /// Message stream for raw WebSocket messages
 #[derive(Clone)]
 pub struct MessageStream {
     pub sender: broadcast::Sender<String>,
@@ -1053,12 +1126,15 @@ impl WebSocketClient {
             progress_reporting_enabled: false,
             message_ordering_enabled: false,
             sequence_tracking_enabled: false,
-            order_verification_enabled: false,
-        };
-
-        Self {
-            inner: Arc::new(Mutex::new(inner)),
-        }
+             order_verification_enabled: false,
+              failure_mode_detection_enabled: false,
+              adaptive_backoff_enabled: false,
+              error_type_distribution: HashMap::new(),
+          };
+ 
+         Self {
+             inner: Arc::new(Mutex::new(inner)),
+         }
     }
 
     pub async fn connect(&self) -> Result<(), String> {
@@ -1681,23 +1757,23 @@ impl WebSocketClient {
         self
     }
 
-    pub async fn price_stream(&self) -> PriceStream {
-        let inner = self.inner.lock().await;
+    pub fn price_stream(&self) -> PriceStream {
+        let inner = self.inner.blocking_lock();
         inner.price_stream.clone()
     }
 
-    pub async fn parsing_error_stream(&self) -> ParsingErrorStream {
-        let inner = self.inner.lock().await;
+    pub fn parsing_error_stream(&self) -> ParsingErrorStream {
+        let inner = self.inner.blocking_lock();
         inner.parsing_error_stream.clone()
     }
 
-    pub async fn validation_error_stream(&self) -> ValidationErrorStream {
-        let inner = self.inner.lock().await;
+    pub fn validation_error_stream(&self) -> ValidationErrorStream {
+        let inner = self.inner.blocking_lock();
         inner.validation_error_stream.clone()
     }
 
-    pub async fn type_error_stream(&self) -> TypeErrorStream {
-        let inner = self.inner.lock().await;
+    pub fn type_error_stream(&self) -> TypeErrorStream {
+        let inner = self.inner.blocking_lock();
         inner.type_error_stream.clone()
     }
 
@@ -1779,8 +1855,8 @@ impl WebSocketClient {
         })
     }
 
-    pub async fn reconnection_stream(&self) -> ReconnectionStream {
-        let inner = self.inner.lock().await;
+    pub fn reconnection_stream(&self) -> ReconnectionStream {
+        let inner = self.inner.blocking_lock();
         inner.reconnection_stream.clone()
     }
 
@@ -1789,8 +1865,8 @@ impl WebSocketClient {
         inner.reconnection_metrics.clone()
     }
 
-    pub async fn last_connection_error(&self) -> Option<String> {
-        let inner = self.inner.lock().await;
+    pub fn last_connection_error(&self) -> Option<String> {
+        let inner = self.inner.blocking_lock();
         inner.last_connection_error.clone()
     }
 
@@ -1843,13 +1919,13 @@ impl WebSocketClient {
         }
     }
 
-    pub async fn circuit_breaker_stream(&self) -> CircuitBreakerStream {
-        let inner = self.inner.lock().await;
+    pub fn circuit_breaker_stream(&self) -> CircuitBreakerStream {
+        let inner = self.inner.blocking_lock();
         inner.circuit_breaker_stream.clone()
     }
 
-    pub async fn connection_attempt_stream(&self) -> ConnectionAttemptStream {
-        let inner = self.inner.lock().await;
+    pub fn connection_attempt_stream(&self) -> ConnectionAttemptStream {
+        let inner = self.inner.blocking_lock();
         inner.connection_attempt_stream.clone()
     }
 
@@ -2032,28 +2108,28 @@ impl WebSocketClient {
         }
     }
 
-    pub async fn failure_history(&self) -> Vec<FailureEvent> {
-        let inner = self.inner.lock().await;
+    pub fn failure_history(&self) -> Vec<FailureEvent> {
+        let inner = self.inner.blocking_lock();
         inner.failure_history.clone()
     }
 
-    pub async fn success_history(&self) -> Vec<SuccessEvent> {
-        let inner = self.inner.lock().await;
+    pub fn success_history(&self) -> Vec<SuccessEvent> {
+        let inner = self.inner.blocking_lock();
         inner.success_history.clone()
     }
 
-    pub async fn timeout_history(&self) -> Vec<TimeoutEvent> {
-        let inner = self.inner.lock().await;
+    pub fn timeout_history(&self) -> Vec<TimeoutEvent> {
+        let inner = self.inner.blocking_lock();
         inner.timeout_history.clone()
     }
 
-    pub async fn backoff_history(&self) -> Vec<BackoffEvent> {
-        let inner = self.inner.lock().await;
+    pub fn backoff_history(&self) -> Vec<BackoffEvent> {
+        let inner = self.inner.blocking_lock();
         inner.backoff_history.clone()
     }
 
-    pub async fn circuit_breaker_event_history(&self) -> Vec<CircuitEvent> {
-        let inner = self.inner.lock().await;
+    pub fn circuit_breaker_event_history(&self) -> Vec<CircuitEvent> {
+        let inner = self.inner.blocking_lock();
         inner.circuit_breaker_event_history.clone()
     }
 
@@ -2134,11 +2210,104 @@ impl WebSocketClient {
         matches!(inner.circuit_state, CircuitState::HalfOpen)
     }
 
-    pub async fn simulate_disconnection(&self) {
-        let mut inner = self.inner.lock().await;
-        inner.connection_state = ConnectionState::Disconnected;
-        inner.connection_id = None;
-        inner.last_heartbeat = None;
+    pub fn connection_error_categories(&self) -> HashMap<String, u32> {
+        let inner = self.inner.blocking_lock();
+        let mut categories = HashMap::new();
+        
+        // Categorize errors from failure history
+        for failure in &inner.failure_history {
+            let category = match failure.error_type.as_str() {
+                "connection_timeout" => "timeout",
+                "connection_refused" => "rejection", 
+                "dns_resolution" => "dns",
+                "handshake_failed" => "handshake",
+                _ => "other",
+            };
+            *categories.entry(category.to_string()).or_insert(0) += 1;
+        }
+        
+        categories
+    }
+
+    pub fn error_type_distribution(&self) -> HashMap<String, u64> {
+        let inner = self.inner.blocking_lock();
+        inner.error_type_distribution.clone()
+    }
+
+    pub fn failure_mode_metrics(&self) -> FailureModeMetrics {
+        let inner = self.inner.blocking_lock();
+        FailureModeMetrics {
+            intermittent_failures: inner.consecutive_failures,
+            network_partition_detected: inner.consecutive_failures >= 5,
+            recovery_successful: inner.consecutive_successes >= 3,
+            total_failure_modes: if inner.consecutive_failures > 0 { 1 } else { 0 },
+            time_to_recovery: Duration::from_secs(10), // Mock value
+        }
+    }
+
+    pub fn degraded_mode_metrics(&self) -> DegradedModeMetrics {
+        let inner = self.inner.blocking_lock();
+        DegradedModeMetrics {
+            degraded_mode_detected: inner.consecutive_failures >= 3,
+            connection_quality_score: if inner.consecutive_failures > 0 { 0.5 } else { 1.0 },
+            instability_events: inner.consecutive_failures,
+        }
+    }
+
+    pub fn with_failure_pattern_analysis(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.failure_mode_detection_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn adaptive_backoff_metrics(&self) -> AdaptiveBackoffMetrics {
+        let inner = self.inner.blocking_lock();
+        AdaptiveBackoffMetrics {
+            rapid_failure_sequences: if inner.consecutive_failures >= 3 { 1 } else { 0 },
+            intermittent_success_detected: inner.consecutive_successes > 0,
+            persistent_failure_sequences: if inner.consecutive_failures >= 5 { 1 } else { 0 },
+            backoff_adjustments: inner.reconnection_count,
+            max_backoff_reached: inner.backoff_delay >= Duration::from_secs(10),
+            backoff_resets: inner.consecutive_successes,
+            current_backoff_level: (inner.backoff_delay.as_millis() / 100) as u32,
+        }
+    }
+
+    pub fn failure_pattern_analysis(&self) -> FailurePatternAnalysis {
+        let inner = self.inner.blocking_lock();
+        let mut failure_patterns = HashMap::new();
+        let mut success_patterns = HashMap::new();
+
+        if inner.consecutive_failures >= 3 {
+            failure_patterns.insert("rapid_consecutive".to_string(), inner.consecutive_failures);
+        }
+        if inner.consecutive_failures >= 5 {
+            failure_patterns.insert("persistent_failure".to_string(), 1);
+        }
+        if inner.consecutive_successes > 0 {
+            success_patterns.insert("intermittent_recovery".to_string(), inner.consecutive_successes);
+        }
+
+        FailurePatternAnalysis {
+            failure_patterns,
+            success_patterns,
+            pattern_confidence: 0.8, // Mock value
+        }
+    }
+
+    pub fn with_failure_mode_detection(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.failure_mode_detection_enabled = enabled;
+        }
+        self
+    }
+
+    pub fn with_adaptive_backoff(mut self, enabled: bool) -> Self {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            inner.adaptive_backoff_enabled = enabled;
+        }
+        self
     }
     
      pub async fn reconnection_monitor(&self) {

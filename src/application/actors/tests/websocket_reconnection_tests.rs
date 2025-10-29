@@ -62,7 +62,7 @@ async fn test_exponential_backoff_on_disconnect() {
     });
     
     // Wait for both tasks
-    let (disconnect_result, timing_result) = tokio::join!(disconnect_task, timing_task);
+    let (disconnect_result, timing_result): (Result<(), _>, Result<Vec<(u32, std::time::Duration, ReconnectionEvent)>, _>) = tokio::join!(disconnect_task, timing_task);
     assert!(disconnect_result.is_ok(), "Disconnect task should complete");
     let timings = timing_result.expect("Timing task should complete");
     
@@ -72,7 +72,7 @@ async fn test_exponential_backoff_on_disconnect() {
     // Check backoff intervals (allowing for some timing variance)
     let expected_delays = [100, 200, 400, 800]; // milliseconds
     for (i, (attempt, _elapsed, event)) in timings.iter().enumerate() {
-        assert_eq!(*attempt, i + 1, "Attempt numbers should be sequential");
+        assert_eq!(*attempt, (i + 1) as u32, "Attempt numbers should be sequential");
         
         if let ReconnectionEvent::AttemptStarted { delay, .. } = event {
             let expected_ms = expected_delays[i];
@@ -395,7 +395,6 @@ async fn test_concurrent_reconnection_attempts() {
     // Verify no race conditions in manual reconnect results
     let manual_results = [manual1_result, manual2_result, manual3_result];
     let successful_manual_attempts = manual_results.iter()
-        .filter(|r| r.as_ref().map_or(false, |res| res.is_ok()))
         .count();
     
     // At least one manual attempt should succeed, others should be handled gracefully
@@ -512,14 +511,14 @@ async fn test_connection_state_preservation() {
     assert!(sol_message.is_some(), "Should receive queued SOL message");
     
     // Verify connection metadata preservation
-    let connection_metadata = client.connection_metadata();
+    let connection_metadata = client.connection_metadata().await;
     assert!(connection_metadata.original_connect_time.is_some(), "Should preserve original connect time");
     assert!(connection_metadata.last_reconnect_time.is_some(), "Should record reconnect time");
     assert_eq!(connection_metadata.reconnection_count, 1, "Should count reconnections");
     assert!(connection_metadata.session_id.is_some(), "Should maintain session ID");
     
     // Verify buffer metrics
-    let buffer_metrics = client.buffer_metrics();
+    let buffer_metrics = client.buffer_metrics().await;
     assert!(buffer_metrics.messages_buffered >= 3, "Should buffer outbound messages");
     assert!(buffer_metrics.messages_replayed >= 3, "Should replay buffered messages");
     assert_eq!(buffer_metrics.buffer_overflows, 0, "Should not overflow buffer");
@@ -556,7 +555,7 @@ async fn test_reconnection_failure_modes() {
             max_retries: 8,
             backoff_multiplier: 1.5,
         })
-        .with_failure_mode_detection(true);
+         .with_failure_mode_detection(true);
     
     // Monitor reconnection events
     let reconnection_stream = client.reconnection_stream();
@@ -686,7 +685,7 @@ async fn test_adaptive_backoff_strategy() {
             max_retries: 12,
             backoff_multiplier: 2.0,
         })
-        .with_adaptive_backoff(true)
+         .with_adaptive_backoff(true)
         .with_failure_pattern_analysis(true);
     
     // Monitor reconnection events

@@ -98,8 +98,8 @@ async fn test_circuit_opens_after_threshold() {
     
     // Verify circuit breaker metrics
     let circuit_metrics = client.circuit_breaker_metrics();
-    assert_eq!(circuit_metrics.total_failures, failure_count);
-    assert_eq!(circuit_metrics.consecutive_failures, failure_count);
+    assert_eq!(circuit_metrics.total_failures, failure_count as u64);
+    assert_eq!(circuit_metrics.consecutive_failures, failure_count as u64);
     assert_eq!(circuit_metrics.state_transitions, 1); // Closed -> Open
     assert_eq!(circuit_metrics.current_state, CircuitState::Open);
     assert!(circuit_metrics.time_in_current_state >= Duration::from_millis(100));
@@ -190,7 +190,7 @@ async fn test_circuit_half_open_after_timeout() {
     assert!(elapsed <= Duration::from_millis(1000), "Should not wait too much longer");
     
     // Verify half-open state behavior
-    assert!(client.is_circuit_half_open(), "Should be in half-open state");
+    assert!(client.is_circuit_half_open().await, "Should be in half-open state");
     assert!(!client.is_circuit_open(), "Should not be in open state");
     assert!(!client.is_circuit_closed(), "Should not be in closed state");
     
@@ -331,7 +331,7 @@ async fn test_circuit_closes_on_success() {
     // Verify circuit state properties
     assert!(client.is_circuit_closed(), "Should be in closed state");
     assert!(!client.is_circuit_open(), "Should not be in open state");
-    assert!(!client.is_circuit_half_open(), "Should not be in half-open state");
+    assert!(!client.is_circuit_half_open().await, "Should not be in half-open state");
     
     // Verify normal operation resumes
     let normal_connection = client.connect().await;
@@ -388,6 +388,7 @@ async fn test_exponential_backoff_during_open() {
             multiplier: 2.0,
             max_timeout: Duration::from_secs(5),
             jitter: false, // Disable jitter for predictable testing
+            ..Default::default()
         });
     
     // Monitor circuit breaker events
@@ -427,7 +428,7 @@ async fn test_exponential_backoff_during_open() {
             if let Ok(event) = timeout(Duration::from_millis(100), circuit_receiver.recv()).await {
                 if let Ok(event) = event {
                     match event {
-                        CircuitBreakerEvent::TimeoutStarted { duration, attempt } => {
+                        CircuitBreakerEvent::TimeoutStarted { timeout_duration, duration, attempt } => {
                             timeout_durations.push((attempt, duration));
                             info!("Timeout attempt {}: {:?}", attempt, duration);
                         }
@@ -501,7 +502,7 @@ async fn test_exponential_backoff_during_open() {
     for (i, backoff_event) in backoff_history.iter().enumerate() {
         assert_eq!(backoff_event.attempt_number, (i + 1) as u32);
         assert!(backoff_event.timeout_duration >= Duration::from_millis(100));
-        assert!(backoff_event.calculated_at.is_some());
+        assert!(backoff_event.calculated_at <= Instant::now());
         
         if i > 0 {
             let prev_duration = backoff_history[i-1].timeout_duration;
@@ -681,13 +682,13 @@ async fn test_circuit_metrics_collection() {
     assert!(successes >= 2, "Should have at least 2 success events");
     
     // Verify metrics export capability
-    let metrics_json = client.export_metrics_as_json();
+    let metrics_json = client.export_metrics_as_json().await;
     assert!(!metrics_json.is_empty(), "Should export metrics as JSON");
     assert!(metrics_json.contains("current_state"), "Should include state info");
     assert!(metrics_json.contains("total_failures"), "Should include failure count");
     assert!(metrics_json.contains("total_successes"), "Should include success count");
     
-    let metrics_prometheus = client.export_metrics_as_prometheus();
+    let metrics_prometheus = client.export_metrics_as_prometheus().await;
     assert!(!metrics_prometheus.is_empty(), "Should export metrics in Prometheus format");
     assert!(metrics_prometheus.contains("circuit_breaker_state"), "Should include Prometheus metrics");
     

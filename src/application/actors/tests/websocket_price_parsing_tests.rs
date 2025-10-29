@@ -26,7 +26,7 @@ async fn test_valid_price_message_parsing() {
     client.connect().await.expect("Connection should succeed");
     
     // Set up price message listener
-    let price_stream = client.price_stream().await;
+    let price_stream = client.price_stream();
     let mut price_receiver = price_stream.subscribe();
     
     // Test various valid price message formats
@@ -163,10 +163,10 @@ async fn test_malformed_json_handling() {
     client.connect().await.expect("Connection should succeed");
     
     // Set up listeners
-    let price_stream = client.price_stream().await;
+    let price_stream = client.price_stream();
     let mut price_receiver = price_stream.subscribe();
     
-    let error_stream = client.parsing_error_stream().await;
+    let error_stream = client.parsing_error_stream();
     let mut error_receiver = error_stream.subscribe();
     
     // Send malformed JSON messages
@@ -275,10 +275,10 @@ async fn test_missing_required_fields() {
     client.connect().await.expect("Connection should succeed");
     
     // Set up listeners
-    let price_stream = client.price_stream().await;
+    let price_stream = client.price_stream();
     let mut price_receiver = price_stream.subscribe();
     
-    let validation_error_stream = client.validation_error_stream().await;
+    let validation_error_stream = client.validation_error_stream();
     let mut validation_error_receiver = validation_error_stream.subscribe();
     
     // Test messages with missing required fields
@@ -435,10 +435,10 @@ async fn test_price_type_validation() {
     client.connect().await.expect("Connection should succeed");
     
     // Set up listeners
-    let price_stream = client.price_stream().await;
+    let price_stream = client.price_stream();
     let mut price_receiver = price_stream.subscribe();
     
-    let type_error_stream = client.type_error_stream().await;
+    let type_error_stream = client.type_error_stream();
     let mut type_error_receiver = type_error_stream.subscribe();
     
     // Test various price types
@@ -622,7 +622,7 @@ async fn test_decimal_precision_preservation() {
     client.connect().await.expect("Connection should succeed");
     
     // Set up price listener
-    let price_stream = client.price_stream().await;
+    let price_stream = client.price_stream();
     let mut price_receiver = price_stream.subscribe();
     
     // Test high precision prices

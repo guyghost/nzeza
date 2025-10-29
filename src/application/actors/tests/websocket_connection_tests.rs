@@ -211,7 +211,7 @@ async fn test_websocket_auth_validation() {
     // Test auth token refresh
     let new_token = "refreshed_token_xyz789";
     client_good_auth.refresh_token(new_token).await;
-    assert_eq!(client_good_auth.current_token(), Some(new_token));
+    assert_eq!(client_good_auth.current_token(), Some(new_token.to_string()));
     
     // Clean up
     client_good_auth.disconnect().await;
@@ -318,7 +318,7 @@ async fn test_connection_timeout_handling() {
     // Verify connection state
     assert_eq!(client.connection_state(), ConnectionState::Disconnected);
     assert!(!client.is_connected(), "Should not be connected after timeout");
-    assert!(client.last_connection_error.is_some(), "Should have connection error");
+    assert!(client.last_connection_error().is_some(), "Should have connection error");
     
     // Verify timeout metrics
     let timeout_metrics = client.timeout_metrics();
@@ -1204,7 +1204,7 @@ async fn test_message_ordering_preservation() {
     
     // Verify ordering metrics
     let ordering_metrics = client.message_ordering_metrics();
-    assert_eq!(ordering_metrics.total_messages_processed, message_count + 8 + burst_size);
+    assert_eq!(ordering_metrics.total_messages_processed, (message_count + 8 + burst_size) as u64);
     assert_eq!(ordering_metrics.sequence_violations, 0); // No reordering should occur
     assert_eq!(ordering_metrics.gap_detections, 2); // Missing sequences 3 and 6
     assert!(ordering_metrics.ordering_preserved_percentage >= 95.0);
@@ -1262,7 +1262,7 @@ async fn test_message_ordering_preservation() {
     
     // Final ordering metrics
     let final_metrics = client.message_ordering_metrics();
-    assert!(final_metrics.total_messages_processed >= message_count + 8 + burst_size + (concurrent_senders * messages_per_sender));
+    assert!(final_metrics.total_messages_processed >= (message_count + 8 + burst_size + (concurrent_senders * messages_per_sender)) as u64);
     assert!(final_metrics.concurrent_sender_ordering_maintained);
     assert_eq!(final_metrics.ordering_algorithm, "fifo_with_sequence_tracking");
     
