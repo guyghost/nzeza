@@ -5,6 +5,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
+use tracing;
 
 use crate::domain::entities::exchange::Exchange;
 use crate::domain::entities::order::{Order, OrderSide, OrderType};
@@ -631,6 +632,160 @@ impl OrderExecutor {
     /// Set portfolio value (for testing)
     pub fn set_portfolio_value(&mut self, value: f64) {
         self.portfolio_value = value;
+    }
+
+    /// Execute a trading signal with integrated balance and leverage checks
+    ///
+    /// This is the main async entry point for signal execution that:
+    /// 1. Fetches current balance via BalanceManager
+    /// 2. Calculates available leverage via LeverageCalculator
+    /// 3. Sizes position using PositionSizer
+    /// 4. Places order with exchange client
+    ///
+    /// # Arguments
+    /// * `symbol` - The trading symbol (e.g., "BTC-USD")
+    /// * `signal` - The trading signal with confidence level
+    /// * `current_price` - Current market price of the asset
+    ///
+    /// # Returns
+    /// Ok(String) with order ID if successful, Err(String) with error message otherwise
+    pub async fn execute_signal_with_balance_and_leverage_check(
+        &mut self,
+        symbol: &str,
+        signal: &TradingSignal,
+        current_price: f64,
+    ) -> Result<String, String> {
+        // Validate signal
+        self.validate_signal(symbol, signal)?;
+
+        // Handle HOLD signals
+        if signal.signal == Signal::Hold {
+            self.cache_signal(symbol, signal.clone());
+            return Ok("No order executed - signal is HOLD".to_string());
+        }
+
+        // Check if managers are configured
+        let balance_manager = self
+            .balance_manager
+            .as_ref()
+            .ok_or("BalanceManager not configured")?;
+        let leverage_calculator = self
+            .leverage_calculator
+            .as_ref()
+            .ok_or("LeverageCalculator not configured")?;
+
+        // Fetch current balance asynchronously
+        let balance_info = balance_manager
+            .get_balance()
+            .await
+            .map_err(|e| format!("Failed to fetch balance: {}", e))?;
+
+        // Validate sufficient balance
+        let required_order_value = self.portfolio_value * self.config.portfolio_percentage;
+        if balance_info.available_balance < required_order_value {
+            return Err(format!(
+                "Insufficient balance: required {:.2}, available {:.2}",
+                required_order_value, balance_info.available_balance
+            ));
+        }
+
+        // Calculate available leverage
+        let max_leverage = 10.0; // Default max leverage (can be configurable)
+        let current_leverage = 1.0; // Default current leverage (can be calculated from positions)
+        let available_leverage =
+            leverage_calculator.calculate_available_leverage(max_leverage, current_leverage);
+
+        // Validate sufficient leverage
+        let required_leverage = 2.0; // Default required leverage (can be configurable)
+        if available_leverage < required_leverage {
+            return Err(format!(
+                "Insufficient leverage: required {:.2}, available {:.2}",
+                required_leverage, available_leverage
+            ));
+        }
+
+        // Create position sizing request
+        let sizing_request = PositionSizingRequest::new(
+            symbol.to_string(),
+            balance_info.available_balance,
+            available_leverage,
+            current_price,
+            self.config.portfolio_percentage,
+            100.0, // min_order_size: $100
+            self.portfolio_value, // max_order_size: portfolio value
+        )
+        .map_err(|e| format!("Invalid position sizing request: {}", e))?;
+
+        // Calculate position size
+        let sizing_result = self
+            .position_sizer
+            .size_position(&sizing_request)
+            .map_err(|e| format!("Position sizing failed: {}", e))?;
+
+        // Check if position was sized
+        if sizing_result.quantity <= 0.0 {
+            return Err(format!(
+                "Position sizing resulted in zero quantity: {}",
+                sizing_result.reason
+            ));
+        }
+
+        // Check minimum quantity
+        if sizing_result.quantity < self.config.min_quantity {
+            return Err(format!(
+                "Position size {:.8} is below minimum quantity {:.8}",
+                sizing_result.quantity, self.config.min_quantity
+            ));
+        }
+
+        // Record the execution attempt
+        let start_time = SystemTime::now();
+
+        // Execute the order with calculated quantity
+        let result = self.execute_single_order_sync(symbol, signal, sizing_result.quantity, current_price);
+
+        // Record metrics
+        let elapsed_ms = start_time.elapsed().unwrap_or_default().as_millis() as f64;
+        
+        match &result {
+            Ok(order_id) => {
+                self.record_trade(symbol);
+                self.cache_signal(symbol, signal.clone());
+
+                let signal_str = match signal.signal {
+                    Signal::Buy => "BUY",
+                    Signal::Sell => "SELL",
+                    Signal::Hold => "HOLD",
+                };
+
+                tracing::info!(
+                    "Signal executed successfully: {} {} quantity={:.8} order_id={} confidence={:.2} time_ms={:.2}",
+                    signal_str,
+                    symbol,
+                    sizing_result.quantity,
+                    order_id,
+                    signal.confidence,
+                    elapsed_ms
+                );
+
+                Ok(order_id.clone())
+            }
+            Err(error) => {
+                if self.is_permanent_error(error) {
+                    self.signal_cache.remove(symbol);
+                }
+
+                tracing::error!(
+                    "Signal execution failed: {} {:?} error={} time_ms={:.2}",
+                    symbol,
+                    signal.signal,
+                    error,
+                    elapsed_ms
+                );
+
+                Err(error.clone())
+            }
+        }
     }
 }
 
