@@ -35,9 +35,12 @@ Serveur MPC (Multi-Party Computation) connecté à plusieurs échanges de crypto
 ## 🔧 Installation
 
 ```bash
-# Cloner le repository
-git clone https://github.com/guyghost/nzeza.git
+# Cloner le repository avec les sous-modules
+git clone --recursive https://github.com/guyghost/nzeza.git
 cd nzeza
+
+# Ou si déjà cloné sans --recursive, initialiser les sous-modules
+git submodule update --init --recursive
 
 # Installer les dépendances
 cargo build
