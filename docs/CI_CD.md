@@ -4,7 +4,7 @@
 
 Ce projet utilise GitHub Actions pour l'intégration continue et le déploiement continu (CI/CD), suivant les meilleures pratiques pour les projets Rust.
 
-**Note importante:** Le projet utilise des sous-modules Git (git submodules) pour certaines dépendances comme `dydx-clients`. Tous les workflows incluent automatiquement `submodules: recursive` dans l'étape de checkout pour garantir que les dépendances sont correctement récupérées.
+**Note importante:** Le projet utilise des sous-modules Git (git submodules) pour certaines dépendances comme `dydx-clients`. Le fichier `.gitmodules` configure le sous-module pour pointer vers `https://github.com/dydxprotocol/v4-clients.git`. Tous les workflows incluent automatiquement `submodules: recursive` dans l'étape de checkout pour garantir que les dépendances sont correctement récupérées.
 
 ## Workflows
 

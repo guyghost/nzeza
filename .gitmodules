@@ -1,0 +1,3 @@
+[submodule "dydx-clients"]
+	path = dydx-clients
+	url = https://github.com/dydxprotocol/v4-clients.git
