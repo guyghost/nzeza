@@ -634,6 +634,101 @@ impl OrderExecutor {
         self.portfolio_value = value;
     }
 
+    /// Helper: Convert Signal enum to string representation
+    fn signal_to_string(signal: &Signal) -> &'static str {
+        match signal {
+            Signal::Buy => "BUY",
+            Signal::Sell => "SELL",
+            Signal::Hold => "HOLD",
+        }
+    }
+
+    /// Helper: Get balance and leverage managers (ensures both are configured)
+    fn get_required_managers(
+        &self,
+    ) -> Result<(&Arc<BalanceManager>, &Arc<LeverageCalculator>), String> {
+        let balance_manager = self
+            .balance_manager
+            .as_ref()
+            .ok_or("BalanceManager not configured")?;
+        let leverage_calculator = self
+            .leverage_calculator
+            .as_ref()
+            .ok_or("LeverageCalculator not configured")?;
+        Ok((balance_manager, leverage_calculator))
+    }
+
+    /// Helper: Validate balance is sufficient for the order
+    fn validate_balance_sufficient(
+        available_balance: f64,
+        required_order_value: f64,
+    ) -> Result<(), String> {
+        if available_balance < required_order_value {
+            return Err(format!(
+                "Insufficient balance: required {:.2}, available {:.2}",
+                required_order_value, available_balance
+            ));
+        }
+        Ok(())
+    }
+
+    /// Helper: Validate leverage is sufficient for the order
+    fn validate_leverage_sufficient(
+        available_leverage: f64,
+        required_leverage: f64,
+    ) -> Result<(), String> {
+        if available_leverage < required_leverage {
+            return Err(format!(
+                "Insufficient leverage: required {:.2}, available {:.2}",
+                required_leverage, available_leverage
+            ));
+        }
+        Ok(())
+    }
+
+    /// Helper: Create and validate position sizing request
+    fn create_sizing_request(
+        &self,
+        symbol: &str,
+        available_balance: f64,
+        available_leverage: f64,
+        current_price: f64,
+    ) -> Result<PositionSizingRequest, String> {
+        PositionSizingRequest::new(
+            symbol.to_string(),
+            available_balance,
+            available_leverage,
+            current_price,
+            self.config.portfolio_percentage,
+            100.0, // min_order_size: $100
+            self.portfolio_value, // max_order_size: portfolio value
+        )
+        .map_err(|e| format!("Invalid position sizing request: {}", e))
+    }
+
+    /// Helper: Validate position size meets minimum requirements
+    fn validate_position_size(
+        quantity: f64,
+        sizing_reason: &str,
+        min_quantity: f64,
+    ) -> Result<(), String> {
+        if quantity <= 0.0 {
+            return Err(format!(
+                "Position sizing resulted in zero quantity: {}",
+                sizing_reason
+            ));
+        }
+
+        if quantity < min_quantity {
+            return Err(format!(
+                "Position size {:.8} is below minimum quantity {:.8}",
+                quantity, min_quantity
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Execute a trading signal with integrated balance and leverage checks
     ///
     /// This is the main async entry point for signal execution that:
@@ -664,15 +759,8 @@ impl OrderExecutor {
             return Ok("No order executed - signal is HOLD".to_string());
         }
 
-        // Check if managers are configured
-        let balance_manager = self
-            .balance_manager
-            .as_ref()
-            .ok_or("BalanceManager not configured")?;
-        let leverage_calculator = self
-            .leverage_calculator
-            .as_ref()
-            .ok_or("LeverageCalculator not configured")?;
+        // Get required managers
+        let (balance_manager, leverage_calculator) = self.get_required_managers()?;
 
         // Fetch current balance asynchronously
         let balance_info = balance_manager
@@ -682,12 +770,7 @@ impl OrderExecutor {
 
         // Validate sufficient balance
         let required_order_value = self.portfolio_value * self.config.portfolio_percentage;
-        if balance_info.available_balance < required_order_value {
-            return Err(format!(
-                "Insufficient balance: required {:.2}, available {:.2}",
-                required_order_value, balance_info.available_balance
-            ));
-        }
+        Self::validate_balance_sufficient(balance_info.available_balance, required_order_value)?;
 
         // Calculate available leverage
         let max_leverage = 10.0; // Default max leverage (can be configurable)
@@ -697,24 +780,15 @@ impl OrderExecutor {
 
         // Validate sufficient leverage
         let required_leverage = 2.0; // Default required leverage (can be configurable)
-        if available_leverage < required_leverage {
-            return Err(format!(
-                "Insufficient leverage: required {:.2}, available {:.2}",
-                required_leverage, available_leverage
-            ));
-        }
+        Self::validate_leverage_sufficient(available_leverage, required_leverage)?;
 
-        // Create position sizing request
-        let sizing_request = PositionSizingRequest::new(
-            symbol.to_string(),
+        // Create and validate position sizing request
+        let sizing_request = self.create_sizing_request(
+            symbol,
             balance_info.available_balance,
             available_leverage,
             current_price,
-            self.config.portfolio_percentage,
-            100.0, // min_order_size: $100
-            self.portfolio_value, // max_order_size: portfolio value
-        )
-        .map_err(|e| format!("Invalid position sizing request: {}", e))?;
+        )?;
 
         // Calculate position size
         let sizing_result = self
@@ -722,21 +796,12 @@ impl OrderExecutor {
             .size_position(&sizing_request)
             .map_err(|e| format!("Position sizing failed: {}", e))?;
 
-        // Check if position was sized
-        if sizing_result.quantity <= 0.0 {
-            return Err(format!(
-                "Position sizing resulted in zero quantity: {}",
-                sizing_result.reason
-            ));
-        }
-
-        // Check minimum quantity
-        if sizing_result.quantity < self.config.min_quantity {
-            return Err(format!(
-                "Position size {:.8} is below minimum quantity {:.8}",
-                sizing_result.quantity, self.config.min_quantity
-            ));
-        }
+        // Validate position size meets minimum requirements
+        Self::validate_position_size(
+            sizing_result.quantity,
+            &sizing_result.reason,
+            self.config.min_quantity,
+        )?;
 
         // Record the execution attempt
         let start_time = SystemTime::now();
@@ -752,11 +817,7 @@ impl OrderExecutor {
                 self.record_trade(symbol);
                 self.cache_signal(symbol, signal.clone());
 
-                let signal_str = match signal.signal {
-                    Signal::Buy => "BUY",
-                    Signal::Sell => "SELL",
-                    Signal::Hold => "HOLD",
-                };
+                let signal_str = Self::signal_to_string(&signal.signal);
 
                 tracing::info!(
                     "Signal executed successfully: {} {} quantity={:.8} order_id={} confidence={:.2} time_ms={:.2}",
@@ -775,10 +836,12 @@ impl OrderExecutor {
                     self.signal_cache.remove(symbol);
                 }
 
+                let signal_str = Self::signal_to_string(&signal.signal);
+
                 tracing::error!(
-                    "Signal execution failed: {} {:?} error={} time_ms={:.2}",
+                    "Signal execution failed: {} {} error={} time_ms={:.2}",
                     symbol,
-                    signal.signal,
+                    signal_str,
                     error,
                     elapsed_ms
                 );
