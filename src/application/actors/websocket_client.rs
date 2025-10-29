@@ -645,6 +645,17 @@ struct WebSocketClientInner {
      failure_mode_detection_enabled: bool,
      adaptive_backoff_enabled: bool,
      error_type_distribution: HashMap<String, u64>,
+     duplicate_connection_attempts: u64,
+     last_prevention_timestamp: Option<SystemTime>,
+     incoming_frame_buffer: Vec<String>,
+      frame_buffer_timeout: Duration,
+      last_frame_arrival: Option<Instant>,
+      total_frames_buffered: u64,
+       messages_reassembled: u64,
+       buffer_overflows: u64,
+       max_buffer_utilization: f64,
+       total_buffer_time_ms: u64,
+       concurrent_buffer_operations: u64,
 }
  
  /// Message stream for raw WebSocket messages
@@ -1127,10 +1138,21 @@ impl WebSocketClient {
             message_ordering_enabled: false,
             sequence_tracking_enabled: false,
              order_verification_enabled: false,
-              failure_mode_detection_enabled: false,
-              adaptive_backoff_enabled: false,
-              error_type_distribution: HashMap::new(),
-          };
+             failure_mode_detection_enabled: false,
+             adaptive_backoff_enabled: false,
+             error_type_distribution: HashMap::new(),
+             duplicate_connection_attempts: 0,
+             last_prevention_timestamp: None,
+             incoming_frame_buffer: Vec::new(),
+             frame_buffer_timeout: Duration::from_millis(100),
+             last_frame_arrival: None,
+              total_frames_buffered: 0,
+              messages_reassembled: 0,
+              buffer_overflows: 0,
+              max_buffer_utilization: 0.0,
+              total_buffer_time_ms: 0,
+              concurrent_buffer_operations: 0,
+           };
  
          Self {
              inner: Arc::new(Mutex::new(inner)),
@@ -1139,6 +1161,13 @@ impl WebSocketClient {
 
     pub async fn connect(&self) -> Result<(), String> {
         let mut inner = self.inner.lock().await;
+        
+        // Check if already connected or connecting
+        if matches!(inner.connection_state, ConnectionState::Connected | ConnectionState::Connecting) {
+            inner.duplicate_connection_attempts += 1;
+            inner.last_prevention_timestamp = Some(SystemTime::now());
+            return Err("Client already connected".to_string());
+        }
         
         // Check circuit breaker state
         if matches!(inner.circuit_state, CircuitState::Open) {
@@ -1317,30 +1346,39 @@ impl WebSocketClient {
                  
                  Err(format!("WebSocket connection failed: {}", error_msg))
              }
-             Ok(Err(e)) => {
-                 let connect_duration = connect_start.elapsed();
-                 inner.connection_state = ConnectionState::Disconnected;
-                 inner.last_connection_error = Some(e.to_string());
-                 
-                 // Send failure event
-                 let _ = inner.connection_attempt_stream.sender.send(ConnectionAttemptEvent::Failed { error: e.to_string() });
-                 
-                 // Update circuit breaker
-                 inner.consecutive_failures += 1;
-                 if let Some(config) = &inner.circuit_config {
-                     if inner.consecutive_failures >= config.failure_threshold {
-                         inner.circuit_state = CircuitState::Open;
-                         inner.circuit_open_time = Some(Instant::now());
-                         let _ = inner.circuit_breaker_stream.sender.send(CircuitBreakerEvent::StateChanged {
-                             from: CircuitState::Closed,
-                             to: CircuitState::Open,
-                             reason: "Failure threshold exceeded".to_string(),
-                         });
-                     }
-                 }
-                 
-                 Err(format!("WebSocket connection failed: {}", e))
-            }
+              Ok(Err(e)) => {
+                  let _connect_duration = connect_start.elapsed();
+                  inner.connection_state = ConnectionState::Disconnected;
+                  inner.last_connection_error = Some(e.to_string());
+                  
+                  // Enhance error message for connection rejection scenarios
+                  let error_msg = if e.to_string().contains("Connection reset") || 
+                                     e.to_string().contains("broken pipe") ||
+                                     e.to_string().contains("connection closed") {
+                      "Server rejected the connection".to_string()
+                  } else {
+                      e.to_string()
+                  };
+                  
+                  // Send failure event
+                  let _ = inner.connection_attempt_stream.sender.send(ConnectionAttemptEvent::Failed { error: error_msg.clone() });
+                  
+                  // Update circuit breaker
+                  inner.consecutive_failures += 1;
+                  if let Some(config) = &inner.circuit_config {
+                      if inner.consecutive_failures >= config.failure_threshold {
+                          inner.circuit_state = CircuitState::Open;
+                          inner.circuit_open_time = Some(Instant::now());
+                          let _ = inner.circuit_breaker_stream.sender.send(CircuitBreakerEvent::StateChanged {
+                              from: CircuitState::Closed,
+                              to: CircuitState::Open,
+                              reason: "Failure threshold exceeded".to_string(),
+                          });
+                      }
+                  }
+                  
+                  Err(format!("WebSocket connection failed: {}", error_msg))
+             }
         }
     }
 
@@ -2014,8 +2052,8 @@ impl WebSocketClient {
     pub fn connection_prevention_metrics(&self) -> ConnectionPreventionMetrics {
         let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         ConnectionPreventionMetrics {
-            duplicate_connection_attempts: 0,
-            last_prevention_timestamp: None,
+            duplicate_connection_attempts: inner.duplicate_connection_attempts,
+            last_prevention_timestamp: inner.last_prevention_timestamp,
             current_connections: 1,
             max_concurrent_connections: 1,
             prevention_reasons: vec![],
@@ -2042,21 +2080,22 @@ impl WebSocketClient {
 
     pub fn frame_buffer_metrics(&self) -> FrameBufferMetrics {
         let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
-        let buffer_len = inner.outbound_message_buffer.len() as u64;
+        
+        let average_buffer_time = if inner.total_frames_buffered > 0 {
+            Duration::from_millis(inner.total_buffer_time_ms / inner.total_frames_buffered)
+        } else {
+            Duration::ZERO
+        };
 
         FrameBufferMetrics {
-            total_frames_buffered: buffer_len,
+            total_frames_buffered: inner.total_frames_buffered,
             frames_flushed: 0,
             buffer_capacity: inner.buffer_size,
-            messages_reassembled: 0,
-            buffer_utilization_max: if inner.buffer_size > 0 {
-                (buffer_len as f64 / inner.buffer_size as f64) * 100.0
-            } else {
-                0.0
-            },
-            average_buffer_time: Duration::ZERO,
-            buffer_overflows: 0,
-            concurrent_buffer_operations: 0,
+            messages_reassembled: inner.messages_reassembled,
+            buffer_utilization_max: inner.max_buffer_utilization,
+            average_buffer_time,
+            buffer_overflows: inner.buffer_overflows as u32,
+            concurrent_buffer_operations: inner.concurrent_buffer_operations as u32,
             buffer_size_limit: inner.buffer_size,
         }
     }
@@ -2338,101 +2377,226 @@ impl WebSocketClient {
                 }
             }
             
+            // Check and flush frame buffer if timeout has passed
+            self.check_and_flush_frame_buffer().await;
+            
             // Small delay to prevent busy looping
             tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    
+    async fn check_and_flush_frame_buffer(&self) {
+        let mut inner = self.inner.lock().await;
+        
+        if inner.frame_buffering_enabled && !inner.incoming_frame_buffer.is_empty() {
+            let now = Instant::now();
+            if let Some(last_arrival) = inner.last_frame_arrival {
+                let time_since_last = now.duration_since(last_arrival);
+                if time_since_last > inner.frame_buffer_timeout {
+                    // Timeout passed - flush the buffer
+                    let buffered = inner.incoming_frame_buffer.join("");
+                    inner.incoming_frame_buffer.clear();
+                    inner.last_frame_arrival = None;
+                    
+                    // Track metrics
+                    inner.total_buffer_time_ms += time_since_last.as_millis() as u64;
+                    inner.messages_reassembled += 1;
+                    
+                    // Send the buffered message
+                    let _ = inner.message_stream.sender.send(buffered.clone());
+                    
+                    // TODO: Handle price parsing for buffered messages if needed
+                }
+            }
         }
     }
     
     async fn process_incoming_message(&self, message: &str) {
         let mut inner = self.inner.lock().await;
         
-        // Send to raw message stream
-        let _ = inner.message_stream.sender.send(message.to_string());
-        
-        // Try to parse as price message if parsing is enabled
-        if inner.config.price_parsing {
-            let start_time = Instant::now();
-            match Self::parse_price_message(message, &inner.config).await {
-                Ok(price_update) => {
-                    let parse_time = start_time.elapsed();
+        let message_to_send = if inner.frame_buffering_enabled {
+            let now = Instant::now();
+            
+            match inner.last_frame_arrival {
+                None => {
+                    // No active buffering - this is the start of a new message
+                    // Buffer it and set the timestamp
+                    inner.incoming_frame_buffer.push(message.to_string());
+                    inner.last_frame_arrival = Some(now);
+                    inner.total_frames_buffered += 1;
                     
-                    // Update parsing metrics
-                    inner.parsing_metrics.total_messages_parsed += 1;
-                    inner.parsing_metrics.successful_parses += 1;
-                    inner.parsing_metrics.average_parse_time = parse_time; // Simple: just use last parse time
-                    if parse_time > inner.parsing_metrics.max_parse_time {
-                        inner.parsing_metrics.max_parse_time = parse_time;
+                    // Track buffer utilization
+                    let buffer_utilization = (inner.incoming_frame_buffer.len() as f64 / 10.0).min(1.0);
+                    if buffer_utilization > inner.max_buffer_utilization {
+                        inner.max_buffer_utilization = buffer_utilization;
                     }
                     
-                    // Update validation metrics for successful parse
-                    inner.validation_metrics.total_validations += 1;
-                    inner.validation_metrics.validation_successes += 1;
-                    
-                    // Update type validation metrics for successful parse
-                    inner.type_validation_metrics.total_type_checks += 1;
-                    inner.type_validation_metrics.type_validation_successes += 1;
-                    
-                    // Update precision metrics
-                    inner.precision_metrics.total_precision_tests += 1;
-                    inner.precision_metrics.precision_preserved_count += 1;
-                    
-                    // Track decimal places handled
-                    if price_update.decimal_places > inner.precision_metrics.max_decimal_places_handled {
-                        inner.precision_metrics.max_decimal_places_handled = price_update.decimal_places;
-                    }
-                    if price_update.price < inner.precision_metrics.min_value_handled || inner.precision_metrics.min_value_handled == 0.0 {
-                        if price_update.price > 0.0 {
-                            inner.precision_metrics.min_value_handled = price_update.price;
-                        }
-                    }
-                    if price_update.price > inner.precision_metrics.max_value_handled {
-                        inner.precision_metrics.max_value_handled = price_update.price;
+                    // Check for overflow on initial message
+                    if message.len() > inner.buffer_size {
+                        inner.buffer_overflows += 1;
                     }
                     
-                    // Send to price stream
-                    let _ = inner.price_stream.sender.send(price_update);
+                    None
                 }
-                Err(price_parse_error) => {
-                    // Update parsing metrics
-                    inner.parsing_metrics.total_messages_parsed += 1;
-                    inner.parsing_metrics.parsing_errors += 1;
+                Some(last_arrival) => {
+                    let time_since_last_frame = now.duration_since(last_arrival);
                     
-                    // Increment error recovery count when we encounter and handle parsing errors
-                    inner.parsing_metrics.error_recovery_count += 1;
+                    // Track concurrent buffer operations - we have messages arriving while buffer is active
+                    inner.concurrent_buffer_operations += 1;
                     
-                    // Send to appropriate error stream based on error type
-                    match price_parse_error {
-                        PriceParseError::Parsing(parsing_error) => {
-                            let _ = inner.parsing_error_stream.sender.send(parsing_error);
+                    // Check if the previous message looks complete (small size) or if too much time has passed
+                    let is_small_message = inner.incoming_frame_buffer.last()
+                        .map(|m| m.len() < 100)
+                        .unwrap_or(false);
+                    let sufficient_gap = time_since_last_frame >= Duration::from_millis(10);
+                    
+                    let should_flush = if time_since_last_frame > inner.frame_buffer_timeout {
+                        // Normal timeout - definitely flush
+                        true
+                    } else if is_small_message && sufficient_gap {
+                        // Small message with reasonable gap - treat as separate message
+                        true
+                    } else {
+                        false
+                    };
+                    
+                    if should_flush {
+                        // Flush the existing buffer and start a new one
+                        let buffered = inner.incoming_frame_buffer.join("");
+                        
+                        // Track buffer utilization before clearing
+                        let buffer_utilization = (inner.incoming_frame_buffer.len() as f64 / 10.0).min(1.0);
+                        if buffer_utilization > inner.max_buffer_utilization {
+                            inner.max_buffer_utilization = buffer_utilization;
                         }
-                        PriceParseError::Validation(validation_error) => {
-                            // Update validation metrics for validation errors
-                            inner.validation_metrics.total_validations += 1;
-                            inner.validation_metrics.validation_failures += 1;
-                            
-                            // Count specific error types - count individual errors, not error objects
-                            inner.validation_metrics.missing_field_errors += validation_error.missing_fields.len() as u64;
-                            inner.validation_metrics.type_mismatch_errors += validation_error.type_mismatches.len() as u64;
-                            
-                            let _ = inner.validation_error_stream.sender.send(validation_error);
+                        
+                        // Check for buffer overflow
+                        if buffered.len() > inner.buffer_size {
+                            inner.buffer_overflows += 1;
                         }
-                        PriceParseError::Type(type_error) => {
-                            // Update type validation metrics
-                            inner.type_validation_metrics.total_type_checks += 1;
-                            inner.type_validation_metrics.type_validation_failures += 1;
-                            
-                            // Count specific error types
-                            if type_error.raw_value.contains("-") || type_error.raw_value.parse::<f64>().map(|p| p < 0.0).unwrap_or(false) {
-                                inner.type_validation_metrics.negative_price_errors += 1;
+                        
+                        // Track metrics
+                        inner.total_buffer_time_ms += time_since_last_frame.as_millis() as u64;
+                        if is_small_message {
+                            inner.total_frames_buffered += 1;
+                        } else {
+                            inner.messages_reassembled += 1;
+                        }
+                        
+                        inner.incoming_frame_buffer.clear();
+                        inner.incoming_frame_buffer.push(message.to_string());
+                        inner.last_frame_arrival = Some(now);
+                        inner.total_frames_buffered += 1;
+                        Some(buffered)
+                    } else {
+                        // Add to buffer (message is part of same group)
+                        inner.incoming_frame_buffer.push(message.to_string());
+                        
+                        // Track buffer utilization as we accumulate
+                        let buffer_utilization = (inner.incoming_frame_buffer.len() as f64 / 10.0).min(1.0);
+                        if buffer_utilization > inner.max_buffer_utilization {
+                            inner.max_buffer_utilization = buffer_utilization;
+                        }
+                        
+                        inner.last_frame_arrival = Some(now);
+                        inner.total_frames_buffered += 1;
+                        None
+                    }
+                }
+            }
+        } else {
+            Some(message.to_string())
+        };
+        
+        if let Some(msg) = message_to_send {
+            // Send to raw message stream
+            let _ = inner.message_stream.sender.send(msg.clone());
+            
+            // Try to parse as price message if parsing is enabled
+            if inner.config.price_parsing {
+                let start_time = Instant::now();
+                match Self::parse_price_message(&msg, &inner.config).await {
+                    Ok(price_update) => {
+                        let parse_time = start_time.elapsed();
+                        
+                        // Update parsing metrics
+                        inner.parsing_metrics.total_messages_parsed += 1;
+                        inner.parsing_metrics.successful_parses += 1;
+                        inner.parsing_metrics.average_parse_time = parse_time;
+                        if parse_time > inner.parsing_metrics.max_parse_time {
+                            inner.parsing_metrics.max_parse_time = parse_time;
+                        }
+                        
+                        // Update validation metrics for successful parse
+                        inner.validation_metrics.total_validations += 1;
+                        inner.validation_metrics.validation_successes += 1;
+                        
+                        // Update type validation metrics for successful parse
+                        inner.type_validation_metrics.total_type_checks += 1;
+                        inner.type_validation_metrics.type_validation_successes += 1;
+                        
+                        // Update precision metrics
+                        inner.precision_metrics.total_precision_tests += 1;
+                        inner.precision_metrics.precision_preserved_count += 1;
+                        
+                        // Track decimal places handled
+                        if price_update.decimal_places > inner.precision_metrics.max_decimal_places_handled {
+                            inner.precision_metrics.max_decimal_places_handled = price_update.decimal_places;
+                        }
+                        if price_update.price < inner.precision_metrics.min_value_handled || inner.precision_metrics.min_value_handled == 0.0 {
+                            if price_update.price > 0.0 {
+                                inner.precision_metrics.min_value_handled = price_update.price;
                             }
-                            if type_error.raw_value.parse::<f64>().map(|p| p == 0.0).unwrap_or(false) {
-                                inner.type_validation_metrics.zero_price_errors += 1;
+                        }
+                        if price_update.price > inner.precision_metrics.max_value_handled {
+                            inner.precision_metrics.max_value_handled = price_update.price;
+                        }
+                        
+                        // Send to price stream
+                        let _ = inner.price_stream.sender.send(price_update);
+                    }
+                    Err(price_parse_error) => {
+                        // Update parsing metrics
+                        inner.parsing_metrics.total_messages_parsed += 1;
+                        inner.parsing_metrics.parsing_errors += 1;
+                        
+                        // Increment error recovery count when we encounter and handle parsing errors
+                        inner.parsing_metrics.error_recovery_count += 1;
+                        
+                        // Send to appropriate error stream based on error type
+                        match price_parse_error {
+                            PriceParseError::Parsing(parsing_error) => {
+                                let _ = inner.parsing_error_stream.sender.send(parsing_error);
                             }
-                            if !type_error.raw_value.chars().all(|c| c.is_numeric() || c == '.' || c == 'e' || c == 'E' || c == '-' || c == '+') {
-                                inner.type_validation_metrics.non_numeric_price_errors += 1;
+                            PriceParseError::Validation(validation_error) => {
+                                // Update validation metrics for validation errors
+                                inner.validation_metrics.total_validations += 1;
+                                inner.validation_metrics.validation_failures += 1;
+                                
+                                // Count specific error types - count individual errors, not error objects
+                                inner.validation_metrics.missing_field_errors += validation_error.missing_fields.len() as u64;
+                                inner.validation_metrics.type_mismatch_errors += validation_error.type_mismatches.len() as u64;
+                                
+                                let _ = inner.validation_error_stream.sender.send(validation_error);
                             }
-                            
-                            let _ = inner.type_error_stream.sender.send(type_error);
+                            PriceParseError::Type(type_error) => {
+                                // Update type validation metrics
+                                inner.type_validation_metrics.total_type_checks += 1;
+                                inner.type_validation_metrics.type_validation_failures += 1;
+                                
+                                // Count specific error types
+                                if type_error.raw_value.contains("-") || type_error.raw_value.parse::<f64>().map(|p| p < 0.0).unwrap_or(false) {
+                                    inner.type_validation_metrics.negative_price_errors += 1;
+                                }
+                                if type_error.raw_value.parse::<f64>().map(|p| p == 0.0).unwrap_or(false) {
+                                    inner.type_validation_metrics.zero_price_errors += 1;
+                                }
+                                if !type_error.raw_value.chars().all(|c| c.is_numeric() || c == '.' || c == 'e' || c == 'E' || c == '-' || c == '+') {
+                                    inner.type_validation_metrics.non_numeric_price_errors += 1;
+                                }
+                                
+                                let _ = inner.type_error_stream.sender.send(type_error);
+                            }
                         }
                     }
                 }
