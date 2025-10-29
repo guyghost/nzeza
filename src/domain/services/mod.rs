@@ -1,3 +1,4 @@
+pub mod balance_manager;
 pub mod candle_builder;
 pub mod circuit_breaker;
 pub mod indicators;
