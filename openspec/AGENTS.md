@@ -55,14 +55,6 @@ Track these steps as TODOs and complete them one by one.
 5. **Confirm completion** - Ensure every item in `tasks.md` is finished before updating statuses
 6. **Update checklist** - After all work is done, set every task to `- [x]` so the list reflects reality
 7. **Approval gate** - Do not start implementation until the proposal is reviewed and approved
-   
-The OpenCode workflow automates:
-* Test planning (planner)
-* Test creation (test-writer)
-* Code implementation (implementer)
-* Code review and commit (reviewer)
-
-This ensures all new modules follow a Test-Driven Development (TDD) process with minimal manual coordination.
 
 ### Stage 3: Archiving Changes
 After deployment, create separate PR to:
