@@ -176,10 +176,12 @@ async fn test_should_fetch_single_exchange_balance() {
     let balances = result.unwrap();
     let all_balances = balances.all_balances();
     assert_eq!(all_balances.len(), 2, "Should return 2 currency balances");
-    assert_eq!(all_balances[0].currency, "BTC");
-    assert_eq!(all_balances[0].amount, 1.5);
-    assert_eq!(all_balances[1].currency, "ETH");
-    assert_eq!(all_balances[1].amount, 10.0);
+
+    let btc_balance = all_balances.iter().find(|b| b.currency == "BTC").unwrap();
+    assert_eq!(btc_balance.amount, 1.5);
+
+    let eth_balance = all_balances.iter().find(|b| b.currency == "ETH").unwrap();
+    assert_eq!(eth_balance.amount, 10.0);
 }
 
 #[tokio::test]
