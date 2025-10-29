@@ -46,6 +46,7 @@
 //! - timestamp: Timestamp
 
 pub mod models;
+pub mod reconciliation_audit;
 pub mod repository;
 pub mod screening_repository;
 
@@ -188,32 +189,37 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
         DatabaseError::MigrationError(format!("Failed to create audit_log table: {}", e))
     })?;
 
-    // Create dYdX order metadata table
+    // Create reconciliation_audit table
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS dydx_order_metadata (
-            order_id TEXT PRIMARY KEY,
-            dydx_order_id TEXT NOT NULL,
-            good_until_block INTEGER NOT NULL,
-            client_id INTEGER NOT NULL,
-            subaccount_number INTEGER NOT NULL,
-            order_flags INTEGER NOT NULL DEFAULT 0,
-            clob_pair_id INTEGER NOT NULL DEFAULT 0,
-            symbol TEXT NOT NULL,
-            side TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
-            quantity TEXT NOT NULL,
-            price TEXT,
-            order_type TEXT NOT NULL CHECK(order_type IN ('market', 'limit')),
-            placed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            cancelled_at DATETIME,
-            tx_hash TEXT,
-            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'cancelled', 'expired', 'filled'))
+        CREATE TABLE IF NOT EXISTS reconciliation_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reconciliation_id TEXT NOT NULL UNIQUE,
+            exchange_id TEXT NOT NULL,
+            reconciliation_timestamp DATETIME NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            status TEXT NOT NULL,
+            discrepancy_count INTEGER NOT NULL,
+            local_balances_json TEXT NOT NULL,
+            exchange_balances_json TEXT NOT NULL,
+            discrepancies_json TEXT NOT NULL,
+            recovery_attempted BOOLEAN DEFAULT 0,
+            recovery_status TEXT,
+            recovery_details_json TEXT,
+            operator_notes TEXT,
+            INDEX idx_exchange_time (exchange_id, reconciliation_timestamp),
+            INDEX idx_status (status)
         )
         "#,
     )
     .execute(pool)
     .await
-    .map_err(|e| DatabaseError::MigrationError(format!("Failed to create dydx_order_metadata table: {}", e)))?;
+    .map_err(|e| {
+        DatabaseError::MigrationError(format!(
+            "Failed to create reconciliation_audit table: {}",
+            e
+        ))
+    })?;
 
     // Add order_flags column if it doesn't exist (for databases migrated from older versions)
     let order_flags_exists: (i64,) = sqlx::query_as(

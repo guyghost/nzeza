@@ -26,6 +26,13 @@ pub struct TradingConfig {
     pub screening_volume_weight: f64, // Weight for volume in score aggregation
     pub screening_spread_weight: f64, // Weight for spread in score aggregation
     pub screening_momentum_weight: f64, // Weight for momentum in score aggregation
+
+    // Portfolio reconciliation configuration
+    pub reconciliation_enabled: bool, // Enable portfolio reconciliation
+    pub reconciliation_interval_seconds: u64, // How often to run reconciliation (seconds)
+    pub reconciliation_threshold_percentage: f64, // Threshold for flagging discrepancies (percentage)
+    pub reconciliation_timeout_milliseconds: u64, // API call timeout (milliseconds)
+    pub reconciliation_max_retries: u32,          // Maximum number of retries on failure
 }
 
 impl TradingConfig {
@@ -111,6 +118,13 @@ impl TradingConfig {
             screening_volume_weight: 0.3,   // 30% weight
             screening_spread_weight: 0.2,   // 20% weight
             screening_momentum_weight: 0.2, // 20% weight
+
+            // Portfolio reconciliation defaults
+            reconciliation_enabled: true,
+            reconciliation_interval_seconds: 300, // Every 5 minutes
+            reconciliation_threshold_percentage: 0.01, // 1% threshold
+            reconciliation_timeout_milliseconds: 10000, // 10 second timeout
+            reconciliation_max_retries: 3,        // 3 retries
         }
     }
 
@@ -272,6 +286,44 @@ impl TradingConfig {
             if let Ok(value) = momentum_weight.parse::<f64>() {
                 if (0.0..=1.0).contains(&value) {
                     config.screening_momentum_weight = value;
+                }
+            }
+        }
+
+        // Portfolio reconciliation configuration from environment
+        if let Ok(reconciliation_enabled) = std::env::var("RECONCILIATION_ENABLED") {
+            config.reconciliation_enabled =
+                reconciliation_enabled.to_lowercase() == "true" || reconciliation_enabled == "1";
+        }
+
+        if let Ok(reconciliation_interval) = std::env::var("RECONCILIATION_INTERVAL_SECONDS") {
+            if let Ok(value) = reconciliation_interval.parse::<u64>() {
+                if value >= 60 && value <= 3600 {
+                    config.reconciliation_interval_seconds = value;
+                }
+            }
+        }
+
+        if let Ok(reconciliation_threshold) = std::env::var("RECONCILIATION_THRESHOLD_PERCENTAGE") {
+            if let Ok(value) = reconciliation_threshold.parse::<f64>() {
+                if (0.0001..=0.1).contains(&value) {
+                    config.reconciliation_threshold_percentage = value;
+                }
+            }
+        }
+
+        if let Ok(reconciliation_timeout) = std::env::var("RECONCILIATION_TIMEOUT_MILLISECONDS") {
+            if let Ok(value) = reconciliation_timeout.parse::<u64>() {
+                if value >= 1000 && value <= 60000 {
+                    config.reconciliation_timeout_milliseconds = value;
+                }
+            }
+        }
+
+        if let Ok(reconciliation_max_retries) = std::env::var("RECONCILIATION_MAX_RETRIES") {
+            if let Ok(value) = reconciliation_max_retries.parse::<u32>() {
+                if value >= 0 && value <= 10 {
+                    config.reconciliation_max_retries = value;
                 }
             }
         }
