@@ -1,0 +1,38 @@
+name: Greetings
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  greeting:
+    name: Greet Contributors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/first-interaction@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          issue-message: |
+            👋 Bienvenue dans le projet nzeza!
+            
+            Merci d'avoir pris le temps de créer cette issue. Un mainteneur la reviewera bientôt.
+            
+            En attendant, assurez-vous d'avoir fourni toutes les informations nécessaires. Si vous souhaitez contribuer au code, consultez notre [guide de contribution](CONTRIBUTING.md).
+          pr-message: |
+            🎉 Merci pour votre première Pull Request!
+            
+            Nous apprécions vraiment votre contribution au projet nzeza. Un mainteneur reviewera votre PR dès que possible.
+            
+            Quelques points à vérifier avant la review:
+            - ✅ Les tests passent (`cargo test`)
+            - ✅ Le code est formaté (`cargo fmt`)
+            - ✅ Clippy ne signale aucun warning (`cargo clippy`)
+            - ✅ La documentation est à jour si nécessaire
+            
+            N'hésitez pas à consulter notre [guide de contribution](CONTRIBUTING.md) pour plus d'informations.
