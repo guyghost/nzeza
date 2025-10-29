@@ -9,6 +9,7 @@ pub mod order_executor;
 pub mod portfolio_manager;
 pub mod portfolio_reconciliation;
 pub mod position_manager;
+pub mod position_sizer;
 pub mod reconciliation;
 pub mod screening;
 pub mod strategies;
