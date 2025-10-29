@@ -10,8 +10,12 @@ use crate::domain::entities::exchange::Exchange;
 use crate::domain::entities::order::{Order, OrderSide, OrderType};
 use crate::domain::entities::position::{Position, PositionSide};
 use crate::domain::repositories::exchange_client::{ExchangeClient, ExchangeError, ExchangeResult};
+use crate::domain::services::balance_manager::BalanceManager;
+use crate::domain::services::leverage_calculator::LeverageCalculator;
 use crate::domain::services::metrics::{PerformanceProfiler, TradingMetrics};
 use crate::domain::services::position_manager::{PositionLimits, PositionManager, PositionResult};
+use crate::domain::services::position_sizer::PositionSizer;
+use crate::domain::value_objects::position_sizing::PositionSizingRequest;
 use crate::domain::value_objects::{price::Price, quantity::Quantity};
 
 /// Order execution configuration
@@ -77,6 +81,9 @@ pub struct OrderExecutor {
     metrics: Arc<Mutex<TradingMetrics>>,
     profiler: PerformanceProfiler,
     portfolio_value: f64,
+    balance_manager: Option<Arc<BalanceManager>>,
+    leverage_calculator: Option<Arc<LeverageCalculator>>,
+    position_sizer: PositionSizer,
 }
 
 impl OrderExecutor {
@@ -100,6 +107,37 @@ impl OrderExecutor {
             metrics,
             profiler: PerformanceProfiler::new(),
             portfolio_value,
+            balance_manager: None,
+            leverage_calculator: None,
+            position_sizer: PositionSizer::new(),
+        }
+    }
+
+    /// Create a new OrderExecutor with balance and leverage managers
+    pub fn with_managers(
+        config: OrderExecutorConfig,
+        position_manager: Arc<Mutex<PositionManager>>,
+        exchange_clients: HashMap<Exchange, Arc<dyn ExchangeClient>>,
+        metrics: Arc<Mutex<TradingMetrics>>,
+        portfolio_value: f64,
+        balance_manager: Arc<BalanceManager>,
+        leverage_calculator: Arc<LeverageCalculator>,
+    ) -> Self {
+        let active_exchange = exchange_clients.keys().next().cloned();
+
+        Self {
+            config,
+            position_manager,
+            exchange_clients,
+            active_exchange,
+            trade_history: Vec::new(),
+            signal_cache: HashMap::new(),
+            metrics,
+            profiler: PerformanceProfiler::new(),
+            portfolio_value,
+            balance_manager: Some(balance_manager),
+            leverage_calculator: Some(leverage_calculator),
+            position_sizer: PositionSizer::new(),
         }
     }
 

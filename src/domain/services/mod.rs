@@ -17,3 +17,6 @@ pub mod symbol_screening;
 
 #[cfg(test)]
 pub mod position_validation_tests;
+
+#[cfg(test)]
+pub mod order_executor_integration_tests;
