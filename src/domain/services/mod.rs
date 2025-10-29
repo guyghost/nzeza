@@ -14,6 +14,7 @@ pub mod reconciliation;
 pub mod screening;
 pub mod strategies;
 pub mod symbol_screening;
+pub mod trade_execution_error;
 
 #[cfg(test)]
 pub mod position_validation_tests;
