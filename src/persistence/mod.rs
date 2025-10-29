@@ -206,9 +206,7 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
             recovery_attempted BOOLEAN DEFAULT 0,
             recovery_status TEXT,
             recovery_details_json TEXT,
-            operator_notes TEXT,
-            INDEX idx_exchange_time (exchange_id, reconciliation_timestamp),
-            INDEX idx_status (status)
+            operator_notes TEXT
         )
         "#,
     )
@@ -219,6 +217,46 @@ async fn run_migrations(pool: &DbPool) -> Result<(), DatabaseError> {
             "Failed to create reconciliation_audit table: {}",
             e
         ))
+    })?;
+    
+    // Create indexes for reconciliation_audit table
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_reconciliation_exchange_time ON reconciliation_audit(exchange_id, reconciliation_timestamp)")
+        .execute(pool)
+        .await
+        .map_err(|e| DatabaseError::MigrationError(format!("Failed to create reconciliation_audit exchange_time index: {}", e)))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_reconciliation_status ON reconciliation_audit(status)")
+        .execute(pool)
+        .await
+        .map_err(|e| DatabaseError::MigrationError(format!("Failed to create reconciliation_audit status index: {}", e)))?;
+
+    // Create dydx_order_metadata table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS dydx_order_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT NOT NULL UNIQUE,
+            dydx_order_id TEXT NOT NULL,
+            good_until_block INTEGER,
+            client_id INTEGER,
+            subaccount_number INTEGER,
+            order_flags INTEGER DEFAULT 0,
+            clob_pair_id INTEGER DEFAULT 0,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            price REAL NOT NULL,
+            order_type TEXT NOT NULL,
+            placed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            status TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        DatabaseError::MigrationError(format!("Failed to create dydx_order_metadata table: {}", e))
     })?;
 
     // Add order_flags column if it doesn't exist (for databases migrated from older versions)
