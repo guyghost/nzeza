@@ -1758,22 +1758,22 @@ impl WebSocketClient {
     }
 
     pub fn price_stream(&self) -> PriceStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.price_stream.clone()
     }
 
     pub fn parsing_error_stream(&self) -> ParsingErrorStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.parsing_error_stream.clone()
     }
 
     pub fn validation_error_stream(&self) -> ValidationErrorStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.validation_error_stream.clone()
     }
 
     pub fn type_error_stream(&self) -> TypeErrorStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.type_error_stream.clone()
     }
 
@@ -1856,17 +1856,17 @@ impl WebSocketClient {
     }
 
     pub fn reconnection_stream(&self) -> ReconnectionStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.reconnection_stream.clone()
     }
 
     pub fn reconnection_metrics(&self) -> ReconnectionMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.reconnection_metrics.clone()
     }
 
     pub fn last_connection_error(&self) -> Option<String> {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.last_connection_error.clone()
     }
 
@@ -1920,37 +1920,37 @@ impl WebSocketClient {
     }
 
     pub fn circuit_breaker_stream(&self) -> CircuitBreakerStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.circuit_breaker_stream.clone()
     }
 
     pub fn connection_attempt_stream(&self) -> ConnectionAttemptStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.connection_attempt_stream.clone()
     }
 
     pub fn disconnect_event_stream(&self) -> DisconnectEventStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.disconnect_event_stream.clone()
     }
 
     pub fn state_change_stream(&self) -> StateChangeStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.state_change_stream.clone()
     }
 
     pub fn progress_stream(&self) -> ProgressStream {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.progress_stream.clone()
     }
 
     pub fn circuit_breaker_metrics(&self) -> CircuitBreakerMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.circuit_breaker_metrics.clone()
     }
 
     pub fn timeout_metrics(&self) -> TimeoutMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         let timeout_count = inner.timeout_history.len() as u64;
         let average_duration = if !inner.timeout_history.is_empty() {
             let total: Duration = inner.timeout_history.iter().map(|e| e.duration).sum();
@@ -1970,7 +1970,7 @@ impl WebSocketClient {
     }
 
     pub fn disconnect_metrics(&self) -> DisconnectMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         let total = inner.failure_history.len() as u64;
         let graceful = 0u64;
         let forced = 0u64;
@@ -1993,7 +1993,7 @@ impl WebSocketClient {
     }
 
     pub fn state_transition_metrics(&self) -> StateTransitionMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         let total = inner.backoff_history.len() as u64;
         let average_duration = if !inner.backoff_history.is_empty() {
             let total_dur: Duration = inner.backoff_history.iter().map(|b| b.delay).sum();
@@ -2016,7 +2016,7 @@ impl WebSocketClient {
     }
 
     pub fn connection_prevention_metrics(&self) -> ConnectionPreventionMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         ConnectionPreventionMetrics {
             duplicate_connection_attempts: 0,
             last_prevention_timestamp: None,
@@ -2027,7 +2027,7 @@ impl WebSocketClient {
     }
 
     pub fn connection_error_metrics(&self) -> ConnectionErrorMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         let total_failures = inner.failure_history.len() as u64;
         let rejection_errors = 0u64;
         let timeout_errors = inner.timeout_history.len() as u64;
@@ -2045,7 +2045,7 @@ impl WebSocketClient {
     }
 
     pub fn frame_buffer_metrics(&self) -> FrameBufferMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         let buffer_len = inner.outbound_message_buffer.len() as u64;
 
         FrameBufferMetrics {
@@ -2066,7 +2066,7 @@ impl WebSocketClient {
     }
 
     pub fn mixed_message_metrics(&self) -> MixedMessageMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         MixedMessageMetrics {
             mixed_message_count: 0,
             separation_success_rate: 100.0,
@@ -2079,7 +2079,7 @@ impl WebSocketClient {
     }
 
     pub fn large_message_metrics(&self) -> LargeMessageMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         LargeMessageMetrics {
             total_large_messages: 0,
             average_size: 0,
@@ -2094,7 +2094,7 @@ impl WebSocketClient {
     }
 
     pub fn message_ordering_metrics(&self) -> MessageOrderingMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         MessageOrderingMetrics {
             total_messages_processed: 0,
             out_of_order_count: 0,
@@ -2109,27 +2109,27 @@ impl WebSocketClient {
     }
 
     pub fn failure_history(&self) -> Vec<FailureEvent> {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.failure_history.clone()
     }
 
     pub fn success_history(&self) -> Vec<SuccessEvent> {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.success_history.clone()
     }
 
     pub fn timeout_history(&self) -> Vec<TimeoutEvent> {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.timeout_history.clone()
     }
 
     pub fn backoff_history(&self) -> Vec<BackoffEvent> {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.backoff_history.clone()
     }
 
     pub fn circuit_breaker_event_history(&self) -> Vec<CircuitEvent> {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.circuit_breaker_event_history.clone()
     }
 
@@ -2191,17 +2191,17 @@ impl WebSocketClient {
     }
 
     pub fn circuit_state(&self) -> CircuitState {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.circuit_state.clone()
     }
 
     pub fn is_circuit_open(&self) -> bool {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         matches!(inner.circuit_state, CircuitState::Open)
     }
 
     pub fn is_circuit_closed(&self) -> bool {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         matches!(inner.circuit_state, CircuitState::Closed)
     }
 
@@ -2211,7 +2211,7 @@ impl WebSocketClient {
     }
 
     pub fn connection_error_categories(&self) -> HashMap<String, u32> {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         let mut categories = HashMap::new();
         
         // Categorize errors from failure history
@@ -2230,12 +2230,12 @@ impl WebSocketClient {
     }
 
     pub fn error_type_distribution(&self) -> HashMap<String, u64> {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         inner.error_type_distribution.clone()
     }
 
     pub fn failure_mode_metrics(&self) -> FailureModeMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         FailureModeMetrics {
             intermittent_failures: inner.consecutive_failures,
             network_partition_detected: inner.consecutive_failures >= 5,
@@ -2246,7 +2246,7 @@ impl WebSocketClient {
     }
 
     pub fn degraded_mode_metrics(&self) -> DegradedModeMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         DegradedModeMetrics {
             degraded_mode_detected: inner.consecutive_failures >= 3,
             connection_quality_score: if inner.consecutive_failures > 0 { 0.5 } else { 1.0 },
@@ -2262,7 +2262,7 @@ impl WebSocketClient {
     }
 
     pub fn adaptive_backoff_metrics(&self) -> AdaptiveBackoffMetrics {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         AdaptiveBackoffMetrics {
             rapid_failure_sequences: if inner.consecutive_failures >= 3 { 1 } else { 0 },
             intermittent_success_detected: inner.consecutive_successes > 0,
@@ -2275,7 +2275,7 @@ impl WebSocketClient {
     }
 
     pub fn failure_pattern_analysis(&self) -> FailurePatternAnalysis {
-        let inner = self.inner.blocking_lock();
+        let inner = self.inner.try_lock().unwrap_or_else(|_| panic!("Could not acquire lock"));
         let mut failure_patterns = HashMap::new();
         let mut success_patterns = HashMap::new();
 
