@@ -3,3 +3,30 @@
 
 # Environment variables
 .env
+
+# Test and coverage artifacts
+*.profraw
+*.profdata
+cobertura.xml
+tarpaulin-report.html
+lcov.info
+
+# Benchmark results
+/criterion
+
+# Cargo.lock for libraries (uncomment if this is a library)
+# Cargo.lock
+
+# IDE specific
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak

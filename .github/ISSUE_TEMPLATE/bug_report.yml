@@ -1,0 +1,90 @@
+name: Bug Report
+description: Signaler un bug dans le projet nzeza
+title: "[BUG] "
+labels: ["bug"]
+assignees:
+  - guyghost
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci de prendre le temps de remplir ce rapport de bug. Plus vous fournissez d'informations, plus vite nous pourrons résoudre le problème.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description du bug
+      description: Une description claire et concise du bug
+      placeholder: Le serveur crash quand...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Étapes pour reproduire
+      description: Comment reproduire le comportement problématique
+      placeholder: |
+        1. Lancer le serveur avec '...'
+        2. Envoyer une requête vers '...'
+        3. Voir l'erreur
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportement attendu
+      description: Ce qui devrait se passer normalement
+      placeholder: Le serveur devrait...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Comportement actuel
+      description: Ce qui se passe réellement
+      placeholder: Au lieu de ça, le serveur...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs et messages d'erreur
+      description: Coller les logs pertinents (avec RUST_LOG=debug si possible)
+      render: shell
+      placeholder: |
+        [2025-10-29T16:36:38Z ERROR nzeza] ...
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environnement
+      description: Informations sur votre environnement
+      value: |
+        - OS: [e.g. Ubuntu 22.04, macOS 14, Windows 11]
+        - Rust version: [e.g. 1.90.0]
+        - Version du projet: [e.g. v0.1.0 ou commit SHA]
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Contexte additionnel
+      description: Toute autre information pertinente (screenshots, configuration, etc.)
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: J'ai vérifié qu'il n'existe pas déjà une issue similaire
+          required: true
+        - label: J'ai exécuté les tests avec `cargo test`
+          required: false
+        - label: J'ai vérifié les logs avec `RUST_LOG=debug`
+          required: false

@@ -1,0 +1,85 @@
+name: Feature Request
+description: Proposer une nouvelle fonctionnalité pour nzeza
+title: "[FEATURE] "
+labels: ["enhancement"]
+assignees:
+  - guyghost
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci de proposer une amélioration! Veuillez décrire votre idée en détail.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problème à résoudre
+      description: Quel problème cette fonctionnalité résoudrait-elle?
+      placeholder: Je rencontre un problème quand...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solution proposée
+      description: Comment imaginez-vous que cette fonctionnalité devrait fonctionner?
+      placeholder: Je propose d'ajouter...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considérées
+      description: Avez-vous envisagé d'autres solutions?
+      placeholder: J'ai aussi pensé à...
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priorité
+      description: Quelle est l'importance de cette fonctionnalité?
+      options:
+        - Basse (Nice to have)
+        - Moyenne (Améliorerait l'expérience)
+        - Haute (Bloquant pour un cas d'usage important)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Catégorie
+      description: Dans quelle partie du projet cette fonctionnalité s'inscrit-elle?
+      options:
+        - MPC (Multi-Party Computation)
+        - Trading / Strategies
+        - Exchange Integration
+        - WebSocket / Infrastructure
+        - Documentation
+        - Testing / CI
+        - Performance
+        - Sécurité
+        - Autre
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Contexte additionnel
+      description: Toute autre information pertinente (mockups, exemples de code, liens, etc.)
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: J'ai vérifié qu'il n'existe pas déjà une issue similaire
+          required: true
+        - label: Cette fonctionnalité est cohérente avec les objectifs du projet (voir AGENTS.md)
+          required: true
+        - label: Je serais prêt(e) à contribuer à l'implémentation
+          required: false

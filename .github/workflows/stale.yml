@@ -1,0 +1,49 @@
+name: Stale Issues and PRs
+
+on:
+  schedule:
+    # Run daily at 01:00 UTC
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    name: Check Stale
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          
+          # Issues
+          stale-issue-message: |
+            Cette issue semble inactive. Elle sera fermée dans 7 jours si aucune activité n'est détectée.
+            
+            Si vous pensez que cette issue est toujours pertinente, veuillez commenter pour la garder ouverte.
+          close-issue-message: |
+            Cette issue a été fermée en raison d'inactivité. Si le problème persiste, n'hésitez pas à ouvrir une nouvelle issue.
+          days-before-issue-stale: 60
+          days-before-issue-close: 7
+          stale-issue-label: 'stale'
+          exempt-issue-labels: 'pinned,security,roadmap'
+          
+          # Pull Requests
+          stale-pr-message: |
+            Cette PR semble inactive. Elle sera fermée dans 14 jours si aucune activité n'est détectée.
+            
+            Si vous travaillez toujours sur cette PR, veuillez mettre à jour la branche et répondre à ce message.
+          close-pr-message: |
+            Cette PR a été fermée en raison d'inactivité. Si vous souhaitez continuer ce travail, veuillez ouvrir une nouvelle PR.
+          days-before-pr-stale: 30
+          days-before-pr-close: 14
+          stale-pr-label: 'stale'
+          exempt-pr-labels: 'pinned,security,work-in-progress'
+          
+          # General settings
+          operations-per-run: 100
+          remove-stale-when-updated: true
+          ascending: false
